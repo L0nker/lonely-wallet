@@ -16,6 +16,20 @@ class FixedIncomeSummaryHeaderTests(unittest.TestCase):
         self.assertIn("' fixed-income-category-head'", HTML)
         self.assertIn(".asset-category-head.fixed-income-category-head", HTML)
 
+    def test_fixed_income_header_does_not_force_extra_height(self):
+        self.assertIn('min-height:0!important;', HTML)
+        self.assertNotIn('min-height:86px', HTML)
+
+    def test_category_move_tooltips_use_project_style_instead_of_native_title(self):
+        self.assertIn('data-tip="Mover ${cat.name} para cima"', HTML)
+        self.assertIn('data-tip="Mover ${cat.name} para baixo"', HTML)
+        self.assertIn('.position-category-arrow[data-tip]::after', HTML)
+        self.assertNotIn('class="position-category-arrow" title="Mover ${cat.name}', HTML)
+
+    def test_proventos_card_uses_received_and_confirmed_totals_separately(self):
+        self.assertIn('brl(provDash.total_12m||0)', HTML)
+        self.assertIn('brl(provDash.total_confirmado_12m??provDash.total_12m??0)', HTML)
+
     def test_unknown_line_displays_placeholder_instead_of_partial_sum(self):
         self.assertIn("value!==null&&value!==undefined&&value!==''&&Number.isFinite(Number(value))", HTML)
         self.assertIn("fixedIncomeDiscountSummary.complete?brl(fixedIncomeDiscountSummary.total):'—'", HTML)

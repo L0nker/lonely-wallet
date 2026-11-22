@@ -186,6 +186,23 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(records[0]['valor_total'], 20.0)
             self.assertEqual(records[0]['status'], 'Pago')
 
+    def test_confirmed_proventos_total_adds_only_announced_payments_within_next_12_months(self):
+        as_of = datetime.date(2026, 11, 22)
+        upcoming = [
+            {'ticker':'ABCD11','status':'A receber','data_pagamento':'2026-11-22','valor_total':5.00,'tipo_evento':'RENDIMENTO'},
+            {'ticker':'ABCD11','status':'A receber','data_pagamento':'2026-11-23','valor_total':20.00,'tipo_evento':'RENDIMENTO'},
+            {'ticker':'ABCD11','status':'A receber','data_pagamento':'2026-11-23','valor_total':20.00,'tipo_evento':'RENDIMENTO'},
+            {'ticker':'EFGH11','status':'A receber','data_pagamento':'2027-11-22','valor_total':30.00,'tipo_evento':'DIVIDENDO'},
+            {'ticker':'IJKL11','status':'A receber','data_pagamento':'2027-11-23','valor_total':999.00,'tipo_evento':'DIVIDENDO'},
+            {'ticker':'MNOP11','status':'A receber','data_pagamento':'2026-11-21','valor_total':500.00,'tipo_evento':'DIVIDENDO'},
+            {'ticker':'QRST11','status':'Pago','data_pagamento':'2026-12-01','valor_total':600.00,'tipo_evento':'DIVIDENDO'},
+            {'ticker':'UVWX11','status':'Cancelado','data_pagamento':'2026-12-01','valor_total':700.00,'tipo_evento':'DIVIDENDO'},
+            {'ticker':'YZAA11','status':'A receber','data_pagamento':'2026-12-01','valor_total':800.00,'tipo_evento':'AMORTIZAÇÃO'},
+            {'ticker':'BCDE11','status':'A receber','data_pagamento':'2026-12-01','valor_total':'NaN','tipo_evento':'DIVIDENDO'},
+        ]
+        total = wallet._confirmed_proventos_total_12m(100.00, upcoming, as_of=as_of)
+        self.assertEqual(total, 155.00)
+
     def test_proventos_received_card_excludes_upcoming_and_unconfirmed_events(self):
         as_of = datetime.date(2026, 11, 22)
         records = [

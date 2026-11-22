@@ -1,5 +1,14 @@
 # Lonely Wallet
 
+## v4.2.30
+
+- Padronizado o tooltip dos controles de movimentação das categorias, removendo o tooltip nativo do navegador e aplicando o estilo visual do projeto.
+- Corrigida a altura do cabeçalho de **Renda Fixa**: removida a altura mínima exclusiva que deixava esse card maior que FIIs, Ações e as demais categorias.
+- O card **Proventos recebidos (12M)** mantém o valor principal restrito aos pagamentos efetivamente recebidos nos últimos 12 meses.
+- **Total confirmado** passa a somar os recebimentos dos últimos 12 meses aos proventos já anunciados com pagamento previsto para os próximos 12 meses.
+- Valores a receber são considerados somente quando possuem status explícito **A receber**, data de pagamento válida dentro do horizonte de 12 meses e valor positivo; amortizações, pagamentos vencidos, cancelados e duplicados são desconsiderados.
+- Incrementado o formato do cache do dashboard para reconstruir snapshots com o novo campo `total_confirmado_12m`; os bancos SQLite, tokens e demais configurações permanecem preservados.
+
 ## v4.2.29
 
 - Adicionado ao cabeçalho da categoria **Renda Fixa** o indicador **Valor total com descontos**, posicionado imediatamente à direita de **Valor total**.
@@ -135,13 +144,13 @@
 - Privacidade de valores desativada por padrão; quando ativada permanece até novo clique e cobre também conteúdo dinâmico.
 - Legendas da distribuição de aportes usam nomes localizados e acentuação correta (Ação, FIIs, Renda fixa, Tesouro Direto, ETFs, BDRs e demais classes).
 
-# Lonely Wallet v4.2.29
+# Lonely Wallet v4.2.30
 
 **Carteira pessoal de investimentos | Aplicação web self-hosted | Docker / ZimaOS**
 
 > Guia do usuário, instalação, atualização, segurança, backup, solução de problemas e perguntas frequentes.
 
-- **Versão:** 4.2.29
+- **Versão:** 4.2.30
 - **Idioma da interface:** Português (Brasil)
 - **Backend:** Python 3.12 + Flask + Gunicorn
 - **Persistência:** SQLite e arquivo JSON de última cotação válida
@@ -230,12 +239,12 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve indicar `ok: true` e `version: 4.2.29`.
+O retorno deve indicar `ok: true` e `version: 4.2.30`.
 
 ### Atualização de uma versão anterior
 
 1. Faça um backup antes de substituir os arquivos.
-2. Extraia o pacote 4.2.29 em uma pasta de projeto.
+2. Extraia o pacote 4.2.30 em uma pasta de projeto.
 3. **Mantenha exatamente o volume de dados existente**. O Compose padrão utiliza:
 
 ```yaml

@@ -25,7 +25,7 @@ QUOTE_HISTORY_PATH = os.environ.get('QUOTE_HISTORY_PATH', '/data/quotes_last_val
 QUOTE_HISTORY_LOCK = threading.RLock()
 DASHBOARD_CACHE_PATH = os.environ.get('DASHBOARD_CACHE_PATH', '/data/dashboard_cache.json')
 DASHBOARD_CACHE_LOCK = threading.RLock()
-DASHBOARD_CACHE_FORMAT = 6
+DASHBOARD_CACHE_FORMAT = 7
 PORTFOLIO_HISTORY_CACHE, PORTFOLIO_HISTORY_TTL = {}, 1800
 PORTFOLIO_HISTORY_EMPTY_TTL = 120
 def _dashboard_cache_signature():
@@ -4358,6 +4358,59 @@ def _confirmed_received_proventos_by_month(records, month_keys, as_of=None):
     return {month: round(value, 2) for month, value in totals.items()}
 
 
+def _confirmed_proventos_total_12m(received_total, upcoming, as_of=None):
+    """Sum receipts from the last 12 calendar months and announced payments in the next 12 months.
+
+    Upcoming entries must explicitly be marked ``A receber`` and have a valid
+    future payment date and a positive, finite amount. Duplicate imported rows
+    sharing ticker/date/amount are counted once, matching dashboard reconciliation.
+    """
+    today = as_of or datetime.now(TZ).date()
+    try:
+        received = float(received_total or 0)
+    except (TypeError, ValueError):
+        received = 0.0
+    if not math.isfinite(received) or received < 0:
+        received = 0.0
+
+    try:
+        horizon = date(today.year + 1, today.month, today.day)
+    except ValueError:  # 29 de fevereiro em ano não bissexto.
+        horizon = date(today.year + 1, today.month, 28)
+
+    upcoming_total = 0.0
+    seen = set()
+    for raw in upcoming or []:
+        row = dict(raw)
+        if str(row.get('status') or '').strip().casefold() != 'a receber':
+            continue
+        if not _is_income_event(row.get('tipo_evento') or row.get('tipo')):
+            continue
+        payment_date = _api_date(row.get('data_pagamento'))
+        if not payment_date:
+            continue
+        try:
+            expected_on = date.fromisoformat(payment_date[:10])
+        except ValueError:
+            continue
+        if not today <= expected_on <= horizon:
+            continue
+        try:
+            amount = float(row.get('valor_total') or 0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(amount) or amount <= 0:
+            continue
+        ticker = str(row.get('ticker') or '').strip().upper()
+        fingerprint = (ticker, expected_on.isoformat(), round(amount, 2))
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        upcoming_total += amount
+
+    return round(received + upcoming_total, 2)
+
+
 def typesafe_asset_type(ticker):
     return _asset_type_map().get(str(ticker or '').upper(), 'outros')
 
@@ -5561,6 +5614,7 @@ def dashboard():
 
     monthly_values = [{'mes':m,'recebido':round(received_by_month.get(m,0),2)} for m in month_keys]
     total_12m = round(sum(received_by_month.get(month, 0.0) for month in month_keys), 2)
+    total_confirmed_12m = _confirmed_proventos_total_12m(total_12m, upcoming, as_of=today)
     portfolio_total = round(sum(float(x.get('valor_atual') or 0) for x in portfolio.get('itens', [])), 2)
     # O card Maiores pagadores considera o histórico integral de recebimentos,
     # inclusive ativos que já não estejam na carteira atual. A fonte canônica
@@ -5652,7 +5706,7 @@ def dashboard():
             'proventos': {'fonte_canonica': 'brapi + lançamentos manuais/B3', 'deduplicacao': 'chave de evento + ticker/data de pagamento/valor', 'sincronizacao': sync_status}
         },
         proventos_dashboard={
-            'mensal':monthly_values,'total_12m':total_12m,'media_mensal':round(total_12m/12,2),
+            'mensal':monthly_values,'total_12m':total_12m,'total_confirmado_12m':total_confirmed_12m,'media_mensal':round(total_12m/12,2),
             'total_carteira':portfolio_total,'recebidos':sorted(detailed,key=lambda x:x['data_pagamento'],reverse=True),
             'a_receber':sorted(upcoming,key=lambda x:x['data_pagamento']),
             'maiores_pagadores':top_paid_payers,
