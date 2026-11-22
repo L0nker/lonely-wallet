@@ -2196,7 +2196,7 @@ body.light-theme .lw-select-option:hover,body.light-theme .lw-select-option.acti
 
 
 
-<div class="footer">Lonely Wallet v4.2.19 · Controle pessoal de investimentos<br>Dados de cotação podem sofrer atrasos ou indisponibilidade. Este sistema é apenas informativo.</div>
+<div class="footer">Lonely Wallet v4.2.20 · Controle pessoal de investimentos<br>Dados de cotação podem sofrer atrasos ou indisponibilidade. Este sistema é apenas informativo.</div>
 </main>
 <div class="modalback" id="launchDistributionBack" onclick="if(event.target===this)closeLaunchDistribution()"><div class="modal" style="width:min(900px,100%)"><div class="modalhead"><div><h2 id="launchDistributionTitle">Distribuição de aportes</h2><div class="sub" id="launchDistributionSubtitle">Operações do período selecionado.</div></div><button class="close" type="button" onclick="closeLaunchDistribution()">×</button></div><div class="launch-distribution-switch segmented"><button type="button" id="launchDistAssetTab" class="active" onclick="setLaunchDistributionMode('ativo')">◉ Por Ativo</button><button type="button" id="launchDistTypeTab" onclick="setLaunchDistributionMode('tipo')">◉ Por Tipo</button><span class="launch-dist-switch-spacer"></span><button type="button" id="launchDistBuyTab" class="active" onclick="setLaunchDistributionSide('compra')">Compra</button><button type="button" id="launchDistSellTab" onclick="setLaunchDistributionSide('venda')">Venda</button></div><div class="launch-distribution-layout"><div class="launch-distribution-chart"><canvas id="launchDistributionChart"></canvas></div><div class="launch-distribution-legend"><div class="launch-distribution-total"><b>Total</b><strong id="launchDistributionTotal"></strong></div><div id="launchDistributionRows"></div></div></div><div class="modalactions"><button class="ghost" type="button" onclick="closeLaunchDistribution()">Fechar</button></div></div></div>
 <div class="modalback" id="b3ImportsManagerBack" onclick="if(event.target===this)closeB3ImportsManager()"><div class="modal" style="width:min(860px,100%)"><div class="modalhead"><div><h2>Importações da B3</h2><div class="sub">Histórico das planilhas importadas. Você pode excluir uma importação recente e os registros criados exclusivamente por ela.</div></div><button class="close" onclick="closeB3ImportsManager()">×</button></div><div id="b3ImportsList" class="section mini">Carregando importações…</div><div class="modalactions"><button class="ghost" type="button" onclick="closeB3ImportsManager()">Fechar</button></div></div></div><div class="modalback utility-modal-back" id="operationManagerBack" onclick="if(event.target===this)closeOperationManager()"><div class="modal utility-modal" style="width:min(1100px,100%)"><div class="modalhead"><div><h2>Gerenciar lançamentos de ativos</h2><div class="sub">Filtre por classe e ativo para revisar ou excluir operações. A exclusão em massa é permanente.</div></div><button class="close" onclick="closeOperationManager()">×</button></div><div class="formgrid operation-manager-filters"><div class="field"><label for="operationManagerType">Classe do ativo</label><select id="operationManagerType" onchange="onOperationManagerTypeChange()"><option value="">Todas as classes</option></select></div><div class="field"><label for="operationManagerTicker">Ativo</label><select id="operationManagerTicker" onchange="renderOperationManagerRows()"><option value="">Todos os ativos</option></select></div></div><div id="operationManagerSummary" class="mini" style="margin:12px 0">Carregando lançamentos…</div><div id="operationManagerRows" class="tablewrap"></div><div class="modalactions" style="justify-content:space-between;flex-wrap:wrap"><div class="toolbar"><button class="danger" type="button" onclick="confirmDeleteManaged('ativo')">Excluir todos deste ativo</button><button class="danger" type="button" onclick="confirmDeleteManaged('todas')">Excluir todos os lançamentos</button></div><button class="ghost" type="button" onclick="closeOperationManager()">Fechar</button></div></div></div>
@@ -3701,6 +3701,13 @@ function closeProvDistributionModal(){const back=document.getElementById('provDi
 function setProvDistributionMode(mode){provDistributionMode=mode;document.getElementById('provDistAssetTab')?.classList.toggle('active',mode==='ativo');document.getElementById('provDistTypeTab')?.classList.toggle('active',mode==='tipo');const items=provDistributionData[mode]||[];const total=items.reduce((sum,x)=>sum+Number(x.value||0),0);const totalEl=document.getElementById('provDistributionTotal');if(totalEl){totalEl.textContent=brl(total);totalEl.style.color=side==='venda'?'#ef6680':'#00d4a0';}const list=document.getElementById('provDistributionDetailList');if(list)list.innerHTML=items.length?items.map(item=>`<div class="prov-distribution-item" data-tooltip="${provDistributionStatus==='A receber'?'Previsto':'Recebido'}: ${brl(item.value)}"><span><i style="background:${item.color}"></i>${escapeHTML(item.name)}</span><b>${pct(total?item.value/total*100:0)}</b></div>`).join(''):`<div class="empty">Nenhum provento ${provDistributionStatus==='A receber'?'previsto':'recebido'} no período.</div>`;chart('provDistributionDetailChart','doughnut',{labels:items.map(x=>x.name),datasets:[{data:items.map(x=>x.value),backgroundColor:items.map(x=>x.color),borderWidth:0}]},{cutout:'48%',plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${ctx.label}: ${brl(ctx.raw||0)}`}}}});}
 
 const chartPalette=['#78b7f5','#f3d978','#42d49b','#b59af3','#ed8e9c','#74d7d2','#d7a36a','#e8a56b','#a8b7cb','#d98ad0','#f28f5b','#88c1a8','#c49aeb','#d9c46a','#78a8d8','#e57da9','#9cc36b','#b6a0d8'];
+function sumAssetCapitalGain(items){
+ return (Array.isArray(items)?items:[]).reduce((sum,item)=>{
+  const raw=item?.variacao_valor??item?.lucro;
+  const value=raw===null||raw===undefined?0:Number(raw);
+  return sum+(Number.isFinite(value)?value:0);
+ },0);
+}
 function getAllTypesPortfolioHistory(){
  const monthly=new Map(),missingTickers=new Set();
  Object.values(state.rentabilidade_por_tipo||{}).forEach(classPerformance=>{
@@ -3711,7 +3718,13 @@ function getAllTypesPortfolioHistory(){
    current.aplicado+=Number(row.aplicado||0);current.ganho+=Number(row.ganho||0);current.patrimonio+=Number(row.patrimonio||0);monthly.set(row.mes,current);
   });
  });
- return {rows:[...monthly.values()].sort((a,b)=>a.mes.localeCompare(b.mes)).map(row=>({...row,aplicado:Number(row.aplicado.toFixed(2)),ganho:Number(row.ganho.toFixed(2)),patrimonio:Number(row.patrimonio.toFixed(2))})),missing:[...missingTickers]};
+ return {rows:[...monthly.values()].sort((a,b)=>a.mes.localeCompare(b.mes)).map(row=>{
+  const aplicado=Number(row.aplicado.toFixed(2));
+  const ganho=Number(row.ganho.toFixed(2));
+  // Patrimônio consolidado é estritamente valor aplicado + ganho de capital.
+  // Proventos não fazem parte desta série e nunca são somados aqui.
+  return {...row,aplicado,ganho,patrimonio:Number((aplicado+ganho).toFixed(2))};
+ }),missing:[...missingTickers]};
 }
 
 function renderEvolutionChart(canvasId='aporteChart',periodId='aportePeriod',typeId='aporteType'){
@@ -3807,9 +3820,7 @@ function renderEvolutionChart(canvasId='aporteChart',periodId='aportePeriod',typ
   const currentApplied=selectedType==='todos'
    ?Number(state.resumo?.investido||0)
    :selectedItems.reduce((sum,item)=>sum+Number(item.investido||0),0);
-  const currentCapitalGain=selectedType==='todos'
-   ?Number(state.resumo?.lucro||0)
-   :selectedItems.reduce((sum,item)=>sum+Number(item.lucro||0),0);
+  const currentCapitalGain=sumAssetCapitalGain(selectedItems);
   // A série histórica usa apenas ganho de capital. No mês atual, usa o campo
   // explícito de ganho de capital da carteira, nunca lucro total ou proventos.
   const applied=visibleHistory.map(row=>row.mes===currentMonthKey&&currentApplied>0?currentApplied:Number(row.aplicado||0));
@@ -3841,9 +3852,7 @@ function renderEvolutionChart(canvasId='aporteChart',periodId='aportePeriod',typ
  // Fallback for classes without historical market-price coverage, such as manually registered fixed income.
  if(isSummary){
   const selectedItems=(state.itens||[]).filter(item=>selectedType==='todos'||item.tipo===selectedType);
-  const gain=selectedType==='todos'
-   ?Number(state.resumo?.lucro||0)
-   :selectedItems.reduce((sum,item)=>sum+Number(item.lucro||0),0);
+  const gain=sumAssetCapitalGain(selectedItems);
   const gains=monthKeys.map((_,index)=>index===monthKeys.length-1?Number(gain.toFixed(2)):0);
   const fallbackPatrimony=cumulative.map((value,index)=>Number((value+gains[index]).toFixed(2)));
   const note=document.querySelector(`#${canvasId}`)?.closest('.panel')?.querySelector('.chart-footnote');
@@ -4487,14 +4496,18 @@ function render(){const r=state.resumo||{},provDash=state.proventos_dashboard||{
 const performance=state.rentabilidade_historica||{};
 const allTypesHistory=getAllTypesPortfolioHistory().rows;
 const latestEvolution=allTypesHistory.length?allTypesHistory[allTypesHistory.length-1]:null;
-const summaryPatrimony=latestEvolution?Number(latestEvolution.patrimonio||0):Number(r.atual||0);
-const summaryApplied=latestEvolution?Number(latestEvolution.aplicado||0):Number(r.investido||0);
+const summaryApplied=Number(r.investido||0);
+// O card Patrimônio total deve refletir somente capital aplicado + ganho/perda
+// de preço dos ativos. Proventos recebidos pertencem ao card Lucro total e não
+// integram o patrimônio calculado por esta regra visual.
+const summaryCapitalGain=sumAssetCapitalGain(state.itens||[]);
+const summaryPatrimony=Number((summaryApplied+summaryCapitalGain).toFixed(2));
 const totalProfit=latestEvolution?Number(latestEvolution.ganho||0):Number(r.lucro||0);
 const return12m=performance.rentabilidade_12m;
-const portfolioReturn=summaryApplied>0?(totalProfit/summaryApplied)*100:null;
+const portfolioReturn=summaryApplied>0?(summaryCapitalGain/summaryApplied)*100:null;
 document.getElementById('stats').innerHTML=`
- <div class="card stat"><div class="statlabel-row">Patrimônio total<span class="info-tip" tabindex="0" aria-label="Sobre o patrimônio total" data-tip="Valor atual de todos os seus ativos na carteira, considerando a cotação atual de cada posição.">i</span></div><div class="statvalue statvalue-inline">${brl(summaryPatrimony)} <small class="${totalProfit>=0?'green':'red'}" title="Resultado total de ${brl(totalProfit)} sobre ${brl(summaryApplied)} investidos">${pct(portfolioReturn)} ${totalProfit>=0?'▲':'▼'}</small></div><div class="statdetail"><span>Valor investido</span><b>${brl(summaryApplied)}</b></div></div>
- <div class="card stat"><div class="statlabel-row">Lucro total<span class="info-tip" tabindex="0" aria-label="Sobre o lucro total" data-tip="Seu resultado acumulado na carteira: ganho de capital (valorização dos ativos) somado aos dividendos e proventos recebidos.">i</span></div><div class="statvalue ${totalProfit>=0?'green':'red'}">${brl(totalProfit)}</div><div class="statdetail"><span>Ganho de capital</span><b>${brl(r.lucro||0)}</b></div><div class="statdetail"><span>Dividendos recebidos</span><b>${brl(r.proventos||0)}</b></div></div>
+ <div class="card stat"><div class="statlabel-row">Patrimônio total<span class="info-tip" tabindex="0" aria-label="Sobre o patrimônio total" data-tip="Valor atual de todos os seus ativos na carteira, considerando a cotação atual de cada posição.">i</span></div><div class="statvalue statvalue-inline">${brl(summaryPatrimony)} <small class="${summaryCapitalGain>=0?'green':'red'}" title="Ganho de capital de ${brl(summaryCapitalGain)} sobre ${brl(summaryApplied)} investidos">${pct(portfolioReturn)} ${summaryCapitalGain>=0?'▲':'▼'}</small></div><div class="statdetail"><span>Valor investido</span><b>${brl(summaryApplied)}</b></div></div>
+ <div class="card stat"><div class="statlabel-row">Lucro total<span class="info-tip" tabindex="0" aria-label="Sobre o lucro total" data-tip="Seu resultado acumulado na carteira: ganho de capital (valorização dos ativos) somado aos dividendos e proventos recebidos.">i</span></div><div class="statvalue ${totalProfit>=0?'green':'red'}">${brl(totalProfit)}</div><div class="statdetail"><span>Ganho de capital</span><b>${brl(summaryCapitalGain)}</b></div><div class="statdetail"><span>Dividendos recebidos</span><b>${brl(r.proventos||0)}</b></div></div>
  <div class="card stat"><div class="statlabel-row">Proventos recebidos (12M)<span class="info-tip" tabindex="0" aria-label="Sobre os proventos recebidos" data-tip="Total de dividendos, JCP e rendimentos recebidos nos últimos 12 meses.">i</span></div><div class="statvalue">${brl(provDash.total_12m||0)}</div><div class="statdetail"><span>Total confirmado</span><b>${brl(provDash.total_12m||0)}</b></div></div>
  <div class="card stat return-stat-card"><div class="statlabel-row">Rentabilidade<span class="info-tip" tabindex="0" aria-label="Sobre o cálculo da rentabilidade" data-tip="Rentabilidade calculada com base na evolução mensal do patrimônio e do capital líquido aplicado, usando preços não ajustados. Dividendos, JCP e demais proventos não entram no cálculo. O período de 12 meses utiliza até os 12 fechamentos mensais disponíveis. Se houver menos, utiliza os meses existentes.">i</span></div><div class="return-spark-grid"><div class="return-spark-item"><span>Últimos 12 meses</span><svg id="return12mChart" class="sparkline-svg" viewBox="0 0 300 40" role="img" aria-label="Rentabilidade dos últimos 12 meses"></svg><b class="${return12m===null||return12m===undefined?'':Number(return12m)>=0?'green':'red'}">${return12m===null||return12m===undefined?'—':pct(return12m)}</b></div><div class="return-spark-item"><span>Total</span><svg id="returnTotalChart" class="sparkline-svg" viewBox="0 0 300 40" role="img" aria-label="Rentabilidade total"></svg><b class="${portfolioReturn===null?'':portfolioReturn>=0?'green':'red'}">${portfolioReturn===null?'—':pct(portfolioReturn)}</b></div></div></div>`;
 renderConsolidatedReturnSparklines(portfolioReturn);

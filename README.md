@@ -1,5 +1,14 @@
 # Lonely Wallet
 
+## v4.2.20
+
+- O gráfico **Evolução do patrimônio** consolida todas as classes usando exclusivamente o valor aplicado somado ao ganho ou prejuízo de capital; proventos não entram no ganho nem no patrimônio do gráfico.
+- No mês atual, o ganho de capital do gráfico é somado diretamente dos campos de variação monetária dos ativos, sem usar totais agregados que possam incluir proventos.
+- O card **Patrimônio total** passa a exibir valor investido + ganho/perda de capital individual dos ativos, sem acrescentar dividendos ou outros proventos.
+- O percentual exibido no card Patrimônio total usa o mesmo ganho de capital e o mesmo valor investido apresentados no card.
+- O detalhe **Ganho de capital** passa a usar a mesma soma individual de variação dos ativos que fundamenta o patrimônio, garantindo consistência entre os cards.
+- A versão do cache do dashboard foi incrementada para descartar snapshots anteriores e reconstruir os indicadores com a nova regra.
+
 ## v4.2.19
 
 - O tooltip do gráfico **Evolução do patrimônio** apresenta Patrimônio, Valor aplicado e Ganho de Capital.
@@ -73,13 +82,13 @@
 - Privacidade de valores desativada por padrão; quando ativada permanece até novo clique e cobre também conteúdo dinâmico.
 - Legendas da distribuição de aportes usam nomes localizados e acentuação correta (Ação, FIIs, Renda fixa, Tesouro Direto, ETFs, BDRs e demais classes).
 
-# Lonely Wallet v4.2.19
+# Lonely Wallet v4.2.20
 
 **Carteira pessoal de investimentos | Aplicação web self-hosted | Docker / ZimaOS**
 
 > Guia do usuário, instalação, atualização, segurança, backup, solução de problemas e perguntas frequentes.
 
-- **Versão:** 4.2.19
+- **Versão:** 4.2.20
 - **Idioma da interface:** Português (Brasil)
 - **Backend:** Python 3.12 + Flask + Gunicorn
 - **Persistência:** SQLite e arquivo JSON de última cotação válida
@@ -168,12 +177,12 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve indicar `ok: true` e `version: 4.2.19`.
+O retorno deve indicar `ok: true` e `version: 4.2.20`.
 
 ### Atualização de uma versão anterior
 
 1. Faça um backup antes de substituir os arquivos.
-2. Extraia o pacote 4.2.19 em uma pasta de projeto.
+2. Extraia o pacote 4.2.20 em uma pasta de projeto.
 3. **Mantenha exatamente o volume de dados existente**. O Compose padrão utiliza:
 
 ```yaml

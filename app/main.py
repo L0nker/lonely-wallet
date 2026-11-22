@@ -25,7 +25,7 @@ QUOTE_HISTORY_PATH = os.environ.get('QUOTE_HISTORY_PATH', '/data/quotes_last_val
 QUOTE_HISTORY_LOCK = threading.RLock()
 DASHBOARD_CACHE_PATH = os.environ.get('DASHBOARD_CACHE_PATH', '/data/dashboard_cache.json')
 DASHBOARD_CACHE_LOCK = threading.RLock()
-DASHBOARD_CACHE_FORMAT = 2
+DASHBOARD_CACHE_FORMAT = 3
 PORTFOLIO_HISTORY_CACHE, PORTFOLIO_HISTORY_TTL = {}, 1800
 PORTFOLIO_HISTORY_EMPTY_TTL = 120
 def _dashboard_cache_signature():
@@ -2093,7 +2093,7 @@ def cotacao(ticker, force_refresh=False):
             if response.status_code in (401, 403) and headers:
                 # An expired optional token must not block the public latest-close list.
                 response = requests.get(list_url, params=list_params,
-                    headers={'User-Agent': 'Mozilla/5.0 LonelyWallet/4.2.18'}, timeout=8)
+                    headers={'User-Agent': 'Mozilla/5.0 LonelyWallet/4.2.20'}, timeout=8)
             response.raise_for_status()
             stocks = response.json().get('stocks') or []
             def matches_symbol(item):
