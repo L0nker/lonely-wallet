@@ -5589,7 +5589,7 @@ def dashboard():
     top_paid_payers = sorted(
         paid_by_ticker.values(),
         key=lambda item: (-round(float(item['valor_total']), 2), item['ticker'])
-    )[:3]
+    )[:2]
     for item in top_paid_payers:
         item['valor_total'] = round(float(item['valor_total']), 2)
     type_totals = {}

@@ -30,6 +30,7 @@ class TopPaidDividendPayersTests(unittest.TestCase):
         self.assertIn("all_confirmed_received = _confirmed_received_proventos(", MAIN)
         self.assertIn("_received_proventos_records(), as_of=today", MAIN)
         self.assertIn("'maiores_pagadores':top_paid_payers", MAIN)
+        self.assertRegex(MAIN, r"top_paid_payers\s*=\s*sorted\([\s\S]*?\)\[:2\]")
         self.assertIn("'status': 'Pago'", MAIN)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for runtime JavaScript test")
@@ -49,8 +50,9 @@ class TopPaidDividendPayersTests(unittest.TestCase):
         script = helper + "\nconst result=getTopPaidDividendPayers(" + json.dumps(records) + ", [], '2026-11-22');\nprocess.stdout.write(JSON.stringify(result));"
         result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
         parsed = json.loads(result.stdout)
-        self.assertEqual([item["ticker"] for item in parsed], ["PETR4", "BBAS3", "KNRI11"])
-        self.assertEqual([item["total"] for item in parsed], [100, 75, 50])
+        self.assertEqual([item["ticker"] for item in parsed], ["PETR4", "BBAS3"])
+        self.assertEqual([item["total"] for item in parsed], [100, 75])
+        self.assertIn(".slice(0,2)", helper)
 
 
 if __name__ == "__main__":
