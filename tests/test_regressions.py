@@ -2,7 +2,9 @@
 import os
 import tempfile
 import unittest
+import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(tempfile.mkdtemp(prefix='lonely-wallet-tests-'))
 os.environ['ASSETS_DB_PATH'] = str(ROOT / 'ativos.db')
@@ -26,6 +28,9 @@ class RegressionTests(unittest.TestCase):
             con = wallet.token_db()
             con.execute('DELETE FROM app_auth')
             con.execute('DELETE FROM auth_attempts')
+            con.execute("DELETE FROM operacoes WHERE UPPER(ticker)='IRPFBASE4'")
+            con.execute("DELETE FROM saldos_importados WHERE UPPER(ticker)='IRPFBASE4'")
+            con.execute("DELETE FROM irpf_lancamentos WHERE upper(fonte_pagadora) LIKE '%TESTE DE ISOLAMENTO%'")
             con.commit()
 
     def test_pluggy_sync_interval_persists_after_new_request(self):
@@ -129,6 +134,107 @@ class RegressionTests(unittest.TestCase):
             self.assertIsNone(error)
             self.assertIsNotNone(result)
 
+
+
+    def test_carteira_route_is_bound_to_portfolio_view(self):
+        rules = [rule for rule in wallet.app.url_map.iter_rules() if rule.rule == '/api/carteira']
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0].endpoint, 'carteira')
+        self.assertIs(wallet.app.view_functions[rules[0].endpoint], wallet.carteira)
+
+    def test_retroactive_sale_cannot_break_later_sale(self):
+        with wallet.app.app_context():
+            con = wallet.db()
+            con.execute("DELETE FROM operacoes WHERE UPPER(ticker)='RETROTEST4'")
+            con.execute("DELETE FROM saldos_importados WHERE UPPER(ticker)='RETROTEST4'")
+            con.execute('INSERT INTO saldos_importados(ticker,tipo,quantidade,preco_medio,preco_base,data_base,nome,origem) VALUES(?,?,?,?,?,?,?,?)',
+                        ('RETROTEST4','acao',10,20,20,'2026-01-01','Retro Test','Teste'))
+            con.execute("INSERT INTO operacoes(ticker,tipo,lado,quantidade,preco,data,custos,status,data_registro,data_execucao,detalhes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        ('RETROTEST4','acao','venda',8,25,'2026-03-02',0,'executada','2026-03-02','2026-03-02T10:00:00-03:00','{}'))
+            con.commit()
+            self.assertTrue(wallet.sale_breaks_future_position('RETROTEST4','2026-02-01',-5))
+            self.assertFalse(wallet.sale_breaks_future_position('RETROTEST4','2026-02-01',-2))
+
+
+    def test_removing_purchase_cannot_leave_future_sale_unfunded(self):
+        with wallet.app.app_context():
+            con = wallet.db()
+            con.execute("DELETE FROM operacoes WHERE UPPER(ticker)='DELETEBUY4'")
+            con.execute("DELETE FROM saldos_importados WHERE UPPER(ticker)='DELETEBUY4'")
+            con.execute('INSERT INTO saldos_importados(ticker,tipo,quantidade,preco_medio,preco_base,data_base,nome,origem) VALUES(?,?,?,?,?,?,?,?)',
+                        ('DELETEBUY4','acao',10,20,20,'2026-01-01','Delete Buy Test','Teste'))
+            purchase = con.execute("INSERT INTO operacoes(ticker,tipo,lado,quantidade,preco,data,custos,status,data_registro,data_execucao,detalhes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        ('DELETEBUY4','acao','compra',5,20,'2026-02-01',0,'executada','2026-02-01','2026-02-01T10:00:00-03:00','{}'))
+            con.execute("INSERT INTO operacoes(ticker,tipo,lado,quantidade,preco,data,custos,status,data_registro,data_execucao,detalhes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        ('DELETEBUY4','acao','venda',12,25,'2026-03-02',0,'executada','2026-03-02','2026-03-02T10:00:00-03:00','{}'))
+            con.commit()
+            self.assertTrue(wallet.sale_breaks_future_position('DELETEBUY4','2026-02-01',0.0,{int(purchase.lastrowid)}))
+
+    def test_paid_api_proventos_are_included_and_future_receipts_excluded(self):
+        with wallet.app.app_context():
+            con = wallet.db()
+            con.execute("DELETE FROM proventos_api WHERE upper(ticker)='PROVTEST4'")
+            con.execute("DELETE FROM proventos WHERE upper(ticker)='PROVTEST4'")
+            stamp = wallet.datetime.now(wallet.TZ).isoformat(timespec='seconds')
+            con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        ('PROVTEST4:PAID','PROVTEST4','fii','Rendimento','2026-01-10','2026-01-11','2026-01-15',1.0,20,20.0,'Pago','Teste',stamp))
+            con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        ('PROVTEST4:FUTURE','PROVTEST4','fii','Rendimento','2026-12-10','2026-12-11','2026-12-15',1.0,20,20.0,'A receber','Teste',stamp))
+            con.commit()
+            records = wallet._received_proventos_records(['PROVTEST4'])
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]['valor_total'], 20.0)
+            self.assertEqual(records[0]['status'], 'Pago')
+
+    def test_error_text_redacts_tokens_in_urls(self):
+        message = wallet.safe_error_text('Request failed https://api.example.test/path?api_key=secret123&token=other')
+        self.assertNotIn('secret123', message)
+        self.assertNotIn('other', message)
+        self.assertIn('api.example.test', message)
+
+    def test_quote_parser_uses_last_valid_yahoo_daily_close(self):
+        timestamp = 1795219200
+        payload = {'chart': {'result': [{
+            'meta': {'symbol':'RBRR11.SA','regularMarketPrice':0,'previousClose':62.5,'chartPreviousClose':62.5,'longName':'RBR Rendimento'},
+            'timestamp':[timestamp],
+            'indicators': {'quote':[{'close':[63.10]}]}
+        }]}}
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+            def json(self):
+                return payload
+        with patch.object(wallet, '_get_api_token', return_value=None), patch.object(wallet.requests, 'get', return_value=FakeResponse()):
+            quote = wallet._fallback_market_quote('RBRR11')
+        self.assertEqual(quote['regularMarketPrice'], 63.10)
+        self.assertTrue(quote['quoteIsStale'])
+        self.assertEqual(quote['quoteProvider'], 'Yahoo Finance · último fechamento')
+        self.assertEqual(quote['quoteLastUpdated'], '2026-11-21')
+
+    def test_predelete_backup_rotation_keeps_ten_newest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index in range(12):
+                folder = root / f'pre-exclusao-{index:02d}'
+                folder.mkdir()
+                (folder / 'backup.db').write_text(str(index))
+                os.utime(folder, (index + 1, index + 1))
+            removed = wallet.rotate_predelete_backups(root, keep=10)
+            remaining = sorted(path.name for path in root.glob('pre-exclusao-*'))
+            self.assertEqual(len(remaining), 10)
+            self.assertIn('pre-exclusao-00', removed)
+            self.assertIn('pre-exclusao-01', removed)
+
+    def test_legacy_db_migration_does_not_publish_invalid_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            invalid_source = root / 'legacy.db'
+            invalid_source.write_bytes(b'not a sqlite database')
+            destination = root / 'carteira.db'
+            with self.assertRaises(Exception):
+                wallet.migrate_legacy_database(invalid_source, destination)
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(root.glob('.carteira.db.migration-*.tmp')), [])
 
     def test_b3_rejects_non_finite_cells(self):
         for value in ('NaN', 'Infinity', '-Infinity'):

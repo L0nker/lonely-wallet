@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="pt-br" class="dashboard-wait-lock"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#14161d"><style>html,body{background:#14161d;color-scheme:dark}html.light-theme,html.light-theme body{background:#f3f5f8!important;color-scheme:light!important}</style><script>try{if(localStorage.getItem('lonelyWalletLightTheme')==='1')document.documentElement.classList.add('light-theme');}catch(e){}</script><title>Lonely Wallet | Investimentos</title><link rel="icon" type="image/png" href="/static/lonely-wallet-favicon.png"><link rel="apple-touch-icon" href="/static/lonely-wallet-favicon.png">
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>
 <style>
 :root{--bg:#14161d;--panel:#20232c;--panel2:#171a22;--line:#303541;--text:#f3f5f8;--muted:#929baa;--green:#20bd82;--red:#ef6680;--blue:#78b7f5;--gold:#d5a85e;--table-hover:#262b36}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px Inter,system-ui,-apple-system,Segoe UI,sans-serif}button,input,select{font:inherit}button{cursor:pointer}.top{height:62px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 4.5%;position:sticky;top:0;background:#151820;z-index:5}.brand{font-size:18px;font-weight:750;letter-spacing:-.5px}.brand span{color:var(--gold)}.topright{display:flex;gap:10px;align-items:center;color:var(--muted)}.pillbtn,.primary,.ghost{border:1px solid var(--line);border-radius:8px;padding:9px 13px;background:#222631;color:var(--text)}.primary{background:#2478d4;border-color:#2478d4}.nav{display:flex;gap:4px;padding:0 4.5%;border-bottom:1px solid var(--line);overflow:auto;background:#171a22}.nav button{white-space:nowrap;background:none;color:#aeb7c5;border:0;padding:15px 12px;border-bottom:2px solid transparent}.nav button.active{color:white;border-color:var(--blue)}
 .dashboard-data-wait{position:fixed;inset:0;z-index:99999;background:var(--bg);display:none;align-items:center;justify-content:center;padding:24px;text-align:center;width:100vw;height:100vh;height:100dvh;overscroll-behavior:contain;touch-action:none}
@@ -2026,9 +2026,13 @@ body.light-theme .lw-select-option:hover,body.light-theme .lw-select-option.acti
 }
 .variation-money-floating-tooltip.is-positive { border-color: var(--green, #12c98b) !important; }
 .variation-money-floating-tooltip.is-negative { border-color: var(--red, #ff5b78) !important; }
+.variation-money-floating-tooltip.is-neutral { border-color: var(--line, #3b4352) !important; }
 
 
 
+
+.price-update-tooltip-trigger{cursor:help;text-decoration:none;border:0}
+.price-update-tooltip-trigger:focus{outline:1px solid var(--line,#3b4352);outline-offset:2px;border-radius:3px}
 </style>
 </head><body class="dashboard-wait-lock">
 <div class="modalback utility-modal-back" id="notesModalBack" onclick="if(event.target===this)closeUtilityModal('notesModalBack')"><div class="modal utility-modal"><div class="modalhead"><h2 id="notesModalTitle">Minhas observações</h2><button class="close" onclick="closeUtilityModal('notesModalBack')">×</button></div><div id="notesModalContent"></div></div></div>
@@ -2132,7 +2136,7 @@ body.light-theme .lw-select-option:hover,body.light-theme .lw-select-option.acti
 
 
 
-<div class="footer">Lonely Wallet v4.2.15 · Controle pessoal de investimentos<br>Dados de cotação podem sofrer atrasos ou indisponibilidade. Este sistema é apenas informativo.</div>
+<div class="footer">Lonely Wallet v4.2.16 · Controle pessoal de investimentos<br>Dados de cotação podem sofrer atrasos ou indisponibilidade. Este sistema é apenas informativo.</div>
 </main>
 <div class="modalback" id="launchDistributionBack" onclick="if(event.target===this)closeLaunchDistribution()"><div class="modal" style="width:min(900px,100%)"><div class="modalhead"><div><h2 id="launchDistributionTitle">Distribuição de aportes</h2><div class="sub" id="launchDistributionSubtitle">Operações do período selecionado.</div></div><button class="close" type="button" onclick="closeLaunchDistribution()">×</button></div><div class="launch-distribution-switch segmented"><button type="button" id="launchDistAssetTab" class="active" onclick="setLaunchDistributionMode('ativo')">◉ Por Ativo</button><button type="button" id="launchDistTypeTab" onclick="setLaunchDistributionMode('tipo')">◉ Por Tipo</button><span class="launch-dist-switch-spacer"></span><button type="button" id="launchDistBuyTab" class="active" onclick="setLaunchDistributionSide('compra')">Compra</button><button type="button" id="launchDistSellTab" onclick="setLaunchDistributionSide('venda')">Venda</button></div><div class="launch-distribution-layout"><div class="launch-distribution-chart"><canvas id="launchDistributionChart"></canvas></div><div class="launch-distribution-legend"><div class="launch-distribution-total"><b>Total</b><strong id="launchDistributionTotal"></strong></div><div id="launchDistributionRows"></div></div></div><div class="modalactions"><button class="ghost" type="button" onclick="closeLaunchDistribution()">Fechar</button></div></div></div>
 <div class="modalback" id="b3ImportsManagerBack" onclick="if(event.target===this)closeB3ImportsManager()"><div class="modal" style="width:min(860px,100%)"><div class="modalhead"><div><h2>Importações da B3</h2><div class="sub">Histórico das planilhas importadas. Você pode excluir uma importação recente e os registros criados exclusivamente por ela.</div></div><button class="close" onclick="closeB3ImportsManager()">×</button></div><div id="b3ImportsList" class="section mini">Carregando importações…</div><div class="modalactions"><button class="ghost" type="button" onclick="closeB3ImportsManager()">Fechar</button></div></div></div><div class="modalback utility-modal-back" id="operationManagerBack" onclick="if(event.target===this)closeOperationManager()"><div class="modal utility-modal" style="width:min(1100px,100%)"><div class="modalhead"><div><h2>Gerenciar lançamentos de ativos</h2><div class="sub">Filtre por classe e ativo para revisar ou excluir operações. A exclusão em massa é permanente.</div></div><button class="close" onclick="closeOperationManager()">×</button></div><div class="formgrid operation-manager-filters"><div class="field"><label for="operationManagerType">Classe do ativo</label><select id="operationManagerType" onchange="onOperationManagerTypeChange()"><option value="">Todas as classes</option></select></div><div class="field"><label for="operationManagerTicker">Ativo</label><select id="operationManagerTicker" onchange="renderOperationManagerRows()"><option value="">Todos os ativos</option></select></div></div><div id="operationManagerSummary" class="mini" style="margin:12px 0">Carregando lançamentos…</div><div id="operationManagerRows" class="tablewrap"></div><div class="modalactions" style="justify-content:space-between;flex-wrap:wrap"><div class="toolbar"><button class="danger" type="button" onclick="confirmDeleteManaged('ativo')">Excluir todos deste ativo</button><button class="danger" type="button" onclick="confirmDeleteManaged('todas')">Excluir todos os lançamentos</button></div><button class="ghost" type="button" onclick="closeOperationManager()">Fechar</button></div></div></div>
@@ -2703,8 +2707,8 @@ function summaryCategoryPagination(category,totalPages,currentPage){
  if(totalPages<=1)return '';
  const buttons=[...new Set([1,currentPage-1,currentPage,currentPage+1,totalPages].filter(n=>n>=1&&n<=totalPages))].sort((a,b)=>a-b);
  let previous=0;
- const pageButtons=buttons.map(n=>{const gap=previous&&n-previous>1?'<span>…</span>':'';previous=n;return gap+`<button type="button" class="${n===currentPage?'active':''}" ${n===currentPage?'aria-current="page"':''} onclick="changeSummaryAssetsPage('${category}',${n})">${n}</button>`;}).join('');
- return `<nav class="summary-assets-pagination" role="navigation" aria-label="Paginação de ${escapeHTML(labels[category]||category)}"><button type="button" ${currentPage===1?'disabled':''} onclick="changeSummaryAssetsPage('${category}',${currentPage-1})">Anterior</button>${pageButtons}<button type="button" ${currentPage===totalPages?'disabled':''} onclick="changeSummaryAssetsPage('${category}',${currentPage+1})">Próximo</button><span>Página ${currentPage} de ${totalPages}</span></nav>`;
+ const pageButtons=buttons.map(n=>{const gap=previous&&n-previous>1?'<span>…</span>':'';previous=n;return gap+`<button type="button" class="${n===currentPage?'active':''}" ${n===currentPage?'aria-current="page"':''} onclick='changeSummaryAssetsPage(${jsArg(category)},${n})' >${n}</button>`;}).join('');
+ return `<nav class="summary-assets-pagination" role="navigation" aria-label="Paginação de ${escapeHTML(labels[category]||category)}"><button type="button" ${currentPage===1?'disabled':''} onclick='changeSummaryAssetsPage(${jsArg(category)},${currentPage-1})' >Anterior</button>${pageButtons}<button type="button" ${currentPage===totalPages?'disabled':''} onclick='changeSummaryAssetsPage(${jsArg(category)},${currentPage+1})' >Próximo</button><span>Página ${currentPage} de ${totalPages}</span></nav>`;
 }
 function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
  const categories=[
@@ -2739,7 +2743,7 @@ function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
   }],
   ['quantidade','Quant.',i=>`<td data-col="quantidade">${Number(i.quantidade).toLocaleString('pt-BR',{maximumFractionDigits:4})}</td>`],
   ['preco_medio','Preço Médio',i=>`<td data-col="preco_medio">${brl(i.preco_medio)}</td>`],
-  ['preco_atual','Preço Atual',i=>`<td data-col="preco_atual">${i.cotacao_disponivel?brl(i.preco_atual):(i.tipo==='renda_fixa'?(i.aviso_calculo==='Indexador ou taxa não informado'?'Informe o indexador':'Cálculo indisponível'):'Sem cotação')}${i.cotacao_desatualizada?`<div class="mini" title="Última cotação conhecida; não representa necessariamente o preço atual">Última cotação: ${escapeHTML(i.cotacao_ultima_atualizacao||'data não registrada')} · desatualizada</div>`:''}${i.cotacao_origem==='Posição importada'?'<div class="mini">Referência 31/10/2026</div>':''}${i.tipo==='renda_fixa'&&i.cotacao_disponivel?'<div class="mini">Calculado pelo indexador</div>':''}</td>`],
+  ['preco_atual','Preço Atual',i=>{const hasReference=Boolean(i.cotacao_referencia_disponivel||i.cotacao_disponivel);const priceText=hasReference&&Number(i.preco_atual)>0?`<span class="price-update-tooltip-trigger" data-hint="${escapeHTML(quoteUpdatedHint(i.cotacao_ultima_atualizacao))}" aria-label="${escapeHTML(quoteUpdatedHint(i.cotacao_ultima_atualizacao))}" onmouseenter="showVariationMoneyTooltip(event,this)" onmousemove="moveVariationMoneyTooltip(event,this)" onmouseleave="hideVariationMoneyTooltip()" onfocus="showVariationMoneyTooltip(event,this)" onblur="hideVariationMoneyTooltip()" tabindex="0">${brl(i.preco_atual)}</span>`:(i.tipo==='renda_fixa'?(i.aviso_calculo==='Indexador ou taxa não informado'?'Informe o indexador':'Cálculo indisponível'):'Sem cotação');return `<td data-col="preco_atual">${priceText}${i.tipo==='renda_fixa'&&i.cotacao_disponivel?'<div class="mini">Calculado pelo indexador</div>':''}</td>`;}],
   ['preco_alvo','Meu Preço-Alvo',i=>`<td data-col="preco_alvo">—</td>`],
   ['preco_graham','Preço Justo (Graham)',i=>`<td data-col="preco_graham">—</td>`],
   ['preco_teto_bazin','Preço-teto (Bazin)',i=>`<td data-col="preco_teto_bazin">${i.preco_teto_bazin?brl(i.preco_teto_bazin):'—'}</td>`],
@@ -2761,7 +2765,7 @@ function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
  host.innerHTML=visibleCategories.map((cat,categoryIndex)=>{
   const categoryRows=rows.filter(item=>item.tipo===cat.key),total=categoryRows.reduce((sum,item)=>sum+Number(item.valor_atual||0),0),allCategoryItems=sortCategoryItems(categoryRows,cat.key,totalPortfolio),categoryPages=Math.max(1,Math.ceil(allCategoryItems.length/SUMMARY_ASSETS_PAGE_SIZE)),categoryPage=summaryMode?Math.min(Math.max(1,Number(summaryCategoryPages[cat.key]||1)),categoryPages):1,items=summaryMode?allCategoryItems.slice((categoryPage-1)*SUMMARY_ASSETS_PAGE_SIZE,categoryPage*SUMMARY_ASSETS_PAGE_SIZE):allCategoryItems,invested=allCategoryItems.reduce((sum,item)=>sum+Number(item.investido||0),0);
   if(summaryMode)summaryCategoryPages[cat.key]=categoryPage;
-  const variation=allCategoryItems.length?allCategoryItems.reduce((sum,item)=>sum+Number(item.pluggy_variacao_pct??item.variacao_dia??0),0)/allCategoryItems.length:0;
+  const validVariationItems=allCategoryItems.filter(item=>item.variacao_pct!==null&&item.variacao_pct!==undefined&&Number.isFinite(Number(item.variacao_pct)));const variation=validVariationItems.length?validVariationItems.reduce((sum,item)=>sum+Number(item.variacao_pct),0)/validVariationItems.length:null;
   // Rentabilidade da classe: média aritmética simples das rentabilidades
   // individuais. Cada ativo tem peso igual, independentemente do capital alocado.
   const profitability=allCategoryItems.length
@@ -2777,12 +2781,12 @@ function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
   const widthKeys=[...shown.map(([key])=>key),'opcoes'];
   const widthTotal=widthKeys.reduce((sum,key)=>sum+(columnWeights[key]||.9),0);
   const proportionalCols=`<colgroup>${widthKeys.map(key=>`<col style="width:${((columnWeights[key]||.9)/widthTotal*100).toFixed(3)}%">`).join('')}</colgroup>`;
-  const body=items.length?`<div class="tablewrap"><table class="data proportional-assets-table" data-position-table ${summaryMode&&cat.key==='renda_fixa'?'data-fixed-income-summary="true"':''}>${proportionalCols}<thead><tr>${shown.map(([key,label])=>{const sort=positionSortState[cat.key]||{key:'valor_atual',direction:'desc'};const active=sort.key===key;const arrow=active?(sort.direction==='desc'?'▼':'▲'):'';return `<th data-col="${key}" class="position-sort-th"><button type="button" class="position-sort-button ${active?'is-sorted':''}" onclick="sortPositionAssets('${cat.key}','${key}')" title="Ordenar por ${escapeHTML(label)}">${label}<span class="position-sort-indicator" aria-hidden="true">${arrow}</span></button></th>`;}).join('')}<th data-col="opcoes">Opções</th></tr></thead><tbody>${items.map(i=>`<tr>${shown.map(([,label,renderCell])=>renderCell(i)).join('')}<td data-col="opcoes" class="asset-options-cell"><button type="button" class="asset-options-trigger" aria-label="Opções de ${escapeHTML(i.ticker)}" onclick='openAssetMenu(event,${jsArg(i.ticker)})'>•••</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${summaryMode&&allCategoryItems.length?"Os ativos desta classe estão em outra página.":"Nenhum ativo cadastrado nesta categoria."}</div>`;
-  const categoryMetrics=`<span class="asset-category-title"><span class="asset-category-icon">${cat.icon}</span>${cat.name}</span><span class="asset-category-metric">Ativos<b>${allCategoryItems.length}</b></span><span class="asset-category-metric">Valor total<b>${brl(total)}</b></span>${cat.key==='renda_fixa'?'<span class="asset-category-metric category-metric-placeholder" aria-hidden="true"><span>Variação</span><b>—</b></span>':`<span class="asset-category-metric">Variação<b class="${allCategoryItems.length?'metric-change '+(variation>=0?'green':'red'):'category-empty-value'}">${allCategoryItems.length?`${variation>=0?'▲':'▼'} ${pct(variation)}`:'-'}</b></span>`}<span class="asset-category-metric">Rentabilidade<b>${allCategoryItems.length?`<span class="variation-pill ${profitability>=0?'positive':'negative'}">${profitability>=0?'↗':'↘'} ${pct(profitability)}</span>`:'<span class="category-empty-pill">-</span>'}</b></span><span class="asset-category-metric">% na carteira<b>${Math.round(portfolioPct)}% / ${Math.round(ideal)}%</b></span><span class="asset-category-chevron">⌄</span>`;
-  const moveControls=`<div class="position-category-move">${categoryIndex>0?`<button type="button" class="position-category-arrow" title="Mover ${cat.name} para cima" aria-label="Mover ${cat.name} para cima" onclick="event.stopPropagation();${summaryMode?'moveSummaryCategory':'movePositionCategory'}('${cat.key}',-1)">↑</button>`:''}${categoryIndex<visibleCategories.length-1?`<button type="button" class="position-category-arrow" title="Mover ${cat.name} para baixo" aria-label="Mover ${cat.name} para baixo" onclick="event.stopPropagation();${summaryMode?'moveSummaryCategory':'movePositionCategory'}('${cat.key}',1)">↓</button>`:''}</div>`;
+  const body=items.length?`<div class="tablewrap"><table class="data proportional-assets-table" data-position-table ${summaryMode&&cat.key==='renda_fixa'?'data-fixed-income-summary="true"':''}>${proportionalCols}<thead><tr>${shown.map(([key,label])=>{const sort=positionSortState[cat.key]||{key:'valor_atual',direction:'desc'};const active=sort.key===key;const arrow=active?(sort.direction==='desc'?'▼':'▲'):'';return `<th data-col="${key}" class="position-sort-th"><button type="button" class="position-sort-button ${active?'is-sorted':''}" onclick='sortPositionAssets(${jsArg(cat.key)},${jsArg(key)})'  title="Ordenar por ${escapeHTML(label)}">${label}<span class="position-sort-indicator" aria-hidden="true">${arrow}</span></button></th>`;}).join('')}<th data-col="opcoes">Opções</th></tr></thead><tbody>${items.map(i=>`<tr>${shown.map(([,label,renderCell])=>renderCell(i)).join('')}<td data-col="opcoes" class="asset-options-cell"><button type="button" class="asset-options-trigger" aria-label="Opções de ${escapeHTML(i.ticker)}" onclick='openAssetMenu(event,${jsArg(i.ticker)})'>•••</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${summaryMode&&allCategoryItems.length?"Os ativos desta classe estão em outra página.":"Nenhum ativo cadastrado nesta categoria."}</div>`;
+  const categoryMetrics=`<span class="asset-category-title"><span class="asset-category-icon">${cat.icon}</span>${cat.name}</span><span class="asset-category-metric">Ativos<b>${allCategoryItems.length}</b></span><span class="asset-category-metric">Valor total<b>${brl(total)}</b></span>${cat.key==='renda_fixa'?'<span class="asset-category-metric category-metric-placeholder" aria-hidden="true"><span>Variação</span><b>—</b></span>':`<span class="asset-category-metric">Variação<b class="${validVariationItems.length?'metric-change '+(variation>=0?'green':'red'):'category-empty-value'}">${validVariationItems.length?`${variation>=0?'▲':'▼'} ${pct(variation)}`:'-'}</b></span>`}<span class="asset-category-metric">Rentabilidade<b>${allCategoryItems.length?`<span class="variation-pill ${profitability>=0?'positive':'negative'}">${profitability>=0?'↗':'↘'} ${pct(profitability)}</span>`:'<span class="category-empty-pill">-</span>'}</b></span><span class="asset-category-metric">% na carteira<b>${Math.round(portfolioPct)}% / ${Math.round(ideal)}%</b></span><span class="asset-category-chevron">⌄</span>`;
+  const moveControls=`<div class="position-category-move">${categoryIndex>0?`<button type="button" class="position-category-arrow" title="Mover ${cat.name} para cima" aria-label="Mover ${cat.name} para cima" onclick='event.stopPropagation();${summaryMode?'moveSummaryCategory':'movePositionCategory'}(${jsArg(cat.key)},-1)' >↑</button>`:''}${categoryIndex<visibleCategories.length-1?`<button type="button" class="position-category-arrow" title="Mover ${cat.name} para baixo" aria-label="Mover ${cat.name} para baixo" onclick='event.stopPropagation();${summaryMode?'moveSummaryCategory':'movePositionCategory'}(${jsArg(cat.key)},1)' >↓</button>`:''}</div>`;
   const header=summaryMode
-   ? `<div class="summary-category-head">${moveControls}<button type="button" class="asset-category-head summary-category-toggle" onclick="toggleSummaryAssetGroup('${cat.key}')" aria-expanded="${expanded}">${categoryMetrics}</button></div>`
-   : `<div class="position-category-head">${moveControls}<button type="button" class="asset-category-head position-group-toggle" onclick="toggleAssetGroup('${cat.key}')" aria-expanded="${expanded}">${categoryMetrics}</button></div>`;
+   ? `<div class="summary-category-head">${moveControls}<button type="button" class="asset-category-head summary-category-toggle" onclick='toggleSummaryAssetGroup(${jsArg(cat.key)})'  aria-expanded="${expanded}">${categoryMetrics}</button></div>`
+   : `<div class="position-category-head">${moveControls}<button type="button" class="asset-category-head position-group-toggle" onclick='toggleAssetGroup(${jsArg(cat.key)})'  aria-expanded="${expanded}">${categoryMetrics}</button></div>`;
   return `<section class="asset-category ${expanded?'':'collapsed'} ${summaryMode?'summary-draggable-category':''}" ${summaryMode?`data-category-key="${cat.key}"`:!summaryMode?`data-category-key="${cat.key}"`:``}>${header}<div class="asset-category-body">${body}${summaryMode?summaryCategoryPagination(cat.key,categoryPages,categoryPage):''}</div></section>`;
  }).join('');
  applyPositionColumnPrefs();
@@ -2852,24 +2856,29 @@ function moveIdealBalanceTooltip(event,el){
  if(tip && document.activeElement!==el)showIdealBalanceTooltip(event,el);
 }
 
+function quoteUpdatedHint(value){
+ if(!value)return 'Data da última atualização não disponível';
+ const raw=String(value);
+ // Datas de candles diários são datas de pregão, não horários locais.
+ const dayOnly=raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+ if(dayOnly)return `Última atualização: ${dayOnly[3]}/${dayOnly[2]}/${dayOnly[1]}`;
+ const parsed=new Date(raw);
+ if(Number.isNaN(parsed.getTime()))return 'Data da última atualização não disponível';
+ return `Última atualização: ${parsed.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'})}`;
+}
+
 function variationMoneyHint(item,change){
- const amount=item&&item.pluggy_variacao_valor!==null&&item.pluggy_variacao_valor!==undefined?Number(item.pluggy_variacao_valor):Number(item.variacao_valor??item.lucro??(Number(item.quantidade||0)*Number(item.preco_atual||0)*Number(change||0)/100));
+ // Converte exatamente o percentual exibido para reais usando o custo da posição.
+ const base=Number(item?.investido||0);
+ const amount=Number.isFinite(base)?base*Number(change||0)/100:0;
  return `Quanto uma variação de ${pct(change)} representa?\n${brl(amount)}`;
 }
 
 function profitabilityMoneyHint(item,profitability){
- // A rentabilidade total inclui ganho/perda de preço e proventos recebidos.
- // Pluggy fornece o retorno monetário consolidado; sem esse histórico,
- // somamos a variação de preço ao total de proventos do ativo.
- let amount;
- if(item&&item.pluggy_retorno_valor!==null&&item.pluggy_retorno_valor!==undefined){
-  amount=Number(item.pluggy_retorno_valor);
- }else if(item){
-  amount=Number(item.lucro||0)+Number(item.proventos||0);
- }else{
-  amount=0;
- }
- if(!Number.isFinite(amount))amount=Number(item?.investido||0)*Number(profitability||0)/100;
+ // Usa o mesmo percentual individual exibido e a mesma base investida.
+ // Assim, o tooltip não diverge de um retorno histórico diferente da Pluggy.
+ const base=Number(item?.investido||0);
+ const amount=Number.isFinite(base)?base*Number(profitability||0)/100:0;
  return `Quanto uma rentabilidade de ${pct(profitability)} representa?\n${brl(amount)}`;
 }
  
@@ -2882,7 +2891,7 @@ window.showVariationMoneyTooltip=function showVariationMoneyTooltip(event,el){
  if(!text)return;
  let tip=document.getElementById('variationMoneyFloatingTooltip');
  if(!tip){tip=document.createElement('div');tip.id='variationMoneyFloatingTooltip';document.body.appendChild(tip);}
- tip.className='variation-money-floating-tooltip '+(el.classList.contains('positive')?'is-positive':'is-negative');
+ tip.className='variation-money-floating-tooltip '+(el.classList.contains('positive')?'is-positive':el.classList.contains('negative')?'is-negative':'is-neutral');
  tip.textContent=text;
  tip.style.visibility='hidden';tip.style.display='block';
  const rect=el.getBoundingClientRect(),width=Math.min(340,window.innerWidth-24);
@@ -3091,7 +3100,7 @@ async function openAssetTransactions(ticker,page=1){
   const dateBR=v=>v?new Date(String(v).slice(0,10)+'T12:00:00').toLocaleDateString('pt-BR'):'—';
   document.getElementById('transactionsModalContent').innerHTML=`
    <div class="tablewrap"><table class="data transaction-modal-table"><thead><tr><th>Tipo de ordem</th><th>Data do lançamento</th><th>Quantidade</th><th>Preço unitário</th><th>Valor total</th><th>Fonte</th><th>Opções</th></tr></thead><tbody>
-   ${visible.length?visible.map(op=>`<tr><td><span class="transaction-side ${op.lado==='compra'?'green':'red'}">${op.lado==='compra'?'↻':'↗'} ${op.lado==='compra'?'Compra':'Venda'}</span></td><td>${dateBR(op.data_execucao||op.data)}</td><td>${Number(op.quantidade).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:4})}</td><td>${money(op.preco)}</td><td>${money(Number(op.quantidade)*Number(op.preco)+Number(op.custos||0))}</td><td><span class="source-tag">Manual</span></td><td><button class="icon-action" title="Editar" onclick="editAssetOperation(${op.id})">♢</button><button class="icon-action danger" title="Excluir" onclick="deleteAssetOperation(${op.id})">♜</button></td></tr>`).join(''):'<tr><td colspan="7" class="empty">Nenhum lançamento encontrado para este ativo.</td></tr>'}
+   ${visible.length?visible.map(op=>`<tr><td><span class="transaction-side ${op.lado==='compra'?'green':'red'}">${op.lado==='compra'?'↻':'↗'} ${op.lado==='compra'?'Compra':'Venda'}</span></td><td>${dateBR(op.data_execucao||op.data)}</td><td>${Number(op.quantidade).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:4})}</td><td>${money(op.preco)}</td><td>${money(Number(op.quantidade)*Number(op.preco)+Number(op.custos||0))}</td><td><span class="source-tag">Manual</span></td><td><button class="icon-action" title="Editar" onclick="editAssetOperation(${Number(op.id)})">♢</button><button class="icon-action danger" title="Excluir" onclick="deleteAssetOperation(${Number(op.id)})">♜</button></td></tr>`).join(''):'<tr><td colspan="7" class="empty">Nenhum lançamento encontrado para este ativo.</td></tr>'}
    </tbody></table></div>
    ${totalPages>1?`<div class="modal-pagination"><button ${assetTransactionsPage===1?'disabled':''} onclick='openAssetTransactions(${jsArg(ticker)},${assetTransactionsPage-1})'>Anterior</button>${Array.from({length:totalPages},(_,i)=>`<button class="${assetTransactionsPage===i+1?'active':''}" onclick='openAssetTransactions(${jsArg(ticker)},${i+1})'>${i+1}</button>`).join('')}<button ${assetTransactionsPage===totalPages?'disabled':''} onclick='openAssetTransactions(${jsArg(ticker)},${assetTransactionsPage+1})'>Próximo</button></div>`:''}`;
  }catch(e){document.getElementById('transactionsModalContent').innerHTML='<div class="empty">Não foi possível carregar os lançamentos.</div>';}
@@ -3192,7 +3201,7 @@ function openFixedIncomeSalePicker(){
  const body=document.getElementById('fixedIncomeSaleRows');
  body.innerHTML=holdings.length?holdings.map((item,index)=>`
   <tr class="fixed-sale-row" data-ticker="${escapeHTML(item.ticker)}" onclick='selectFixedIncomeSale(${jsArg(item.ticker)})'>
-   <td><label class="fixed-sale-choice"><input type="radio" name="fixedIncomeSaleChoice" value="${escapeHTML(item.ticker)}" onchange="selectFixedIncomeSale('${escapeHTML(item.ticker)}')"><span>${escapeHTML(item.nome||item.ticker)}</span></label></td>
+   <td><label class="fixed-sale-choice"><input type="radio" name="fixedIncomeSaleChoice" value="${escapeHTML(item.ticker)}" onchange='selectFixedIncomeSale(${jsArg(item.ticker)})' ><span>${escapeHTML(item.nome||item.ticker)}</span></label></td>
    <td>${brl(item.valor_atual??(Number(item.quantidade)*Number(item.preco_medio)))}</td><td class="muted">›</td>
   </tr>`).join(''):rowEmpty(3,'Nenhum investimento de renda fixa disponível para venda.');
  document.getElementById('fixedIncomeSaleConfirm').disabled=!holdings.length;
@@ -3311,7 +3320,7 @@ function renderProvChartPeriodMenu(availableYears){
  const yearValue=provChartRange.startsWith('ano:')?provChartRange.slice(4):'';
  const selectedLabel=quick.find(x=>x[0]===provChartRange)?.[1]||(yearValue?yearValue:'Últimos 12 meses');
  if(label)label.textContent=selectedLabel;
- const option=(value,text)=>`<label class="period-option ${provChartRange===value?'active':''}"><input type="radio" name="provChartPeriodChoice" ${provChartRange===value?'checked':''} onchange="setProvChartRange('${value}')"><span>${text}</span></label>`;
+ const option=(value,text)=>`<label class="period-option ${provChartRange===value?'active':''}"><input type="radio" name="provChartPeriodChoice" ${provChartRange===value?'checked':''} onchange='setProvChartRange(${jsArg(value)})' ><span>${text}</span></label>`;
  menu.innerHTML=`<div class="period-title">Período</div><div class="period-section"><div class="period-title">Filtros rápidos</div>${quick.map(([value,text])=>option(value,escapeHTML(text))).join('')}</div><div class="period-divider"></div><div class="period-section"><div class="period-title">Filtro anual</div>${years.map(year=>option('ano:'+year,String(year))).join('')||'<span class="mini">Nenhum ano disponível.</span>'}</div>`;
 }
 function setProvMode(mode){
@@ -3357,7 +3366,7 @@ function renderProvHistoryFilters(rows,eventType){
  const statusMenu=document.getElementById('provHistoryStatusMenu');
  if(statusMenu){
   const choices=[['todos','Recebidos e Futuros'],['Pago','Recebidos'],['A receber','Futuros']];
-  statusMenu.innerHTML=choices.map(([value,label])=>`<button type="button" role="option" aria-selected="${provHistoryStatus===value}" class="native-dropdown-option ${provHistoryStatus===value?'active':''}" onclick="setProvHistoryStatus('${value}')">${label}</button>`).join('');
+  statusMenu.innerHTML=choices.map(([value,label])=>`<button type="button" role="option" aria-selected="${provHistoryStatus===value}" class="native-dropdown-option ${provHistoryStatus===value?'active':''}" onclick='setProvHistoryStatus(${jsArg(value)})' >${label}</button>`).join('');
  }
  const typeMenu=document.getElementById('provHistoryTypeMenu');
  const typeValues=[...new Set([...((state.itens||[]).map(x=>x.tipo).filter(Boolean)),...rows.map(eventType).filter(Boolean)])].sort((a,b)=>(labels[a]||a).localeCompare(labels[b]||b,'pt-BR'));
@@ -3365,7 +3374,7 @@ function renderProvHistoryFilters(rows,eventType){
  if(typeMenu){
   const selected=provHistoryTypes[0]||'todos';
   typeMenu.innerHTML=[['todos','Todos os tipos'],...typeValues.map(value=>[value,labels[value]||value])]
-   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selected===value}" class="native-dropdown-option ${selected===value?'active':''}" onclick="setProvHistoryType('${escapeHTML(value)}')">${escapeHTML(text)}</button>`).join('');
+   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selected===value}" class="native-dropdown-option ${selected===value?'active':''}" onclick='setProvHistoryType(${jsArg(value)})' >${escapeHTML(text)}</button>`).join('');
   const trigger=document.querySelector('#provHistoryTypeWrap .prov-history-trigger span:first-child');
   if(trigger)trigger.textContent=selected==='todos'?'Tipo de ativo':(labels[selected]||selected);
  }
@@ -3375,7 +3384,7 @@ function renderProvHistoryFilters(rows,eventType){
  if(assetMenu){
   const selected=provHistoryAssets[0]||'todos';
   assetMenu.innerHTML=[['todos','Todos os ativos'],...assetValues.map(value=>[value,value])]
-   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selected===value}" class="native-dropdown-option ${selected===value?'active':''}" onclick="setProvHistoryAsset('${escapeHTML(value)}')">${escapeHTML(text)}</button>`).join('');
+   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selected===value}" class="native-dropdown-option ${selected===value?'active':''}" onclick='setProvHistoryAsset(${jsArg(value)})' >${escapeHTML(text)}</button>`).join('');
   const trigger=document.querySelector('#provHistoryAssetWrap .prov-history-trigger span:first-child');
   if(trigger)trigger.textContent=selected==='todos'?'Ativos':selected;
  }
@@ -3587,14 +3596,14 @@ function renderMyProvFilters(rows,eventType){
  const monthNames=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
  const quickLabel=quick.find(x=>x[0]===myProvPeriod)?.[1];
  if(label)label.textContent=quickLabel||(myProvPeriod.startsWith('mes:')?`${monthNames[Number(myProvPeriod.split(':')[2])-1]}/${myProvPeriod.split(':')[1]}`:'Ano atual');
- const option=(value,text)=>`<label class="period-option ${myProvPeriod===value?'active':''}"><input type="radio" name="myProvPeriodChoice" ${myProvPeriod===value?'checked':''} onchange="setMyProvPeriod('${value}')"><span>${text}</span></label>`;
+ const option=(value,text)=>`<label class="period-option ${myProvPeriod===value?'active':''}"><input type="radio" name="myProvPeriodChoice" ${myProvPeriod===value?'checked':''} onchange='setMyProvPeriod(${jsArg(value)})' ><span>${text}</span></label>`;
  if(menu)menu.innerHTML=`<div class="period-title">Período</div><div class="period-section"><div class="period-title">Filtros rápidos</div>${quick.map(([v,t])=>option(v,escapeHTML(t))).join('')}</div><div class="period-divider"></div><div class="period-section"><div class="period-title">Filtro mensal</div><div class="my-prov-month-nav"><button type="button" aria-label="Ano anterior" onclick="setMyProvMonthYear(-1)">‹</button><span>${myProvMonthYear}</span><button type="button" aria-label="Próximo ano" onclick="setMyProvMonthYear(1)">›</button></div><div class="period-months">${monthNames.map((m,i)=>option(`mes:${myProvMonthYear}:${String(i+1).padStart(2,'0')}`,m)).reverse().join('')}</div></div>`;
  const typeMenu=document.getElementById('myProvTypeMenu'),typeValues=[...new Set([...((state.itens||[]).map(x=>x.tipo).filter(Boolean)),...rows.map(eventType).filter(Boolean)])].sort((a,b)=>(labels[a]||a).localeCompare(labels[b]||b,'pt-BR'));
  myProvTypes=myProvTypes.filter(x=>typeValues.includes(x));
  const selectedType=myProvTypes[0]||'todos';
  if(typeMenu){
   typeMenu.innerHTML=[['todos','Todos os tipos'],...typeValues.map(v=>[v,labels[v]||v])]
-   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selectedType===value}" class="native-dropdown-option ${selectedType===value?'active':''}" onclick="setMyProvType('${escapeHTML(value)}')">${escapeHTML(text)}</button>`).join('');
+   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selectedType===value}" class="native-dropdown-option ${selectedType===value?'active':''}" onclick='setMyProvType(${jsArg(value)})' >${escapeHTML(text)}</button>`).join('');
   const trigger=document.querySelector('#myProvTypeWrap .prov-history-trigger span:first-child');
   if(trigger)trigger.textContent=selectedType==='todos'?'Tipo de ativo':(labels[selectedType]||selectedType);
  }
@@ -3603,7 +3612,7 @@ function renderMyProvFilters(rows,eventType){
  const selectedAsset=myProvAssets[0]||'todos';
  if(assetMenu){
   assetMenu.innerHTML=[['todos','Todos os ativos'],...assetValues.map(v=>[v,v])]
-   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selectedAsset===value}" class="native-dropdown-option ${selectedAsset===value?'active':''}" onclick="setMyProvAsset('${escapeHTML(value)}')">${escapeHTML(text)}</button>`).join('');
+   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selectedAsset===value}" class="native-dropdown-option ${selectedAsset===value?'active':''}" onclick='setMyProvAsset(${jsArg(value)})' >${escapeHTML(text)}</button>`).join('');
   const trigger=document.querySelector('#myProvAssetWrap .prov-history-trigger span:first-child');
   if(trigger)trigger.textContent=selectedAsset==='todos'?'Ativos':selectedAsset;
  }
@@ -4024,7 +4033,7 @@ let returnBenchmarkRequestKey = '';
 
 function returnBenchmarkSelectHTML(cardKey){
  const saved=(()=>{try{const v=localStorage.getItem('lonelyWalletReturnBenchmark_'+cardKey)||'';return v==='CDI'?'':v}catch(e){return ''}})();
- return `<div class="return-benchmark-row"><label for="returnBenchmark_${cardKey}">Comparar com</label><select id="returnBenchmark_${cardKey}" class="return-benchmark-select" onchange="setReturnCardBenchmark('${cardKey}',this.value)"><option value="">Não comparar</option>${RETURN_BENCHMARKS.map(code=>`<option value="${code}" ${saved===code?'selected':''}>${code}</option>`).join('')}</select><small class="return-card-comparison" id="returnBenchmarkStatus_${cardKey}">Selecione um índice para comparar.</small></div>`;
+ return `<div class="return-benchmark-row"><label for="returnBenchmark_${cardKey}">Comparar com</label><select id="returnBenchmark_${cardKey}" class="return-benchmark-select" onchange='setReturnCardBenchmark(${jsArg(cardKey)},this.value)' ><option value="">Não comparar</option>${RETURN_BENCHMARKS.map(code=>`<option value="${code}" ${saved===code?'selected':''}>${code}</option>`).join('')}</select><small class="return-card-comparison" id="returnBenchmarkStatus_${cardKey}">Selecione um índice para comparar.</small></div>`;
 }
 function setReturnCardBenchmark(cardKey,value){
  if(!['total','12m','month'].includes(cardKey)||!(value===''||RETURN_BENCHMARKS.includes(value)))return;
@@ -4331,9 +4340,9 @@ function operationGroupPagination(key,totalPages,currentPage){
  const ordered=[...pages].sort((a,b)=>a-b);let previous=0;
  const pageButtons=ordered.map(n=>{
   const gap=previous&&n-previous>1?'<span class="page-info">…</span>':'';previous=n;
-  return gap+`<button type="button" class="${n===currentPage?'active':''}" ${n===currentPage?'aria-current="page"':''} onclick="setOperationGroupPage('${encoded}',${n})">${n}</button>`;
+  return gap+`<button type="button" class="${n===currentPage?'active':''}" ${n===currentPage?'aria-current="page"':''} onclick='setOperationGroupPage(${jsArg(encoded)},${n})' >${n}</button>`;
  }).join('');
- return `<nav class="operation-group-pagination" aria-label="Paginação dos lançamentos de ${escapeHTML(labels[key]||key)}"><button type="button" ${currentPage===1?'disabled':''} onclick="setOperationGroupPage('${encoded}',${currentPage-1})">Anterior</button>${pageButtons}<button type="button" ${currentPage===totalPages?'disabled':''} onclick="setOperationGroupPage('${encoded}',${currentPage+1})">Próximo</button><span class="page-info">${rowsCountLabel(totalPages,currentPage)}</span></nav>`;
+ return `<nav class="operation-group-pagination" aria-label="Paginação dos lançamentos de ${escapeHTML(labels[key]||key)}"><button type="button" ${currentPage===1?'disabled':''} onclick='setOperationGroupPage(${jsArg(encoded)},${currentPage-1})' >Anterior</button>${pageButtons}<button type="button" ${currentPage===totalPages?'disabled':''} onclick='setOperationGroupPage(${jsArg(encoded)},${currentPage+1})' >Próximo</button><span class="page-info">${rowsCountLabel(totalPages,currentPage)}</span></nav>`;
 }
 function rowsCountLabel(totalPages,currentPage){return `Página ${currentPage} de ${totalPages}`;}
 function renderOperationsByType(allOps){
@@ -4437,7 +4446,7 @@ document.getElementById('goalRows').innerHTML=(state.metas||[]).length?state.met
  const progress=target>0?Math.max(0,Math.min(100,current/target*100)):0,remaining=Math.max(0,target-current);
  let months=null;if(monthly>0&&remaining>0){const rate=Math.pow(1+Math.max(-99,annual)/100,1/12)-1;let projected=current;months=0;while(projected<target&&months<1200){projected=projected*(1+rate)+monthly;months++;}if(months>=1200&&projected<target)months=null;}const eta=remaining<=0?'Concluída':months?new Date(new Date().getFullYear(),new Date().getMonth()+months,1).toLocaleDateString('pt-BR',{month:'long',year:'numeric'}):'Não estimada';
  const title=m.nome||'Meta';const typeLabel=m.tipo==='proventos'?'Meta de Proventos':m.tipo==='ativos'?'Meta de Ativo':'Meta de Patrimônio';
- return `<div class="panel goal-dashboard-card"><div class="goalrow"><div class="goal-title"><span class="goal-icon">${m.tipo==='proventos'?'◉':m.tipo==='ativos'?'▣':'◎'}</span><span><small class="mini">${typeLabel}</small><br>${escapeHTML(title)}</span></div><button class="ghost" onclick="removeGoal(${m.id})">Excluir</button></div><div class="goal-progress-head"><strong>${pct(progress)}</strong><span>do objetivo alcançado</span></div><div class="progress"><span style="width:${progress}%"></span></div><div class="goal-dashboard-metrics"><div class="goal-dashboard-metric">${currentLabel}<b>${brl(current)}</b></div>${m.tipo!=='proventos'?`<div class="goal-dashboard-metric">Aporte mensal<b>${brl(monthly)}</b></div>`:''}<div class="goal-dashboard-metric">Faltam<b>${brl(remaining)}</b></div><div class="goal-dashboard-metric">Conclusão estimada<b>${eta}</b></div><div class="goal-dashboard-metric">Objetivo<b>${brl(target)}${m.tipo==='proventos'?'/mês':''}</b></div>${m.ticker?`<div class="goal-dashboard-metric">Ativo<b>${escapeHTML(m.ticker)}</b></div>`:''}${annual?`<div class="goal-dashboard-metric">Variação anual estimada<b>${pct(annual)}</b></div>`:''}</div></div>`;
+ return `<div class="panel goal-dashboard-card"><div class="goalrow"><div class="goal-title"><span class="goal-icon">${m.tipo==='proventos'?'◉':m.tipo==='ativos'?'▣':'◎'}</span><span><small class="mini">${typeLabel}</small><br>${escapeHTML(title)}</span></div><button class="ghost" onclick="removeGoal(${Number(m.id)})">Excluir</button></div><div class="goal-progress-head"><strong>${pct(progress)}</strong><span>do objetivo alcançado</span></div><div class="progress"><span style="width:${progress}%"></span></div><div class="goal-dashboard-metrics"><div class="goal-dashboard-metric">${currentLabel}<b>${brl(current)}</b></div>${m.tipo!=='proventos'?`<div class="goal-dashboard-metric">Aporte mensal<b>${brl(monthly)}</b></div>`:''}<div class="goal-dashboard-metric">Faltam<b>${brl(remaining)}</b></div><div class="goal-dashboard-metric">Conclusão estimada<b>${eta}</b></div><div class="goal-dashboard-metric">Objetivo<b>${brl(target)}${m.tipo==='proventos'?'/mês':''}</b></div>${m.ticker?`<div class="goal-dashboard-metric">Ativo<b>${escapeHTML(m.ticker)}</b></div>`:''}${annual?`<div class="goal-dashboard-metric">Variação anual estimada<b>${pct(annual)}</b></div>`:''}</div></div>`;
  }).join(''):'<div class="panel empty">Você ainda não criou metas. Defina um objetivo para acompanhar seu progresso.</div>';
 }
 const API_PROVIDER_FALLBACK=[
@@ -4491,7 +4500,7 @@ function renderAPIProviders(){
   </div>
   <div id="pluggyState" class="pluggy-state mini">Carregando conexões…</div><div id="pluggyInvestments" class="pluggy-investments"></div>
 `:
-  p.auth?`<div class="mini">${p.connected?'Conectada ao motor atual de dados':'Fonte complementar; cobertura depende do provedor e do plano.'}</div><label class="mini" for="apiToken_${p.id}">Token de integração</label><input type="password" id="apiToken_${p.id}" autocomplete="new-password" placeholder="${p.masked?'Cadastrado: '+p.masked:'Cole seu token aqui'}"/><div class="api-provider-actions"><button class="primary" type="button" onclick="saveAPIProvider('${p.id}')">Salvar token</button><button class="ghost" type="button" onclick="testAPIProvider('${p.id}')">Testar conexão</button>${p.configured?`<button class="ghost" type="button" onclick="toggleAPIProvider('${p.id}',${!p.enabled})">${p.enabled?'Desativar':'Ativar'}</button><button class="ghost" type="button" onclick="deleteAPIProvider('${p.id}')">Remover</button>`:''}</div>`:
+  p.auth?`<div class="mini">${p.connected?'Conectada ao motor atual de dados':'Fonte complementar; cobertura depende do provedor e do plano.'}</div><label class="mini" for="apiToken_${p.id}">Token de integração</label><input type="password" id="apiToken_${p.id}" autocomplete="new-password" placeholder="${p.masked?'Cadastrado: '+p.masked:'Cole seu token aqui'}"/><div class="api-provider-actions"><button class="primary" type="button" onclick='saveAPIProvider(${jsArg(p.id)})' >Salvar token</button><button class="ghost" type="button" onclick='testAPIProvider(${jsArg(p.id)})'>Testar conexão</button>${p.configured?`<button class="ghost" type="button" onclick='toggleAPIProvider(${jsArg(p.id)},${!p.enabled})'>${p.enabled?'Desativar':'Ativar'}</button><button class="ghost" type="button" onclick='deleteAPIProvider(${jsArg(p.id)})'>Remover</button>`:''}</div>`:
   `<div class="api-provider-actions"><span class="mini">${p.id==='b3'?'Acesso mediante contrato e licença.':'Não é necessário cadastrar token.'}</span></div>`}
   <div class="api-status" id="apiStatus_${p.id}">${p.auth&&p.updated_at?'Última alteração: '+new Date(p.updated_at).toLocaleString('pt-BR'):''}</div>
 
@@ -4580,11 +4589,8 @@ async function loadPluggyAutoSyncSettings(){
  return pluggyAutoSyncIntervalMinutes;
 }
 function configurePluggyAutoSyncTimer(){
+ // A frequência é executada pelo agendador do servidor; o navegador não controla o cronômetro.
  if(pluggyAutoSyncTimer){clearInterval(pluggyAutoSyncTimer);pluggyAutoSyncTimer=null;}
- if(pluggyAutoSyncIntervalMinutes>0){
-  runPluggyAutoSync();
-  pluggyAutoSyncTimer=setInterval(runPluggyAutoSync,60000);
- }
 }
 async function savePluggyAutoSyncInterval(selectOrValue){
  const select=selectOrValue&&typeof selectOrValue==='object'?selectOrValue:document.getElementById('pluggyAutoSyncInterval');
@@ -4613,22 +4619,11 @@ async function savePluggyAutoSyncInterval(selectOrValue){
  }
 }
 async function runPluggyAutoSync(){
- if(pluggyAutoSyncRunning||document.hidden)return;
- const interval=Number(pluggyAutoSyncIntervalMinutes||0);
- if(!interval)return;
- let last=0;try{last=Number(localStorage.getItem('lonelyWalletPluggyAutoSyncAt')||0)}catch(e){}
- if(Date.now()-last<interval*60000)return;
- pluggyAutoSyncRunning=true;
- try{
-  await api('/api/pluggy/sync',{method:'POST',body:JSON.stringify({force:true}),skipAutoRefresh:true,timeoutMs:900000});
-  try{localStorage.setItem('lonelyWalletPluggyAutoSyncAt',String(Date.now()))}catch(e){}
-  if(typeof loadPluggyState==='function')await loadPluggyState();
-  if(typeof refresh==='function')refresh();
- }catch(error){
-  const host=document.getElementById('pluggyState');
-  if(host)host.textContent='Falha na sincronização automática: '+(error.message||'erro desconhecido');
- }finally{pluggyAutoSyncRunning=false;}
+ // Mantido como ponto de compatibilidade para chamadas antigas da interface.
+ // A sincronização automática é responsabilidade do servidor, mesmo com o navegador fechado.
+ return false;
 }
+
 async function startPluggyAutoSync(){
  await loadPluggyAutoSyncSettings();
 }
@@ -5117,7 +5112,7 @@ function renderIRPF(){
  const incomes=irpfData.rendimentos||[];
  const incomeRows=group=>{
   const rows=incomes.filter(item=>item.grupo===group);
-  return rows.length?rows.map(item=>`<tr><td>${escapeHTML(item.natureza)}</td><td>${escapeHTML(item.fonte_pagadora)}</td><td>${escapeHTML(item.documento||'—')}</td><td>${dateBR(item.data)}</td><td>${brl(item.valor)}</td><td><button class="tax-action" onclick="editIRPFIncome(${item.id})">Editar</button><button class="tax-action danger" onclick="deleteIRPFIncome(${item.id})">Excluir</button></td></tr>`).join(''):rowEmpty(6,'Nenhum rendimento cadastrado neste grupo.');
+  return rows.length?rows.map(item=>`<tr><td>${escapeHTML(item.natureza)}</td><td>${escapeHTML(item.fonte_pagadora)}</td><td>${escapeHTML(item.documento||'—')}</td><td>${dateBR(item.data)}</td><td>${brl(item.valor)}</td><td><button class="tax-action" onclick="editIRPFIncome(${Number(item.id)})">Editar</button><button class="tax-action danger" onclick="deleteIRPFIncome(${Number(item.id)})">Excluir</button></td></tr>`).join(''):rowEmpty(6,'Nenhum rendimento cadastrado neste grupo.');
  };
  document.getElementById('irpfIsentoRows').innerHTML=incomeRows('isento');
  document.getElementById('irpfExclusivaRows').innerHTML=incomeRows('exclusiva');
@@ -5172,7 +5167,7 @@ function renderDARFs(){
  const stats=[['Total registrado',brl(darfItems.reduce((s,x)=>s+Number(x.valor||0),0)),'Todas as guias do ano'],['Pendente',brl(pending.reduce((s,x)=>s+Number(x.valor||0),0)),`${pending.length} guia(s)`],['Pago',brl(paid.reduce((s,x)=>s+Number(x.valor||0),0)),`${paid.length} guia(s)`],['Vencido',String(overdue.length),'Pendências após o vencimento']];
  document.getElementById('darfStats').innerHTML=stats.map(([label,value,detail],i)=>`<div class="card stat"><div class="statlabel">${label}</div><div class="statvalue ${i===3&&overdue.length?'red':''}">${value}</div><div class="statdetail"><span>${detail}</span></div></div>`).join('');
  const rows=darfItems.filter(x=>filter==='todos'||x.status===filter);
- document.getElementById('darfRows').innerHTML=rows.length?rows.map(item=>`<tr><td>${monthBR(item.competencia)}</td><td>${escapeHTML(item.codigo)}</td><td>${dateBR(item.vencimento)}</td><td>${item.pago_em?dateBR(item.pago_em):'—'}</td><td>${brl(item.valor)}</td><td><span class="tax-status ${item.status}">${item.status==='pago'?'Pago':'Pendente'}</span></td><td>${escapeHTML(item.observacoes||'—')}</td><td><button class="tax-action" onclick="editDARF(${item.id})">Editar</button><button class="tax-action danger" onclick="deleteDARF(${item.id})">Excluir</button></td></tr>`).join(''):rowEmpty(8,'Nenhum DARF cadastrado para os filtros selecionados.');
+ document.getElementById('darfRows').innerHTML=rows.length?rows.map(item=>`<tr><td>${monthBR(item.competencia)}</td><td>${escapeHTML(item.codigo)}</td><td>${dateBR(item.vencimento)}</td><td>${item.pago_em?dateBR(item.pago_em):'—'}</td><td>${brl(item.valor)}</td><td><span class="tax-status ${item.status}">${item.status==='pago'?'Pago':'Pendente'}</span></td><td>${escapeHTML(item.observacoes||'—')}</td><td><button class="tax-action" onclick="editDARF(${Number(item.id)})">Editar</button><button class="tax-action danger" onclick="deleteDARF(${Number(item.id)})">Excluir</button></td></tr>`).join(''):rowEmpty(8,'Nenhum DARF cadastrado para os filtros selecionados.');
 }
 function editDARF(id){const item=darfItems.find(x=>Number(x.id)===Number(id));if(item)openTaxModal('darf',null,item)}
 async function deleteDARF(id){if(!await appConfirm('Excluir registro de DARF','Este registro será removido permanentemente.','Excluir registro'))return;try{await api(`/api/darfs/${id}`,{method:'DELETE'});await loadDARFs();toast('Registro excluído.')}catch(e){toast(e.message)}}
@@ -5476,7 +5471,7 @@ async function loadB3Imports(){
   const batches=data.lotes||[],legacy=data.legados||[];
   if(!batches.length&&!legacy.length){host.innerHTML='<div class="empty">Nenhuma planilha B3 importada foi registrada.</div>';return;}
   const fmtDate=v=>{const d=new Date(v);return isNaN(d)?escapeHTML(v||''):d.toLocaleString('pt-BR');};
-  host.innerHTML=`${batches.map(b=>`<div class="pluggy-item-row"><div><strong>${escapeHTML(b.arquivo||'Planilha B3')}</strong><div class="mini">${fmtDate(b.importado_em)} · ${Number(b.operacoes||0)} lançamentos · ${Number(b.proventos||0)} proventos · ${Number(b.registros||0)} registros rastreados</div></div><button class="ghost" type="button" onclick="deleteB3ImportBatch('${b.id}')">Excluir importação</button></div>`).join('')}${legacy.length?`<div class="section"><strong>Importações anteriores</strong><p class="mini">Estas importações foram feitas antes do histórico por arquivo. O banco não guardou o nome original nem o vínculo seguro de cada registro, por isso aparecem na lista, mas não podem ser apagadas individualmente por esta tela.</p>${legacy.map(b=>`<div class="pluggy-item-row"><div><strong>Planilha B3 antiga</strong><div class="mini">${fmtDate(b.importado_em)} · ${Number(b.operacoes||0)} lançamentos · ${Number(b.proventos||0)} proventos · ${Number(b.registros||0)} registros</div></div><span class="api-status-pill warning">Exclusão indisponível</span></div>`).join('')}</div>`:''}`;
+  host.innerHTML=`${batches.map(b=>`<div class="pluggy-item-row"><div><strong>${escapeHTML(b.arquivo||'Planilha B3')}</strong><div class="mini">${fmtDate(b.importado_em)} · ${Number(b.operacoes||0)} lançamentos · ${Number(b.proventos||0)} proventos · ${Number(b.registros||0)} registros rastreados</div></div><button class="ghost" type="button" onclick='deleteB3ImportBatch(${jsArg(b.id)})' >Excluir importação</button></div>`).join('')}${legacy.length?`<div class="section"><strong>Importações anteriores</strong><p class="mini">Estas importações foram feitas antes do histórico por arquivo. O banco não guardou o nome original nem o vínculo seguro de cada registro, por isso aparecem na lista, mas não podem ser apagadas individualmente por esta tela.</p>${legacy.map(b=>`<div class="pluggy-item-row"><div><strong>Planilha B3 antiga</strong><div class="mini">${fmtDate(b.importado_em)} · ${Number(b.operacoes||0)} lançamentos · ${Number(b.proventos||0)} proventos · ${Number(b.registros||0)} registros</div></div><span class="api-status-pill warning">Exclusão indisponível</span></div>`).join('')}</div>`:''}`;
  }catch(e){host.textContent=e.message||'Não foi possível carregar o histórico.';}
 }
 async function deleteB3ImportBatch(id){
@@ -6066,7 +6061,7 @@ body.light-theme .prov-chart-period-menu .period-section{color:#202633!important
 }
 .variation-money-floating-tooltip.is-positive{border-color:var(--green,#12c98b)}
 .variation-money-floating-tooltip.is-negative{border-color:var(--red,#ff5b78)}
-/* v4.2.14: o tooltip de rentabilidade é informativo, não um controle clicável. */
+/* Tooltip de rentabilidade informativo, sem comportamento de controle. */
 .asset-category .data.proportional-assets-table td[data-col="lucro_pct"] .profitability-money-trigger{cursor:default!important}
 .asset-category .data.proportional-assets-table tr:hover td[data-col="variacao_dia"],
 .asset-category .data.proportional-assets-table td[data-col="variacao_dia"]:hover{

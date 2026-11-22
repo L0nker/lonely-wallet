@@ -1,5 +1,26 @@
 # Lonely Wallet
 
+## v4.2.16
+
+- Corrigida a associação da rota `/api/carteira` à função `carteira()`.
+- Validada a sequência cronológica de compras e vendas, incluindo operações agendadas, importação de saldos e alterações/exclusões de lançamentos.
+- Incluídos somente proventos efetivamente pagos na consolidação de recebimentos, reconciliando registros manuais, B3, Pluggy e API sem duplicação por ticker/data/valor.
+- Migrada a sincronização automática Pluggy para o servidor, com bloqueio de concorrência, intervalo persistido e intervalo de retentativa após falhas.
+- Impedida a confirmação de dados parcialmente processados quando a sincronização Pluggy falha durante uma etapa.
+- Migração SQLite legada com API de backup, verificação `integrity_check` e publicação atômica de arquivo temporário.
+- Corrigida a migração de permissões: falhas relevantes interrompem a inicialização e o marcador é gravado atomicamente somente ao final.
+- Sanitizadas mensagens de erro de integrações para não expor URLs com tokens ou chaves.
+- Reforçada a codificação de argumentos em handlers dinâmicos e restringidas origens genéricas na CSP.
+- Chart.js passou a ser obtido no build e servido localmente, sem dependência de CDN no navegador.
+- Implementada rotação dos backups preventivos, mantendo os 10 mais recentes.
+- Melhorada a consulta de cotações de FIIs e outros ativos: o fallback do Yahoo utiliza o último fechamento diário válido quando a cotação de mercado retorna zero e preserva a data desse fechamento para consulta no tooltip.
+- A coluna Preço Atual mostra o último fechamento válido disponível, mesmo quando não há negociação recente, sem exibir texto adicional de cotação desatualizada.
+- Ao passar o mouse sobre Preço Atual, um tooltip neutro no padrão visual do tema informa a data da última atualização da cotação, sem cores de positivo/negativo.
+- A busca alternativa do Yahoo foi ampliada para seis meses e seleciona o último fechamento diário positivo quando o provedor retorna preço de mercado zero; a data do candle é preservada sem deslocamento de fuso.
+- Variação individual calculada pelo último preço conhecido versus preço médio; rentabilidade soma a variação de preço aos proventos efetivamente pagos. Os tooltips convertem o percentual efetivamente exibido para reais usando o valor investido como base, sem substituir o cálculo por retorno histórico diferente.
+- Quando não existe cotação de mercado, a carteira não exibe variação inventada a partir de dados antigos; utiliza saldo atual Pluggy quando disponível ou identifica a avaliação como estimativa.
+- A consulta de proventos recebidos foi pré-agregada para evitar consultas repetidas por ativo.
+
 ## v4.2.15
 - Rentabilidade dos cards por categoria passou a ser a média aritmética simples das rentabilidades individuais dos ativos, sem ponderação pelo capital investido.
 
@@ -123,12 +144,12 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve indicar `ok: true` e `version: 4.2.15`.
+O retorno deve indicar `ok: true` e `version: 4.2.16`.
 
 ### Atualização de uma versão anterior
 
 1. Faça um backup antes de substituir os arquivos.
-2. Extraia o pacote 4.2.15 em uma pasta de projeto.
+2. Extraia o pacote 4.2.16 em uma pasta de projeto.
 3. **Mantenha exatamente o volume de dados existente**. O Compose padrão utiliza:
 
 ```yaml
