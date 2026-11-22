@@ -15,8 +15,12 @@ class EvolutionChartFinancialScopeTests(unittest.TestCase):
         self.assertNotIn('paidDividendCumulativeByMonth', renderer)
         self.assertNotIn('proventos_recebidos_acumulados', renderer)
         self.assertNotIn('Patrimônio + proventos', renderer)
-        self.assertIn("const gains=visibleHistory.map(row=>Number(row.ganho||0));", renderer)
-        self.assertIn("{label:'Valorização / prejuízo dos ativos'", renderer)
+        self.assertIn("const gains=visibleHistory.map(row=>row.mes===currentMonthKey?currentCapitalGain:Number(row.ganho||0));", renderer)
+        self.assertIn("{label:'Ganho de Capital'", renderer)
+        self.assertIn("{label:'Valor aplicado'", renderer)
+        self.assertIn('Patrimônio: ${brl(patrimony[index]||0)}', renderer)
+        self.assertIn('Number(state.resumo?.lucro||0)', renderer)
+        self.assertIn('Patrimônio: ${brl(fallbackPatrimony[index]||0)}', renderer)
 
     def test_fallback_chart_does_not_add_paid_dividends(self):
         start = HTML.index('function renderEvolutionChart(')
@@ -24,7 +28,8 @@ class EvolutionChartFinancialScopeTests(unittest.TestCase):
         renderer = HTML[start:end]
 
         self.assertNotIn('paidNow', renderer)
-        self.assertIn("const gain=itemGain!==0?itemGain:(selectedType==='todos'?Number(state.resumo?.lucro||0):0);", renderer)
+        self.assertIn("const gain=selectedType==='todos'", renderer)
+        self.assertIn('const fallbackPatrimony=cumulative.map', renderer)
 
     def test_price_update_tooltip_keeps_hover_but_uses_normal_cursor(self):
         css = re.search(r"\.price-update-tooltip-trigger\{([^}]*)\}", HTML)

@@ -25,7 +25,7 @@ QUOTE_HISTORY_PATH = os.environ.get('QUOTE_HISTORY_PATH', '/data/quotes_last_val
 QUOTE_HISTORY_LOCK = threading.RLock()
 DASHBOARD_CACHE_PATH = os.environ.get('DASHBOARD_CACHE_PATH', '/data/dashboard_cache.json')
 DASHBOARD_CACHE_LOCK = threading.RLock()
-DASHBOARD_CACHE_FORMAT = 1
+DASHBOARD_CACHE_FORMAT = 2
 PORTFOLIO_HISTORY_CACHE, PORTFOLIO_HISTORY_TTL = {}, 1800
 PORTFOLIO_HISTORY_EMPTY_TTL = 120
 def _dashboard_cache_signature():
@@ -3928,6 +3928,47 @@ def _received_proventos_records(active_tickers=None):
     return records
 
 
+def _confirmed_received_proventos(records, as_of=None):
+    """Keep only confirmed payments with payment dates through the local current date."""
+    cutoff = as_of or datetime.now(TZ).date()
+    confirmed = []
+    for raw in records or []:
+        row = dict(raw)
+        if str(row.get('status') or '').strip().casefold() != 'pago':
+            continue
+        payment_date = _api_date(row.get('data_pagamento'))
+        if not payment_date:
+            continue
+        try:
+            paid_on = date.fromisoformat(payment_date[:10])
+        except ValueError:
+            continue
+        if paid_on > cutoff or not _is_income_event(row.get('tipo_evento')):
+            continue
+        try:
+            amount = float(row.get('valor_total') or 0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(amount) or amount <= 0:
+            continue
+        row['data_pagamento'] = paid_on.isoformat()
+        row['valor_total'] = round(amount, 2)
+        confirmed.append(row)
+    return confirmed
+
+
+def _confirmed_received_proventos_by_month(records, month_keys, as_of=None):
+    """Aggregate only confirmed payments inside the supplied rolling-month window."""
+    allowed_months = {str(month) for month in month_keys}
+    totals = {}
+    for row in _confirmed_received_proventos(records, as_of=as_of):
+        month = str(row['data_pagamento'])[:7]
+        if month not in allowed_months:
+            continue
+        totals[month] = totals.get(month, 0.0) + float(row['valor_total'])
+    return {month: round(value, 2) for month, value in totals.items()}
+
+
 def typesafe_asset_type(ticker):
     return _asset_type_map().get(str(ticker or '').upper(), 'outros')
 
@@ -5016,7 +5057,8 @@ def dashboard():
     ops = [dict(r) for r in db().execute("SELECT * FROM operacoes WHERE status='executada' ORDER BY data,id").fetchall()]
     scheduled = [dict(r) for r in db().execute("SELECT * FROM operacoes WHERE status='agendada' ORDER BY data_execucao,id").fetchall()]
     active_tickers = {str(item.get('ticker') or '').upper() for item in portfolio.get('itens', []) if item.get('ticker')}
-    received_records = _received_proventos_records(active_tickers)
+    today = datetime.now(TZ).date()
+    received_records = _confirmed_received_proventos(_received_proventos_records(active_tickers), as_of=today)
     if active_tickers:
         marks = ','.join('?' for _ in active_tickers)
         pending_rows = [dict(r) for r in db().execute("SELECT * FROM proventos_api WHERE status='A receber' AND UPPER(ticker) IN (" + marks + ") ORDER BY data_pagamento,ticker", tuple(sorted(active_tickers))).fetchall()]
@@ -5031,7 +5073,6 @@ def dashboard():
         sign = 1 if op['lado'] == 'compra' else -1
         monthly[month] = monthly.get(month, 0) + sign * (op['quantidade'] * op['preco'] + float(op.get('custos') or 0))
 
-    today = datetime.now(TZ).date()
     month_keys = []
     cursor = date(today.year, today.month, 1)
     for _ in range(11):
@@ -5040,17 +5081,8 @@ def dashboard():
         month_keys.append(cursor.strftime('%Y-%m'))
         cursor = (cursor.replace(day=28) + timedelta(days=4)).replace(day=1)
 
-    received_by_month = {}
-    detailed = []
-    for item in received_records:
-        payment_date = _api_date(item.get('data_pagamento'))
-        if not payment_date:
-            continue
-        record = {**item, 'data_pagamento': payment_date}
-        detailed.append(record)
-        if _is_income_event(record.get('tipo_evento')):
-            month = payment_date[:7]
-            received_by_month[month] = received_by_month.get(month, 0.0) + float(record.get('valor_total') or 0)
+    detailed = [dict(item) for item in received_records]
+    received_by_month = _confirmed_received_proventos_by_month(detailed, month_keys, as_of=today)
 
     # Pagamentos futuros já declarados. Prioriza lastDatePrior; quando a cotação
     # antiga só informa exDate, a data-com aproximada e a quantidade são sinalizadas.
@@ -5152,7 +5184,7 @@ def dashboard():
             pending_amount_keys.add((ticker, payment_date, round(quantity * rate, 2)))
 
     monthly_values = [{'mes':m,'recebido':round(received_by_month.get(m,0),2)} for m in month_keys]
-    total_12m = round(sum(x['recebido'] for x in monthly_values), 2)
+    total_12m = round(sum(received_by_month.get(month, 0.0) for month in month_keys), 2)
     portfolio_total = round(sum(float(x.get('valor_atual') or 0) for x in portfolio.get('itens', [])), 2)
     type_totals = {}
     for event in detailed:

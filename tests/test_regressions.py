@@ -186,6 +186,24 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(records[0]['valor_total'], 20.0)
             self.assertEqual(records[0]['status'], 'Pago')
 
+    def test_proventos_received_card_excludes_upcoming_and_unconfirmed_events(self):
+        as_of = datetime.date(2026, 11, 22)
+        records = [
+            {'ticker':'PAID4','status':'Pago','data_pagamento':'2026-11-22','valor_total':12.50,'tipo_evento':'DIVIDENDO'},
+            {'ticker':'PAID4','status':'Pago','data_pagamento':'2026-10-15','valor_total':7.50,'tipo_evento':'JCP'},
+            {'ticker':'PAID4','status':'Pago','data_pagamento':'2026-11-23','valor_total':100.00,'tipo_evento':'DIVIDENDO'},
+            {'ticker':'PAID4','status':'A receber','data_pagamento':'2026-11-20','valor_total':200.00,'tipo_evento':'DIVIDENDO'},
+            {'ticker':'PAID4','status':'Pago','data_pagamento':'2025-08-01','valor_total':300.00,'tipo_evento':'DIVIDENDO'},
+            {'ticker':'PAID4','status':'Pago','data_pagamento':'2026-11-01','valor_total':400.00,'tipo_evento':'AMORTIZAÇÃO'},
+        ]
+        confirmed = wallet._confirmed_received_proventos(records, as_of=as_of)
+        self.assertEqual([row['valor_total'] for row in confirmed], [12.50, 7.50, 300.00])
+        monthly = wallet._confirmed_received_proventos_by_month(
+            records, ['2026-10', '2026-11'], as_of=as_of
+        )
+        self.assertEqual(monthly, {'2026-11': 12.50, '2026-10': 7.50})
+        self.assertEqual(round(sum(monthly.values()), 2), 20.00)
+
     def test_error_text_redacts_tokens_in_urls(self):
         message = wallet.safe_error_text('Request failed https://api.example.test/path?api_key=secret123&token=other')
         self.assertNotIn('secret123', message)
