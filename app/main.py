@@ -420,20 +420,6 @@ def init_db():
       operacoes INTEGER NOT NULL DEFAULT 0, proventos INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
-    CREATE TABLE IF NOT EXISTS api_response_cache (
-      cache_key TEXT PRIMARY KEY, provider TEXT NOT NULL, payload_json TEXT NOT NULL,
-      cached_at REAL NOT NULL, expires_at REAL NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_api_response_cache_expiry ON api_response_cache(expires_at);
-    CREATE TABLE IF NOT EXISTS api_usage_daily (
-      provider TEXT NOT NULL, usage_date TEXT NOT NULL, calls INTEGER NOT NULL DEFAULT 0,
-      cache_hits INTEGER NOT NULL DEFAULT 0, errors INTEGER NOT NULL DEFAULT 0,
-      last_call_at TEXT DEFAULT '', PRIMARY KEY(provider,usage_date)
-    );
-    CREATE TABLE IF NOT EXISTS api_provider_control (
-      provider TEXT PRIMARY KEY, blocked_until REAL NOT NULL DEFAULT 0,
-      failure_count INTEGER NOT NULL DEFAULT 0, last_error TEXT DEFAULT ''
-    );
     CREATE TABLE IF NOT EXISTS pluggy_items (
       item_id TEXT PRIMARY KEY,
       label TEXT NOT NULL DEFAULT '',
@@ -629,7 +615,6 @@ def init_db():
     b3cols = {row[1] for row in con.execute('PRAGMA table_info(b3_importados)').fetchall()}
     if 'lote_id' not in b3cols: con.execute('ALTER TABLE b3_importados ADD COLUMN lote_id TEXT')
     if 'registro_id' not in b3cols: con.execute('ALTER TABLE b3_importados ADD COLUMN registro_id INTEGER')
-    con.execute('DELETE FROM api_response_cache WHERE expires_at < ?', (time.time() - 30 * 86400,))
     con.commit(); con.close()
 
 
@@ -964,276 +949,6 @@ def _brapi_token():
     return _get_api_token('brapi') or TOKEN
 
 
-# Free-tier protection for brapi. The provider currently limits the free plan
-# to one ticker per request and one concurrent request; local counters track
-# only this application (other applications sharing the token are not visible).
-BRAPI_ROLLING_30D_BUDGET = max(0, int(os.environ.get('BRAPI_ROLLING_30D_BUDGET', '13500') or 13500))
-BRAPI_MAX_TICKERS_PER_REQUEST = max(1, min(20, int(os.environ.get('BRAPI_MAX_TICKERS_PER_REQUEST', '1') or 1)))
-BRAPI_MARKET_CACHE_SECONDS = max(300, int(os.environ.get('BRAPI_MARKET_CACHE_SECONDS', '1800') or 1800))
-BRAPI_OFF_MARKET_CACHE_SECONDS = max(1800, int(os.environ.get('BRAPI_OFF_MARKET_CACHE_SECONDS', '21600') or 21600))
-BRAPI_REQUEST_GAP_SECONDS = max(0.0, float(os.environ.get('BRAPI_REQUEST_GAP_SECONDS', '0.35') or 0.35))
-BRAPI_REQUEST_SEMAPHORE = threading.Semaphore(1)
-BRAPI_REQUEST_STATE_LOCK = threading.Lock()
-BRAPI_LAST_REQUEST_AT = 0.0
-
-
-def _api_cache_connection():
-    con = sqlite3.connect(DB_PATH, timeout=20)
-    con.row_factory = sqlite3.Row
-    con.execute('PRAGMA busy_timeout=20000')
-    return con
-
-
-def _brapi_cache_identity(url, params=None, headers=None):
-    clean_params = {}
-    for key, value in (params or {}).items():
-        if str(key).lower() not in ('token', 'apikey', 'api_key'):
-            clean_params[str(key)] = value
-    auth = ''
-    for key, value in (headers or {}).items():
-        if str(key).lower() in ('authorization', 'x-api-key'):
-            auth = str(value)
-            break
-    if not auth:
-        auth = _brapi_token()
-    auth_fingerprint = hashlib.sha256(auth.encode('utf-8')).hexdigest()[:16] if auth else 'public'
-    raw = json.dumps([str(url), clean_params, auth_fingerprint], sort_keys=True, ensure_ascii=False, default=str, separators=(',', ':'))
-    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
-
-
-def _brapi_cache_read(cache_key):
-    try:
-        con = _api_cache_connection()
-        try:
-            row = con.execute('SELECT payload_json,cached_at,expires_at FROM api_response_cache WHERE cache_key=?', (cache_key,)).fetchone()
-            if not row:
-                return None
-            payload = json.loads(row['payload_json'])
-            if not isinstance(payload, (dict, list)):
-                return None
-            return {'payload': payload, 'cached_at': float(row['cached_at']), 'expires_at': float(row['expires_at'])}
-        finally:
-            con.close()
-    except (sqlite3.Error, ValueError, TypeError, OSError):
-        return None
-
-
-def _brapi_quote_cache_ttl():
-    now = datetime.now(TZ)
-    if now.weekday() < 5 and MARKET_OPEN <= now.time() <= MARKET_CLOSE:
-        return BRAPI_MARKET_CACHE_SECONDS
-    return BRAPI_OFF_MARKET_CACHE_SECONDS
-
-
-def _raise_cached_http_error(payload):
-    if isinstance(payload, dict) and payload.get('_lw_http_error'):
-        response = requests.Response()
-        response.status_code = int(payload['_lw_http_error'])
-        raise requests.HTTPError(f'brapi respondeu HTTP {response.status_code} (erro armazenado em cache)', response=response)
-
-
-def _brapi_cache_write(cache_key, payload, ttl):
-    if ttl <= 0:
-        return
-    try:
-        encoded = json.dumps(payload, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
-        if len(encoded.encode('utf-8')) > 8 * 1024 * 1024:
-            return
-        now = time.time()
-        con = _api_cache_connection()
-        try:
-            con.execute(
-                'INSERT INTO api_response_cache(cache_key,provider,payload_json,cached_at,expires_at) VALUES(?,?,?,?,?) '
-                'ON CONFLICT(cache_key) DO UPDATE SET payload_json=excluded.payload_json,cached_at=excluded.cached_at,expires_at=excluded.expires_at',
-                (cache_key, 'brapi', encoded, now, now + ttl)
-            )
-            con.execute('DELETE FROM api_response_cache WHERE expires_at < ?', (now - 30 * 86400,))
-            con.commit()
-        finally:
-            con.close()
-    except (sqlite3.Error, ValueError, TypeError, OSError):
-        pass
-
-
-def _brapi_usage_record(kind='calls', error=False):
-    today = datetime.now(TZ).date().isoformat()
-    try:
-        con = _api_cache_connection()
-        try:
-            con.execute(
-                'INSERT INTO api_usage_daily(provider,usage_date,calls,cache_hits,errors,last_call_at) VALUES(?,?,?,?,?,?) '
-                'ON CONFLICT(provider,usage_date) DO UPDATE SET '
-                'calls=calls+excluded.calls,cache_hits=cache_hits+excluded.cache_hits,errors=errors+excluded.errors,'
-                'last_call_at=CASE WHEN excluded.last_call_at<>\'\' THEN excluded.last_call_at ELSE api_usage_daily.last_call_at END',
-                ('brapi', today, 1 if kind == 'calls' else 0, 1 if kind == 'cache_hits' else 0, 1 if error else 0,
-                 datetime.now(TZ).isoformat(timespec='seconds') if kind == 'calls' else '')
-            )
-            con.commit()
-        finally:
-            con.close()
-    except sqlite3.Error:
-        pass
-
-
-def _brapi_usage_snapshot():
-    since = (datetime.now(TZ).date() - timedelta(days=29)).isoformat()
-    try:
-        con = _api_cache_connection()
-        try:
-            row = con.execute(
-                'SELECT COALESCE(SUM(calls),0) calls,COALESCE(SUM(cache_hits),0) cache_hits,'
-                'COALESCE(SUM(errors),0) errors,MAX(last_call_at) last_call_at '
-                'FROM api_usage_daily WHERE provider=? AND usage_date>=?', ('brapi', since)
-            ).fetchone()
-            calls = int(row['calls'] or 0)
-            hits = int(row['cache_hits'] or 0)
-            errors = int(row['errors'] or 0)
-            return {
-                'period_days': 30, 'calls': calls, 'cache_hits': hits, 'errors': errors,
-                'budget': BRAPI_ROLLING_30D_BUDGET,
-                'remaining': max(0, BRAPI_ROLLING_30D_BUDGET - calls) if BRAPI_ROLLING_30D_BUDGET else None,
-                'usage_percent': round(calls / BRAPI_ROLLING_30D_BUDGET * 100, 2) if BRAPI_ROLLING_30D_BUDGET else None,
-                'last_call_at': row['last_call_at'] or None,
-                'counter_scope': 'Somente requisições feitas por esta instalação; outras aplicações que usam o mesmo token não são contabilizadas.'
-            }
-        finally:
-            con.close()
-    except sqlite3.Error:
-        return {'period_days': 30, 'calls': None, 'cache_hits': None, 'errors': None,
-                'budget': BRAPI_ROLLING_30D_BUDGET, 'remaining': None, 'usage_percent': None,
-                'last_call_at': None, 'counter_scope': 'Contador local indisponível.'}
-
-
-def _brapi_control_state():
-    try:
-        con = _api_cache_connection()
-        try:
-            row = con.execute('SELECT blocked_until,failure_count,last_error FROM api_provider_control WHERE provider=?', ('brapi',)).fetchone()
-            return dict(row) if row else {'blocked_until': 0, 'failure_count': 0, 'last_error': ''}
-        finally:
-            con.close()
-    except sqlite3.Error:
-        return {'blocked_until': 0, 'failure_count': 0, 'last_error': ''}
-
-
-def _brapi_control_update(blocked_until=0, failure_count=0, last_error=''):
-    try:
-        con = _api_cache_connection()
-        try:
-            con.execute(
-                'INSERT INTO api_provider_control(provider,blocked_until,failure_count,last_error) VALUES(?,?,?,?) '
-                'ON CONFLICT(provider) DO UPDATE SET blocked_until=excluded.blocked_until,failure_count=excluded.failure_count,last_error=excluded.last_error',
-                ('brapi', float(blocked_until or 0), int(failure_count or 0), str(last_error or '')[:300])
-            )
-            con.commit()
-        finally:
-            con.close()
-    except sqlite3.Error:
-        pass
-
-
-class BrapiQuotaProtected(requests.RequestException):
-    pass
-
-
-def _brapi_get_json(url, params=None, headers=None, timeout=12, cache_ttl=0,
-                    stale_if_error=0, bypass_cache=False):
-    """Single-flight, persistent-cache and quota-aware Brapi JSON request."""
-    params = dict(params or {})
-    headers = dict(headers or {})
-    token = _brapi_token()
-    if token and not any(str(k).lower() == 'authorization' for k in headers):
-        headers['Authorization'] = f'Bearer {token}'
-    cache_key = _brapi_cache_identity(url, params, headers)
-    cached = _brapi_cache_read(cache_key)
-    now = time.time()
-    if cached and not bypass_cache and now < cached['expires_at']:
-        _brapi_usage_record('cache_hits')
-        _raise_cached_http_error(cached['payload'])
-        return cached['payload']
-
-    with BRAPI_REQUEST_SEMAPHORE:
-        # Another thread may have filled the same cache while this thread waited.
-        cached = _brapi_cache_read(cache_key)
-        now = time.time()
-        if cached and not bypass_cache and now < cached['expires_at']:
-            _brapi_usage_record('cache_hits')
-            _raise_cached_http_error(cached['payload'])
-            return cached['payload']
-        control = _brapi_control_state()
-        blocked_until = float(control.get('blocked_until') or 0)
-        if blocked_until > now:
-            if cached and not (isinstance(cached.get('payload'), dict) and cached['payload'].get('_lw_http_error')) and stale_if_error and now - cached['cached_at'] <= stale_if_error:
-                _brapi_usage_record('cache_hits')
-                payload = cached['payload']
-                if isinstance(payload, dict): payload = {**payload, '_lw_stale': True}
-                return payload
-            raise BrapiQuotaProtected(f'brapi temporariamente em pausa até {datetime.fromtimestamp(blocked_until, TZ).isoformat(timespec="minutes")}')
-
-        usage = _brapi_usage_snapshot()
-        if BRAPI_ROLLING_30D_BUDGET and int(usage.get('calls') or 0) >= BRAPI_ROLLING_30D_BUDGET:
-            if cached and not (isinstance(cached.get('payload'), dict) and cached['payload'].get('_lw_http_error')) and stale_if_error and now - cached['cached_at'] <= stale_if_error:
-                _brapi_usage_record('cache_hits')
-                payload = cached['payload']
-                if isinstance(payload, dict): payload = {**payload, '_lw_stale': True}
-                return payload
-            raise BrapiQuotaProtected('limite de segurança local da brapi atingido; a consulta foi pausada para preservar a cota gratuita')
-
-        global BRAPI_LAST_REQUEST_AT
-        with BRAPI_REQUEST_STATE_LOCK:
-            wait = BRAPI_REQUEST_GAP_SECONDS - (time.monotonic() - BRAPI_LAST_REQUEST_AT)
-            if wait > 0:
-                time.sleep(wait)
-            BRAPI_LAST_REQUEST_AT = time.monotonic()
-        # Conta a tentativa antes de abrir a conexão: timeouts e quedas de rede
-        # também consomem orçamento conservador, pois o provedor pode ter recebido
-        # a requisição mesmo que a resposta não tenha chegado ao cliente.
-        try:
-            _brapi_usage_record('calls')
-            try:
-                response = requests.get(url, params=params, headers=headers, timeout=timeout)
-            except requests.RequestException:
-                _brapi_usage_record('errors', error=True)
-                raise
-            if response.status_code >= 400:
-                _brapi_usage_record('errors', error=True)
-            if response.status_code in (400, 401, 403, 404):
-                _brapi_cache_write(cache_key, {'_lw_http_error': response.status_code},
-                    300 if response.status_code in (401, 403) else (3600 if response.status_code == 404 else 600))
-            if response.status_code == 429 or response.status_code >= 500:
-                failure_count = int(control.get('failure_count') or 0) + 1
-                retry_after = response.headers.get('Retry-After', '')
-                try:
-                    backoff = max(60, min(6 * 3600, int(retry_after))) if retry_after else min(6 * 3600, 60 * (2 ** min(failure_count, 8)))
-                except ValueError:
-                    backoff = min(6 * 3600, 60 * (2 ** min(failure_count, 8)))
-                _brapi_control_update(time.time() + backoff, failure_count, f'HTTP {response.status_code}')
-            response.raise_for_status()
-            try:
-                payload = response.json()
-            except ValueError:
-                _brapi_usage_record('errors', error=True)
-                raise
-            if not isinstance(payload, (dict, list)):
-                _brapi_usage_record('errors', error=True)
-                raise ValueError('resposta JSON inesperada da brapi')
-            _brapi_control_update(0, 0, '')
-            _brapi_cache_write(cache_key, payload, cache_ttl)
-            return payload
-        except (requests.RequestException, ValueError) as exc:
-            # Falhas de conexão sem resposta HTTP também recebem pausa curta:
-            # evita uma rajada de tentativas ticker a ticker quando a rede cai.
-            if isinstance(exc, requests.RequestException) and getattr(exc, 'response', None) is None:
-                failure_count = int(control.get('failure_count') or 0) + 1
-                backoff = min(15 * 60, 30 * (2 ** min(failure_count - 1, 5)))
-                _brapi_control_update(time.time() + backoff, failure_count, 'falha de conexão')
-            if cached and not (isinstance(cached.get('payload'), dict) and cached['payload'].get('_lw_http_error')) and stale_if_error and time.time() - cached['cached_at'] <= stale_if_error:
-                _brapi_usage_record('cache_hits')
-                payload = cached['payload']
-                if isinstance(payload, dict): payload = {**payload, '_lw_stale': True}
-                return payload
-            raise
-
 def _get_pluggy_credentials():
     raw = _get_api_token('pluggy')
     if not raw:
@@ -1383,10 +1098,10 @@ def _refine_pluggy_asset_type(investment):
     headers = {'Authorization': f'Bearer {_brapi_token()}'} if _brapi_token() else {}
     resolved = kind
     try:
-        payload = _brapi_get_json('https://brapi.dev/api/quote/list',
-            params={'search': ticker, 'limit': 50}, headers=headers, timeout=10,
-            cache_ttl=7 * 86400, stale_if_error=30 * 86400)
-        stocks = payload.get('stocks') or []
+        response = requests.get('https://brapi.dev/api/quote/list',
+            params={'search': ticker, 'limit': 50}, headers=headers, timeout=10)
+        response.raise_for_status()
+        stocks = response.json().get('stocks') or []
         match = next((row for row in stocks if str(row.get('stock') or row.get('symbol') or '').upper() == ticker), None)
         if match:
             subtype = str(match.get('subType') or '').strip().lower().replace('_', '-')
@@ -1715,10 +1430,10 @@ def _pluggy_import_investment_transaction(item_id, investment, movement, now_tex
 def _pluggy_sync_interval():
     row = db().execute("SELECT value FROM app_settings WHERE key='pluggy_sync_interval'").fetchone()
     try:
-        value = int(row['value']) if row else 240
+        value = int(row['value']) if row else 30
     except (TypeError, ValueError):
-        value = 240
-    return value if value in (0, 15, 30, 60, 240, 720, 1440) else 240
+        value = 30
+    return value if value in (0, 15, 30, 60, 240, 720, 1440) else 30
 
 
 @app.route('/api/pluggy/settings', methods=['GET', 'POST'])
@@ -2105,16 +1820,6 @@ def api_integrations_list():
     return jsonify({'providers':providers})
 
 
-@app.route('/api/integracoes/brapi/uso', methods=['GET'])
-def api_brapi_usage():
-    response = jsonify(_brapi_usage_snapshot() | {'control': _brapi_control_state(),
-        'max_tickers_per_request': BRAPI_MAX_TICKERS_PER_REQUEST,
-        'cache_market_seconds': BRAPI_MARKET_CACHE_SECONDS,
-        'cache_off_market_seconds': BRAPI_OFF_MARKET_CACHE_SECONDS})
-    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
-    return response
-
-
 @app.route('/api/integracoes/<provider>', methods=['POST','DELETE'])
 def api_integrations_save(provider):
     if provider not in API_PROVIDERS or not API_PROVIDERS[provider]['auth']:
@@ -2184,18 +1889,15 @@ def api_integrations_test(provider):
         return jsonify({'ok':False,'message':'Cadastre um token antes de testar.'}), 400
     try:
         if provider == 'brapi':
-            data = _brapi_get_json('https://brapi.dev/api/v2/user/usage',
-                headers={'Authorization':f'Bearer {token}'}, timeout=15,
-                cache_ttl=300, stale_if_error=1800)
-        else:
-            if provider == 'hgbrasil':
-                response = requests.get('https://api.hgbrasil.com/finance', params={'key':token}, timeout=15)
-            elif provider == 'fred':
-                response = requests.get('https://api.stlouisfed.org/fred/series', params={'series_id':'GDP','api_key':token,'file_type':'json'}, timeout=15)
-            elif provider == 'dadosb3':
-                response = requests.get('https://dadosb3.com/indices/IFIX/precos', headers={'X-API-Key':token}, timeout=15)
-            response.raise_for_status()
-            data = response.json()
+            response = requests.get('https://brapi.dev/api/v2/user/usage', headers={'Authorization':f'Bearer {token}'}, timeout=15)
+        elif provider == 'hgbrasil':
+            response = requests.get('https://api.hgbrasil.com/finance', params={'key':token}, timeout=15)
+        elif provider == 'fred':
+            response = requests.get('https://api.stlouisfed.org/fred/series', params={'series_id':'GDP','api_key':token,'file_type':'json'}, timeout=15)
+        elif provider == 'dadosb3':
+            response = requests.get('https://dadosb3.com/indices/IFIX/precos', headers={'X-API-Key':token}, timeout=15)
+        response.raise_for_status()
+        data = response.json()
         if provider == 'hgbrasil' and data.get('valid_key') is False: raise ValueError('A chave foi recusada pela HG Brasil.')
         if provider == 'dadosb3' and (data.get('amostra') or not isinstance(data.get('serie'), list) or len(data.get('serie') or []) < 2):
             raise ValueError('A chave ainda não liberou o histórico completo. Verifique a chave e tente novamente.')
@@ -2439,13 +2141,12 @@ def cotacao(ticker, force_refresh=False):
 
     # Primeira tentativa: endpoint de cotação individual.
     try:
-        payload = _brapi_get_json(
+        response = requests.get(
             f'https://brapi.dev/api/quote/{ticker}',
-            params=params, headers=headers, timeout=8,
-            cache_ttl=_brapi_quote_cache_ttl(), stale_if_error=7 * 86400,
-            bypass_cache=False
+            params=params, headers=headers, timeout=8
         )
-        results = payload.get('results') or []
+        response.raise_for_status()
+        results = response.json().get('results') or []
         if results and isinstance(results[0], dict):
             data = {**results[0], 'quoteProvider': 'brapi'}
     except Exception:
@@ -2458,17 +2159,13 @@ def cotacao(ticker, force_refresh=False):
         try:
             list_url = 'https://brapi.dev/api/quote/list'
             list_params = {'search': ticker, 'limit': 20, 'sortBy': 'name', 'sortOrder': 'asc'}
-            try:
-                list_payload = _brapi_get_json(list_url, params=list_params, headers=headers,
-                    timeout=8, cache_ttl=3600, stale_if_error=7 * 86400, bypass_cache=False)
-            except requests.HTTPError as error:
-                if getattr(error.response, 'status_code', None) not in (401, 403) or not headers:
-                    raise
-                # Uma única consulta pública sem token, ainda sob o limitador local.
-                list_payload = _brapi_get_json(list_url, params=list_params,
-                    headers={'User-Agent': USER_AGENT}, timeout=8, cache_ttl=3600,
-                    stale_if_error=7 * 86400, bypass_cache=False)
-            stocks = list_payload.get('stocks') or []
+            response = requests.get(list_url, params=list_params, headers=headers, timeout=8)
+            if response.status_code in (401, 403) and headers:
+                # An expired optional token must not block the public latest-close list.
+                response = requests.get(list_url, params=list_params,
+                    headers={'User-Agent': USER_AGENT}, timeout=8)
+            response.raise_for_status()
+            stocks = response.json().get('stocks') or []
             def matches_symbol(item):
                 candidate = str(item.get('stock') or item.get('symbol') or '').upper()
                 return candidate == ticker or candidate.removesuffix('.SA') == ticker
@@ -4495,36 +4192,34 @@ def _asset_type_map():
 
 
 def _fetch_brapi_dividend_events(asset_type, symbols, start_date):
-    """Busca eventos por ticker com cache persistente e controle da cota gratuita."""
+    """Busca eventos em dinheiro usando os endpoints v2 dedicados de ações e FIIs."""
     if not symbols:
-        return [], [], set()
+        return [], []
     headers = {'Authorization': f'Bearer {_brapi_token()}'} if _brapi_token() else {}
-    events, errors, failed_symbols = [], [], set()
+    events, errors = [], []
     if asset_type == 'fii':
         url = 'https://brapi.dev/api/v2/fii/dividends'
         response_key = 'dividends'
     else:
         url = 'https://brapi.dev/api/v2/stocks/dividends'
         response_key = 'results'
-    batch_size = BRAPI_MAX_TICKERS_PER_REQUEST
-    for offset in range(0, len(symbols), batch_size):
-        batch = symbols[offset:offset + batch_size]
+    for offset in range(0, len(symbols), 20):
+        batch = symbols[offset:offset + 20]
         params = {'symbols': ','.join(batch), 'sortBy': 'paymentDate', 'sortOrder': 'asc'}
         if start_date:
             params['startDate'] = start_date
+        # Algumas respostas limitam a janela padrão ao passado. Abrir endDate
+        # permite receber pagamentos já anunciados para os próximos 12 meses.
         params['endDate'] = (datetime.now(TZ).date() + timedelta(days=365)).isoformat()
         if asset_type != 'fii' and _brapi_token():
             params['includeRaw'] = 'true'
         try:
-            try:
-                payload = _brapi_get_json(url, params=params, headers=headers, timeout=12,
-                    cache_ttl=12 * 3600, stale_if_error=7 * 86400, bypass_cache=False)
-            except requests.HTTPError as exc:
-                # Repetir sem includeRaw somente em erro de parâmetro HTTP 400.
-                if params.pop('includeRaw', None) is None or getattr(exc.response, 'status_code', None) != 400:
-                    raise
-                payload = _brapi_get_json(url, params=params, headers=headers, timeout=12,
-                    cache_ttl=12 * 3600, stale_if_error=7 * 86400, bypass_cache=False)
+            response = requests.get(url, params=params, headers=headers, timeout=18)
+            if response.status_code in (400, 403) and params.get('includeRaw') == 'true':
+                params.pop('includeRaw', None)
+                response = requests.get(url, params=params, headers=headers, timeout=18)
+            response.raise_for_status()
+            payload = response.json()
             if asset_type == 'fii':
                 events.extend(payload.get(response_key) or [])
             else:
@@ -4535,13 +4230,11 @@ def _fetch_brapi_dividend_events(asset_type, symbols, start_date):
                         events.append({**event, 'symbol': event.get('symbol') or symbol})
         except requests.RequestException as exc:
             code = getattr(getattr(exc, 'response', None), 'status_code', None)
-            if code not in (401, 403, 429) and not isinstance(exc, BrapiQuotaProtected):
-                failed_symbols.update(batch)
             errors.append(f'{asset_type}: HTTP {code or "falha de conexão"} ao consultar {", ".join(batch)}')
         except (ValueError, TypeError):
-            failed_symbols.update(batch)
             errors.append(f'{asset_type}: resposta inválida para {", ".join(batch)}')
-    return events, errors, failed_symbols
+    return events, errors
+
 
 
 
@@ -4556,21 +4249,6 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
     types = {str(item.get('ticker') or '').strip().upper(): str(item.get('tipo') or 'outros').lower()
              for item in (active_items or []) if str(item.get('ticker') or '').strip()}
     signature = tuple(sorted(types.items()))
-    token_fingerprint = hashlib.sha256((_brapi_token() or 'public').encode('utf-8')).hexdigest()[:16]
-    persistent_signature = hashlib.sha256(json.dumps([signature, token_fingerprint], ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest()
-    persistent_key = 'brapi_proventos_sync_signature'
-    persistent_time_key = 'brapi_proventos_sync_at'
-    saved_signature = db().execute('SELECT valor FROM integracao_estado WHERE chave=?', (persistent_key,)).fetchone()
-    saved_time = db().execute('SELECT valor FROM integracao_estado WHERE chave=?', (persistent_time_key,)).fetchone()
-    if not force and saved_signature and saved_signature['valor'] == persistent_signature and saved_time:
-        try:
-            age = (datetime.now(TZ) - datetime.fromisoformat(saved_time['valor'])).total_seconds()
-            if 0 <= age < 12 * 3600:
-                return {'ok': True, 'importados': 0, 'ignorados': 0, 'erros': [],
-                        'mensagem': 'Sincronização de proventos reutilizada do cache persistente (12 horas).',
-                        'ultima_sincronizacao': saved_time['valor']}
-        except (TypeError, ValueError):
-            pass
     if (not force and PROVENTOS_SYNC_CACHE.get('result')
             and PROVENTOS_SYNC_CACHE.get('signature') == signature
             and now_ts - PROVENTOS_SYNC_CACHE['time'] < PROVENTOS_SYNC_TTL):
@@ -4601,8 +4279,8 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
         stock_symbols = [symbol for symbol in stock_symbols if symbol in {'PETR4', 'MGLU3', 'VALE3', 'ITUB4'}]
 
     fetched, errors = [], []
-    stock_events, stock_errors, failed_stock_symbols = _fetch_brapi_dividend_events('acao', stock_symbols, start_date)
-    fii_events, fii_errors, failed_fii_symbols = _fetch_brapi_dividend_events('fii', fii_symbols, start_date)
+    stock_events, stock_errors = _fetch_brapi_dividend_events('acao', stock_symbols, start_date)
+    fii_events, fii_errors = _fetch_brapi_dividend_events('fii', fii_symbols, start_date)
     fetched.extend((event, 'fii') for event in fii_events)
     fetched.extend((event, 'acao') for event in stock_events)
     errors.extend(stock_errors + fii_errors)
@@ -4616,10 +4294,11 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
             quote_items = carteira().json.get('itens', [])
         except Exception:
             quote_items = []
-    # Fallback v1 apenas para tickers em que o endpoint dedicado falhou.
-    # Resposta válida sem eventos não dispara nova consulta redundante.
-    failed_symbols = failed_stock_symbols | failed_fii_symbols
-    for ticker in sorted(symbol for symbol in failed_symbols if symbol):
+    # O fallback também consulta tickers que já foram vendidos: eles continuam
+    # tendo histórico de proventos, mesmo sem posição atual na carteira.
+    quote_symbols = set(types)
+    quote_symbols.update(str(item.get('ticker') or '').upper() for item in (quote_items or []))
+    for ticker in sorted(symbol for symbol in quote_symbols if symbol):
         kind = types.get(ticker, 'outros')
         if kind not in stock_types and kind not in {'fii', 'fiis', 'fundo_imobiliario', 'fundos_imobiliarios'}:
             continue
@@ -4704,11 +4383,6 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
         'mensagem': (f'{imported} evento(s) elegível(is) sincronizado(s).' if imported else 'Nenhum evento elegível retornado para os ativos cadastrados. Verifique token, plano e cobertura da brapi.'),
         'ultima_sincronizacao': datetime.now(TZ).isoformat(timespec='minutes')
     }
-    if not errors:
-        synced_at = datetime.now(TZ).isoformat(timespec='seconds')
-        conn.execute('INSERT INTO integracao_estado(chave,valor) VALUES(?,?) ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor', (persistent_key, persistent_signature))
-        conn.execute('INSERT INTO integracao_estado(chave,valor) VALUES(?,?) ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor', (persistent_time_key, synced_at))
-        conn.commit()
     PROVENTOS_SYNC_CACHE.update(time=now_ts, result=result, signature=signature)
     return result
 
@@ -4982,15 +4656,12 @@ def _request_historical_batch(url, symbols, params, response_key='results', head
     if not symbols:
         return {}
     try:
-        merged = {}
-        batch_size = BRAPI_MAX_TICKERS_PER_REQUEST
-        for offset in range(0, len(symbols), batch_size):
-            batch = symbols[offset:offset + batch_size]
-            payload = _brapi_get_json(url, params={**params, 'symbols': ','.join(batch)},
-                headers=headers or {}, timeout=timeout, cache_ttl=24 * 3600,
-                stale_if_error=30 * 86400)
-            merged.update(_parse_historical_payload(payload, response_key=response_key))
-        return merged
+        response = requests.get(
+            url, params={**params, 'symbols': ','.join(symbols)},
+            headers=headers or {}, timeout=timeout
+        )
+        response.raise_for_status()
+        return _parse_historical_payload(response.json(), response_key=response_key)
     except (requests.RequestException, ValueError, TypeError):
         return {}
 
@@ -4999,12 +4670,13 @@ def _request_legacy_history(symbol, headers):
     """Fallback compatível com o endpoint v1, consultado por ticker para isolar erros."""
     for history_range in ('max', '1y'):
         try:
-            payload = _brapi_get_json(
+            response = requests.get(
                 f'https://brapi.dev/api/quote/{symbol}',
                 params={'range': history_range, 'interval': '1d'},
-                headers=headers, timeout=12, cache_ttl=24 * 3600,
-                stale_if_error=30 * 86400
+                headers=headers, timeout=12
             )
+            response.raise_for_status()
+            payload = response.json()
             result = next(iter(payload.get('results') or []), None)
             if not result:
                 continue
@@ -5635,14 +5307,14 @@ def _benchmark_monthly_hg(symbol, start_date, end_date, token):
 
 def _benchmark_monthly_brapi(symbol, start_date, end_date, token):
     """Histórico mensal brapi; aceita apenas uma resposta real do endpoint histórico."""
-    payload = _brapi_get_json(
+    response = requests.get(
         'https://brapi.dev/api/v2/stocks/historical',
         params={'symbols':symbol,'startDate':date.fromisoformat(str(start_date)[:10]).isoformat(),
                 'endDate':date.fromisoformat(str(end_date)[:10]).isoformat(),'interval':'1mo','sortOrder':'asc'},
-        headers={'Authorization':f'Bearer {token}'}, timeout=20,
-        cache_ttl=24 * 3600, stale_if_error=30 * 86400
+        headers={'Authorization':f'Bearer {token}'}, timeout=20
     )
-    found = _parse_historical_payload(payload)
+    response.raise_for_status()
+    found = _parse_historical_payload(response.json())
     points = found.get(symbol.upper()) or []
     by_month = {}
     for point in points:
@@ -6239,9 +5911,10 @@ def busca_ativos():
 
     headers = {'Authorization': f'Bearer {_brapi_token()}'} if _brapi_token() else {}
     try:
-        payload = _brapi_get_json('https://brapi.dev/api/quote/list',
-            params=params, headers=headers, timeout=8, cache_ttl=6 * 3600,
-            stale_if_error=7 * 86400)
+        response = requests.get('https://brapi.dev/api/quote/list',
+                                params=params, headers=headers, timeout=8)
+        response.raise_for_status()
+        payload = response.json()
         itens = []
         for item in payload.get('stocks', []):
             ticker = str(item.get('stock') or item.get('symbol') or '').upper()

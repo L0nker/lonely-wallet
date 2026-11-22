@@ -4611,7 +4611,6 @@ async function loadAPIProviders(){
  try{const data=await api('/api/integracoes',{skipAutoRefresh:true});apiProviders=data.providers||API_PROVIDER_FALLBACK;}
  catch(error){apiProviders=API_PROVIDER_FALLBACK.map(p=>({...p,configured:false,enabled:false,masked:''}));}
  renderAPIProviders();
- loadBrapiUsage();
  if(apiProviders.some(p=>p.id==='pluggy'&&p.configured&&p.enabled))loadPluggyState();
 }
 function renderAPIProviders(){
@@ -4633,7 +4632,7 @@ function renderAPIProviders(){
     <div class="pluggy-manager-header"><div><h3 id="pluggyManagerTitle">Gerenciar API Pluggy</h3><div class="mini">Sincronização automática e exclusão de dados importados</div></div><button class="ghost" type="button" onclick="closePluggyManager()" aria-label="Fechar">✕</button></div>
     <div class="pluggy-manager-content">
      <section class="pluggy-manager-section pluggy-sync-section">
-      <label class="mini pluggy-auto-sync-control" for="pluggyAutoSyncInterval"><span>Sincronizar automaticamente</span><select id="pluggyAutoSyncInterval" aria-label="Intervalo de sincronização automática" onchange="savePluggyAutoSyncInterval(this)"><option value="0">Desativado</option><option value="15">A cada 15 minutos</option><option value="30">A cada 30 minutos</option><option value="60">A cada hora</option><option value="240" selected>A cada 4 horas</option><option value="720">A cada 12 horas</option><option value="1440">Uma vez ao dia</option></select></label>
+      <label class="mini pluggy-auto-sync-control" for="pluggyAutoSyncInterval"><span>Sincronizar automaticamente</span><select id="pluggyAutoSyncInterval" aria-label="Intervalo de sincronização automática" onchange="savePluggyAutoSyncInterval(this)"><option value="0">Desativado</option><option value="15">A cada 15 minutos</option><option value="30" selected>A cada 30 minutos</option><option value="60">A cada hora</option><option value="240">A cada 4 horas</option><option value="720">A cada 12 horas</option><option value="1440">Uma vez ao dia</option></select></label>
      </section>
      <section class="pluggy-manager-section pluggy-clear-section">
       <div class="pluggy-clear-copy"><h4>Excluir dados importados</h4><div class="mini">Escolha uma conexão específica ou todas as conexões para remover os dados importados.</div></div>
@@ -4647,25 +4646,10 @@ function renderAPIProviders(){
   p.auth?`<div class="mini">${p.connected?'Conectada ao motor atual de dados':'Fonte complementar; cobertura depende do provedor e do plano.'}</div><label class="mini" for="apiToken_${p.id}">Token de integração</label><input type="password" id="apiToken_${p.id}" autocomplete="new-password" placeholder="${p.masked?'Cadastrado: '+p.masked:'Cole seu token aqui'}"/><div class="api-provider-actions"><button class="primary" type="button" onclick='saveAPIProvider(${jsArg(p.id)})' >Salvar token</button><button class="ghost" type="button" onclick='testAPIProvider(${jsArg(p.id)})'>Testar conexão</button>${p.configured?`<button class="ghost" type="button" onclick='toggleAPIProvider(${jsArg(p.id)},${!p.enabled})'>${p.enabled?'Desativar':'Ativar'}</button><button class="ghost" type="button" onclick='deleteAPIProvider(${jsArg(p.id)})'>Remover</button>`:''}</div>`:
   `<div class="api-provider-actions"><span class="mini">${p.id==='b3'?'Acesso mediante contrato e licença.':'Não é necessário cadastrar token.'}</span></div>`}
   <div class="api-status" id="apiStatus_${p.id}">${p.auth&&p.updated_at?'Última alteração: '+new Date(p.updated_at).toLocaleString('pt-BR'):''}</div>
-  ${p.id==='brapi'?`<div id="brapiUsagePanel" class="mini" style="margin:12px 0;padding:10px 12px;border:1px solid var(--border);border-radius:8px">Carregando consumo local da API…</div>`:''}
 
   <div class="api-provider-links"><a href="${p.url}" target="_blank" rel="noopener noreferrer">Obter acesso</a><a href="${p.docs}" target="_blank" rel="noopener noreferrer">Documentação</a></div>
  </article>`;
  host.innerHTML=credentialed.map(card).join('');if(pluggyHost)pluggyHost.innerHTML=pluggy.map(card).join('')||'<div class="panel empty">Pluggy indisponível.</div>'; 
-}
-
-
-async function loadBrapiUsage(){
- const host=document.getElementById('brapiUsagePanel');if(!host)return;
- try{
-  const usage=await api('/api/integracoes/brapi/uso',{skipAutoRefresh:true,cache:'no-store'});
-  const hasBudget=Number.isFinite(Number(usage.budget))&&Number(usage.budget)>0;
-  const calls=Number.isFinite(Number(usage.calls))?Number(usage.calls):0;
-  const remaining=hasBudget?Math.max(0,Number(usage.remaining)||0):null;
-  const percent=hasBudget?Math.min(100,Math.max(0,Number(usage.usage_percent)||0)):0;
-  const warning=usage.control&&Number(usage.control.blocked_until||0)>Date.now()/1000;
-  host.innerHTML=`<strong>Consumo local da brapi · últimos 30 dias</strong><div style="margin-top:5px">${calls.toLocaleString('pt-BR')} chamadas externas${hasBudget?` de ${Number(usage.budget).toLocaleString('pt-BR')} reservadas · ${remaining.toLocaleString('pt-BR')} restantes`:''}</div>${hasBudget?`<div style="height:6px;background:var(--surface-2);border-radius:20px;overflow:hidden;margin:8px 0"><div style="height:100%;width:${percent}%;background:${percent>=90?'var(--red)':percent>=70?'var(--orange)':'var(--green)'}"></div></div>`:''}<div>Cache reutilizado: ${Number(usage.cache_hits||0).toLocaleString('pt-BR')} · Falhas: ${Number(usage.errors||0).toLocaleString('pt-BR')}</div>${warning?'<div style="color:var(--orange);margin-top:4px">Consultas temporariamente pausadas após limite/erro do provedor.</div>':''}<div style="margin-top:5px;opacity:.75">${escapeHTML(usage.counter_scope||'Contador local da instalação.')} A brapi também conta chamadas feitas por outros aplicativos que compartilhem o mesmo token.</div>`;
- }catch(error){host.textContent='Não foi possível consultar o consumo local da brapi.';}
 }
 
 async function loadPluggyState(){
@@ -4724,7 +4708,7 @@ function closePluggyManager(){
 }
 let pluggyAutoSyncTimer=null;
 let pluggyAutoSyncRunning=false;
-let pluggyAutoSyncIntervalMinutes=240;
+let pluggyAutoSyncIntervalMinutes=30;
 const PLUGGY_SYNC_INTERVAL_KEY='lonelyWalletPluggySyncInterval';
 let pluggyAutoSyncSettingsLoaded=false;
 async function loadPluggyAutoSyncSettings(){

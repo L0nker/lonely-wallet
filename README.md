@@ -232,36 +232,3 @@ Consulte o estado da integração e os logs do container. A falta de cotação n
 ### v4.2.25 e anteriores
 
 Consulte as notas históricas preservadas nos pacotes anteriores. Este README prioriza o histórico confirmado a partir da v4.2.25 e as orientações atuais de instalação, segurança e manutenção.
-
-
-## Lonely Wallet v4.2.34
-
-### Otimização de consumo das APIs gratuitas
-
-- Cache persistente em SQLite para respostas brapi, identificadas por endpoint, parâmetros e impressão digital da credencial; o token original não é armazenado no cache.
-- Orçamento interno de segurança de 13.500 chamadas por período de 30 dias, com contador local de requisições, cache hits e falhas. O contador não enxerga outros aplicativos que compartilhem a mesma credencial.
-- Concorrência local limitada a uma chamada brapi, com intervalo mínimo configurável para reduzir respostas HTTP 429.
-- Backoff progressivo para HTTP 429, respostas 5xx e falhas de conexão; respostas antigas em cache podem ser reutilizadas por até 30 dias durante indisponibilidade, conforme a validade de cada tipo de dado.
-- Cache de cotações (30 minutos no pregão e 6 horas fora do pregão), busca/classificação de ativos (6 horas/7 dias), proventos (12 horas) e histórico (24 horas).
-- Sincronização de proventos com assinatura persistente por carteira e credencial, evitando consultas repetidas após reinicialização do Docker. A sincronização manual respeita o cache HTTP recente.
-- Fallback legado de proventos consultado somente para tickers em que o endpoint dedicado falhou; uma resposta válida sem eventos não provoca uma chamada adicional.
-- Limite padrão de um ticker por requisição, ajustável por `BRAPI_MAX_TICKERS_PER_REQUEST`.
-- Painel de consumo local na página de APIs, sem exposição de tokens.
-- Novas instalações usam sincronização automática Pluggy a cada 4 horas; frequências já configuradas são preservadas.
-
-### Configurações padrão
-
-- `BRAPI_ROLLING_30D_BUDGET=13500`
-- `BRAPI_MAX_TICKERS_PER_REQUEST=1`
-- `BRAPI_MARKET_CACHE_SECONDS=1800`
-- `BRAPI_OFF_MARKET_CACHE_SECONDS=21600`
-- `BRAPI_REQUEST_GAP_SECONDS=0.35`
-
-O contador é local a esta instalação. A plataforma do provedor continua sendo a fonte definitiva para o consumo total da credencial.
-
-### Atualização
-
-- Versão desenvolvida a partir da base **4.2.32**.
-- Inclui somente melhorias de cache, controle de chamadas e frequência das APIs. Não incorpora as alterações financeiras da versão 4.2.33.
-- Manter os volumes `/DATA/AppData/lonely-wallet/data:/data`, bancos SQLite, tokens, chaves de criptografia e configurações existentes.
-- Reconstruir a imagem Docker para aplicar as alterações.
