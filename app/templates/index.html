@@ -2882,7 +2882,7 @@ function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
   const widthTotal=widthKeys.reduce((sum,key)=>sum+(columnWeights[key]||.9),0);
   const proportionalCols=`<colgroup>${widthKeys.map(key=>`<col style="width:${((columnWeights[key]||.9)/widthTotal*100).toFixed(3)}%">`).join('')}</colgroup>`;
   const body=items.length?`<div class="tablewrap"><table class="data proportional-assets-table" data-position-table ${summaryMode&&cat.key==='renda_fixa'?'data-fixed-income-summary="true"':''}>${proportionalCols}<thead><tr>${shown.map(([key,label])=>{const sort=positionSortState[cat.key]||{key:'valor_atual',direction:'desc'};const active=sort.key===key;const arrow=active?(sort.direction==='desc'?'▼':'▲'):'';return `<th data-col="${key}" class="position-sort-th"><button type="button" class="position-sort-button ${active?'is-sorted':''}" onclick='sortPositionAssets(${jsArg(cat.key)},${jsArg(key)})'  title="Ordenar por ${escapeHTML(label)}">${label}<span class="position-sort-indicator" aria-hidden="true">${arrow}</span></button></th>`;}).join('')}<th data-col="opcoes">Opções</th></tr></thead><tbody>${items.map(i=>`<tr>${shown.map(([,label,renderCell])=>renderCell(i)).join('')}<td data-col="opcoes" class="asset-options-cell"><button type="button" class="asset-options-trigger" aria-label="Opções de ${escapeHTML(i.ticker)}" onclick='openAssetMenu(event,${jsArg(i.ticker)})'>•••</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${summaryMode&&allCategoryItems.length?"Os ativos desta classe estão em outra página.":"Nenhum ativo cadastrado nesta categoria."}</div>`;
-  const categoryMetrics=`<span class="asset-category-title"><span class="asset-category-icon">${cat.icon}</span>${cat.name}</span><span class="asset-category-metric">Ativos<b>${allCategoryItems.length}</b></span><span class="asset-category-metric">Valor total<b>${brl(total)}</b></span>${fixedIncomeDiscountMetric}${cat.key==='renda_fixa'?'<span class="asset-category-metric category-metric-placeholder" aria-hidden="true"><span>Variação</span><b>—</b></span>':`<span class="asset-category-metric">Variação<b class="${validVariationItems.length?'metric-change '+(variation>=0?'green':'red'):'category-empty-value'}">${validVariationItems.length?`${variation>=0?'▲':'▼'} ${pct(variation)}`:'-'}</b></span>`}<span class="asset-category-metric">Rentabilidade<b>${allCategoryItems.length?`<span class="variation-pill ${profitability>=0?'positive':'negative'}">${profitability>=0?'↗':'↘'} ${pct(profitability)}</span>`:'<span class="category-empty-pill">-</span>'}</b></span><span class="asset-category-metric">% na carteira<b>${Math.round(portfolioPct)}% / ${Math.round(ideal)}%</b></span><span class="asset-category-chevron">⌄</span>`;
+  const categoryMetrics=`<span class="asset-category-title"><span class="asset-category-icon">${cat.icon}</span>${cat.name}</span><span class="asset-category-metric">Ativos<b>${allCategoryItems.length}</b></span><span class="asset-category-metric">Valor total<b>${brl(total)}</b></span>${fixedIncomeDiscountMetric}${cat.key==='renda_fixa'?'':`<span class="asset-category-metric">Variação<b class="${validVariationItems.length?'metric-change '+(variation>=0?'green':'red'):'category-empty-value'}">${validVariationItems.length?`${variation>=0?'▲':'▼'} ${pct(variation)}`:'-'}</b></span>`}<span class="asset-category-metric">Rentabilidade<b>${allCategoryItems.length?`<span class="variation-pill ${profitability>=0?'positive':'negative'}">${profitability>=0?'↗':'↘'} ${pct(profitability)}</span>`:'<span class="category-empty-pill">-</span>'}</b></span><span class="asset-category-metric">% na carteira<b>${Math.round(portfolioPct)}% / ${Math.round(ideal)}%</b></span><span class="asset-category-chevron">⌄</span>`;
   const moveControls=`<div class="position-category-move">${categoryIndex>0?`<button type="button" class="position-category-arrow" title="Mover ${cat.name} para cima" aria-label="Mover ${cat.name} para cima" onclick='event.stopPropagation();${summaryMode?'moveSummaryCategory':'movePositionCategory'}(${jsArg(cat.key)},-1)' >↑</button>`:''}${categoryIndex<visibleCategories.length-1?`<button type="button" class="position-category-arrow" title="Mover ${cat.name} para baixo" aria-label="Mover ${cat.name} para baixo" onclick='event.stopPropagation();${summaryMode?'moveSummaryCategory':'movePositionCategory'}(${jsArg(cat.key)},1)' >↓</button>`:''}</div>`;
   const fixedIncomeHeadClass=cat.key==='renda_fixa'?' fixed-income-category-head':'';
   const header=summaryMode
@@ -6541,16 +6541,19 @@ body.light-theme .launch-distribution-row,body.light-theme .launch-distribution-
 }
 
 
-/* v4.2.28 — resumo consolidado do saldo líquido da Renda Fixa. */
+/* v4.2.29 — cabeçalho de Renda Fixa alinhado e sem coluna fantasma. */
 .asset-category-head.fixed-income-category-head{
-  grid-template-columns:minmax(140px,1.2fr) repeat(6,minmax(72px,.7fr)) 28px;
+  grid-template-columns:minmax(180px,1.3fr) repeat(5,minmax(0,.72fr)) 28px;
 }
 .summary-position-groups .summary-category-toggle.fixed-income-category-head{
-  grid-template-columns:minmax(140px,1.2fr) repeat(6,minmax(72px,.7fr)) 26px;
+  grid-template-columns:minmax(180px,1.3fr) repeat(5,minmax(0,.72fr)) 26px;
 }
 .fixed-income-category-head .fixed-income-discount-total b{
   font-variant-numeric:tabular-nums;
 }
+.asset-category-head.fixed-income-category-head{min-height:86px;align-items:center;box-sizing:border-box}
+.fixed-income-category-head .asset-category-metric{white-space:nowrap;line-height:1.25}
+.fixed-income-category-head .asset-category-metric b{white-space:nowrap;line-height:1.25}
 @media(max-width:1100px){
   .asset-category-head.fixed-income-category-head,
   .summary-position-groups .summary-category-toggle.fixed-income-category-head{
