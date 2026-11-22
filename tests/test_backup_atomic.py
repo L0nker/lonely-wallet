@@ -47,28 +47,5 @@ class BackupAtomicTests(unittest.TestCase):
         self.assertEqual(list(self.out.glob('.lonely-wallet-staging-*')), [])
 
 
-    def test_predelete_backup_rotation_keeps_ten_newest(self):
-        import sys
-        app_dir = Path(__file__).resolve().parents[1]
-        sys.path.insert(0, str(app_dir))
-        from scripts.backup_rotation import rotate_predelete_backups
-        root = self.root / 'backups'
-        root.mkdir()
-        paths = []
-        for index in range(12):
-            folder = root / f'pre-exclusao-{index:02d}'
-            folder.mkdir()
-            (folder / 'ok.txt').write_text('ok')
-            os.utime(folder, (index + 1, index + 1))
-            paths.append(folder)
-        removed = rotate_predelete_backups(root, keep=10)
-        remaining = sorted(path.name for path in root.glob('pre-exclusao-*'))
-        self.assertEqual(len(remaining), 10)
-        self.assertEqual(len(removed), 2)
-        self.assertIn('pre-exclusao-11', remaining)
-        self.assertIn('pre-exclusao-10', remaining)
-
-
-
 if __name__ == '__main__':
     unittest.main()

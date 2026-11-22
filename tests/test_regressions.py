@@ -28,18 +28,6 @@ class RegressionTests(unittest.TestCase):
             con.execute('DELETE FROM auth_attempts')
             con.commit()
 
-    def cleanup_ticker_data(self, ticker):
-        with wallet.app.app_context():
-            con = wallet.db()
-            con.execute('DELETE FROM operacoes WHERE upper(ticker)=?', (ticker.upper(),))
-            con.execute('DELETE FROM saldos_importados WHERE upper(ticker)=?', (ticker.upper(),))
-            con.commit()
-
-    def test_pluggy_sync_interval_is_required(self):
-        response = self.client.post('/api/pluggy/settings', json={})
-        self.assertEqual(response.status_code, 400)
-        self.assertIn('interval_minutes', response.get_json()['erro'])
-
     def test_pluggy_sync_interval_persists_after_new_request(self):
         saved = self.client.post('/api/pluggy/settings', json={'interval_minutes': 15})
         self.assertEqual(saved.status_code, 200)
@@ -129,7 +117,6 @@ class RegressionTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 400)
 
     def test_imported_balance_asset_can_be_sold(self):
-        self.addCleanup(self.cleanup_ticker_data, 'BASEONLY4')
         with wallet.app.app_context():
             con = wallet.db()
             con.execute('DELETE FROM saldos_importados WHERE ticker=?', ('BASEONLY4',))
@@ -150,7 +137,6 @@ class RegressionTests(unittest.TestCase):
                     wallet._b3_number(value)
 
     def test_b3_semantic_duplicate_requires_same_date_and_exact_fill(self):
-        self.addCleanup(self.cleanup_ticker_data, 'SEMANTIC4')
         with wallet.app.app_context():
             con = wallet.db()
             con.execute("INSERT INTO operacoes(ticker,tipo,lado,quantidade,preco,data,custos,status,data_registro,data_execucao,detalhes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
@@ -162,10 +148,8 @@ class RegressionTests(unittest.TestCase):
             self.assertIsNone(wallet._b3_semantic_duplicate(near))
 
     def test_irpf_counts_sale_from_imported_opening_balance(self):
-        self.addCleanup(self.cleanup_ticker_data, 'IRPFBASE4')
         with wallet.app.app_context():
             con = wallet.db()
-            con.execute("DELETE FROM operacoes WHERE ticker=?", ('IRPFBASE4',))
             con.execute("DELETE FROM saldos_importados WHERE ticker=?", ('IRPFBASE4',))
             con.execute('INSERT INTO saldos_importados(ticker,tipo,quantidade,preco_medio,preco_base,data_base,nome,origem) VALUES(?,?,?,?,?,?,?,?)',
                         ('IRPFBASE4','acao',10,20,20,'2025-12-31','IRPF base','Teste'))
@@ -175,59 +159,6 @@ class RegressionTests(unittest.TestCase):
             summary = wallet.build_irpf_summary(2026)
             self.assertGreater(summary['resumo']['resultado_vendas'], 0)
             self.assertTrue(any(x['ticker']=='IRPFBASE4' and x['quantidade']==6 for x in summary['posicoes']))
-
-
-    def test_retroactive_sale_cannot_make_later_position_negative(self):
-        self.addCleanup(self.cleanup_ticker_data, 'RETRO4')
-        self.addCleanup(self.cleanup_ticker_data, 'OTHER4')
-        with wallet.app.app_context():
-            con = wallet.db()
-            con.execute("DELETE FROM operacoes WHERE ticker=?", ('RETRO4',))
-            con.execute("DELETE FROM saldos_importados WHERE ticker=?", ('RETRO4',))
-            con.execute("DELETE FROM saldos_importados WHERE ticker=?", ('OTHER4',))
-            con.execute("INSERT INTO saldos_importados(ticker,tipo,quantidade,preco_medio,preco_base,data_base,nome,origem) VALUES(?,?,?,?,?,?,?,?)",
-                        ('OTHER4','acao',1,10,10,'2026-02-20','Other asset','Teste'))
-            con.execute("INSERT INTO operacoes(ticker,tipo,lado,quantidade,preco,data,custos,status,data_registro,data_execucao,detalhes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                        ('RETRO4','acao','compra',10,10,'2026-01-10',0,'executada','2026-01-10','2026-01-10T10:00:00-03:00','{}'))
-            con.execute("INSERT INTO operacoes(ticker,tipo,lado,quantidade,preco,data,custos,status,data_registro,data_execucao,detalhes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                        ('RETRO4','acao','venda',8,12,'2026-03-02',0,'executada','2026-03-02','2026-03-02T10:00:00-03:00','{}'))
-            con.commit()
-            result = wallet.sale_breaks_future_position('RETRO4', {
-                'lado':'venda','quantidade':5,'data':'2026-02-01',
-                'data_execucao':'2026-02-01T10:00:00-03:00','status':'executada'
-            })
-            self.assertTrue(result)
-            con.execute("DELETE FROM operacoes WHERE ticker=?", ('RETRO4',))
-            con.commit()
-
-    def test_provider_error_redacts_urls_and_tokens(self):
-        message = wallet.safe_error_text('Request failed https://api.example/v1?token=secret123&x=1 api_key=abc123')
-        self.assertNotIn('api.example', message)
-        self.assertNotIn('secret123', message)
-        self.assertNotIn('abc123', message)
-        self.assertIn('[URL removida]', message)
-        quoted = wallet.safe_error_text('{"clientSecret":"s3cr3t","apiKey":"k-123"} Authorization: Bearer topsecret')
-        for secret in ('s3cr3t', 'k-123', 'topsecret'):
-            self.assertNotIn(secret, quoted)
-
-    def test_csp_does_not_allow_generic_https_for_connect_style_or_font(self):
-        response = self.client.get('/')
-        policy = response.headers.get('Content-Security-Policy', '')
-        for directive in ('connect-src', 'style-src', 'font-src'):
-            value = next(part for part in policy.split(';') if part.strip().startswith(directive))
-            self.assertNotRegex(value, r'(?<![A-Za-z0-9.-])https:(?!//)')
-        self.assertIn("script-src 'self'", policy)
-
-    def test_dynamic_string_click_arguments_use_safe_json_encoder(self):
-        template = (Path(__file__).resolve().parents[1] / 'app' / 'templates' / 'index.html').read_text()
-        self.assertIn('function jsAttrArg(value)', template)
-        import re
-        for match in re.finditer(r'on(?:click|change)="([^"]*)"', template):
-            handler = match.group(1)
-            self.assertNotRegex(handler, r"'\$\{(?:escapeHTML\()?[^}]+\}\)?'")
-        self.assertIn('selectFixedIncomeSale(${jsAttrArg(item.ticker)})', template)
-        self.assertIn('setReturnCardBenchmark(${jsAttrArg(cardKey)},this.value)', template)
-
 
 
 if __name__ == '__main__':

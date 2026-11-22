@@ -8,8 +8,6 @@ import requests
 from cryptography.fernet import Fernet, InvalidToken
 from openpyxl import load_workbook, Workbook
 from flask import Flask, g, jsonify, render_template, request, send_file, session, redirect, url_for
-from scripts.backup_rotation import rotate_predelete_backups
-from scripts.database_migration import migrate_legacy_database
 
 app = Flask(__name__)
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax', SESSION_COOKIE_SECURE=os.environ.get('SESSION_COOKIE_SECURE', '0').lower() in ('1', 'true', 'yes'), PERMANENT_SESSION_LIFETIME=timedelta(minutes=30), MAX_CONTENT_LENGTH=16 * 1024 * 1024)
@@ -148,7 +146,7 @@ def security_headers(response):
     response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
     response.headers.setdefault('X-Frame-Options', 'SAMEORIGIN')
     response.headers.setdefault('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
-    response.headers.setdefault('Content-Security-Policy', "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; img-src 'self' data: blob: https://icons.brapi.dev https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; font-src 'self' data:")
+    response.headers.setdefault('Content-Security-Policy', "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' https:; font-src 'self' data: https:")
     return response
 
 
@@ -185,7 +183,15 @@ def close_db(_):
 def prepare_database_files():
     os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
     if os.path.abspath(DB_PATH) != os.path.abspath(LEGACY_DB_PATH) and not os.path.exists(DB_PATH) and os.path.exists(LEGACY_DB_PATH):
-        migrate_legacy_database(LEGACY_DB_PATH, DB_PATH)
+        src = sqlite3.connect(f'file:{LEGACY_DB_PATH}?mode=ro', uri=True, timeout=30)
+        dst = sqlite3.connect(DB_PATH, timeout=30)
+        try:
+            src.backup(dst)
+            if dst.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                raise RuntimeError('Falha de integridade na migração do SQLite legado.')
+        finally:
+            dst.close()
+            src.close()
     os.makedirs(os.path.dirname(TOKEN_DB_PATH) or '.', exist_ok=True)
     con = sqlite3.connect(TOKEN_DB_PATH, timeout=15)
     con.execute('PRAGMA busy_timeout=15000')
@@ -1337,12 +1343,8 @@ def pluggy_settings():
         response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
         return response
     payload = request.get_json(silent=True) or {}
-    if not isinstance(payload, dict):
-        return json_error('Corpo JSON inválido.')
-    if 'interval_minutes' not in payload:
-        return json_error('O campo interval_minutes é obrigatório.')
     try:
-        interval = int(payload.get('interval_minutes'))
+        interval = int(payload.get('interval_minutes', 30))
     except (TypeError, ValueError):
         return json_error('Intervalo inválido.')
     if interval not in (0, 15, 30, 60, 240, 720, 1440):
@@ -1417,9 +1419,9 @@ def pluggy_add_item():
         detail = ''
         try: detail = (exc.response.json() or {}).get('message') or (exc.response.json() or {}).get('code') or ''
         except Exception: pass
-        return json_error('Não foi possível validar o itemId na Pluggy. HTTP %s %s' % (code, safe_error_text(detail, 100)), 400)
+        return json_error('Não foi possível validar o itemId na Pluggy. HTTP %s %s' % (code, str(detail)[:140]), 400)
     except Exception as exc:
-        return json_error('Falha ao validar conexão Pluggy: ' + safe_error_text(exc, 180), 400)
+        return json_error('Falha ao validar conexão Pluggy: ' + str(exc)[:180], 400)
 
 
 @app.route('/api/pluggy/items/<item_id>/clear', methods=['POST'])
@@ -1499,20 +1501,8 @@ def pluggy_remove_item(item_id):
     return jsonify(ok=True)
 
 
-_PLUGGY_SYNC_LOCK = threading.Lock()
-
-
 @app.route('/api/pluggy/sync', methods=['POST'])
 def pluggy_sync():
-    if not _PLUGGY_SYNC_LOCK.acquire(blocking=False):
-        return json_error('Já existe uma sincronização Pluggy em andamento.', 409)
-    try:
-        return _pluggy_sync_impl()
-    finally:
-        _PLUGGY_SYNC_LOCK.release()
-
-
-def _pluggy_sync_impl():
     payload = request.get_json(silent=True) or {}
     requested_item_id = str(payload.get('item_id') or '').strip()
     if requested_item_id:
@@ -1637,79 +1627,14 @@ def _pluggy_sync_impl():
         return json_error('Falha ao sincronizar Pluggy (HTTP %s). Confira itemId, autorização MeuPluggy e credenciais.' % code, 400)
     except Exception as exc:
         db().commit()
-        return json_error('Falha na sincronização Pluggy: ' + safe_error_text(exc, 180), 400)
+        return json_error('Falha na sincronização Pluggy: ' + str(exc)[:220], 400)
     # Após atualizar as posições/movimentações, reconcilia proventos dos ativos atuais.
     try:
         current_items = (carteira().json or {}).get('itens', [])
         summary['proventos_sync'] = sync_brapi_proventos(force=False, quote_items=current_items, active_items=current_items)
     except Exception as dividend_exc:
-        summary['warnings'].append('Não foi possível atualizar proventos após a sincronização: ' + safe_error_text(dividend_exc, 120))
+        summary['warnings'].append('Não foi possível atualizar proventos após a sincronização: ' + str(dividend_exc)[:160])
     return jsonify(ok=True, summary=summary, synced_at=now_text)
-
-
-PLUGGY_SCHEDULER_POLL_SECONDS = 30
-
-
-def pluggy_scheduler_loop():
-    """Run persisted automatic Pluggy syncs on the server, independent of browsers."""
-    while True:
-        try:
-            with app.app_context():
-                interval = _pluggy_sync_interval()
-                if interval > 0:
-                    active_items = db().execute(
-                        'SELECT last_synced_at FROM pluggy_items WHERE active=1'
-                    ).fetchall()
-                    now = datetime.now(TZ)
-                    due = False
-                    for item in active_items:
-                        raw = str(item['last_synced_at'] or '').strip()
-                        if not raw:
-                            due = True
-                            break
-                        try:
-                            last = datetime.fromisoformat(raw)
-                            if last.tzinfo is None:
-                                last = last.replace(tzinfo=TZ)
-                            if (now - last).total_seconds() >= interval * 60:
-                                due = True
-                                break
-                        except (TypeError, ValueError):
-                            due = True
-                            break
-                    credentials_configured = bool(_get_pluggy_credentials())
-                    attempt_row = db().execute(
-                        "SELECT value FROM app_settings WHERE key='pluggy_sync_last_attempt'"
-                    ).fetchone()
-                    last_attempt = None
-                    if attempt_row and attempt_row['value']:
-                        try:
-                            last_attempt = datetime.fromisoformat(str(attempt_row['value']))
-                            if last_attempt.tzinfo is None:
-                                last_attempt = last_attempt.replace(tzinfo=TZ)
-                        except (TypeError, ValueError):
-                            last_attempt = None
-                    attempt_due = (last_attempt is None or
-                                   (now - last_attempt).total_seconds() >= interval * 60)
-                    if due and active_items and credentials_configured and attempt_due:
-                        db().execute(
-                            "INSERT INTO app_settings(key,value) VALUES('pluggy_sync_last_attempt',?) "
-                            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                            (now.isoformat(timespec='seconds'),)
-                        )
-                        db().commit()
-                        with app.test_request_context('/api/pluggy/sync', method='POST', json={}):
-                            response = pluggy_sync()
-                        status = getattr(response, 'status_code', 200)
-                        if isinstance(response, tuple) and len(response) > 1:
-                            status = response[1]
-                        if int(status or 200) >= 400:
-                            app.logger.warning('Sincronização automática Pluggy retornou HTTP %s.', status)
-        except Exception as exc:
-            app.logger.warning('Falha no agendador Pluggy: %s', safe_error_text(exc, 160))
-        time.sleep(PLUGGY_SCHEDULER_POLL_SECONDS)
-
-
 
 
 @app.route('/api/integracoes', methods=['GET'])
@@ -2341,83 +2266,6 @@ def posicao(ticker, as_of=None):
     return max(qtd, 0), (custo / qtd if qtd > 0 else 0)
 
 
-def safe_error_text(error, limit=180):
-    """Return a compact provider error without leaking URLs, credentials or tokens."""
-    text = str(error or '')
-    # Exception strings commonly embed full request URLs, including query-string keys.
-    text = re.sub(r'https?://[^\s\"\'<>]+', '[URL removida]', text, flags=re.IGNORECASE)
-    # Redact Bearer credentials first so an Authorization key/value replacement
-    # cannot consume only the word "Bearer" and leave the credential behind.
-    text = re.sub(r"(?i)\bBearer\s+[^\s,;\"'}]+", 'Bearer [REDACTED]', text)
-    text = re.sub(
-        r'''(?i)["']?(token|api[_-]?key|apiKey|client[_-]?secret|clientSecret|authorization|password|secret)["']?\s*[:=]\s*["']?([^\s,;&"'}]+)''',
-        lambda match: match.group(1) + '=[REDACTED]', text
-    )
-    text = re.sub(r'[\r\n\t]+', ' ', text)
-    return text[:max(0, int(limit))]
-
-
-def sale_breaks_future_position(ticker, proposed_operation, exclude_id=None):
-    """Check that the quantity ledger never goes negative after adding/editing a sale.
-
-    This validates share/position quantities only. It intentionally does not calculate
-    price, cost basis, profitability, daily variation or dividends.
-    """
-    key = str(ticker or '').strip().upper()
-    if not key:
-        return True
-    proposed_raw = str(proposed_operation.get('data_execucao') or proposed_operation.get('data') or '')
-    if not proposed_raw:
-        return True
-    proposed_day = proposed_raw[:10]
-    opening_row = db().execute(
-        'SELECT data_base,quantidade FROM saldos_importados '
-        'WHERE upper(ticker)=? AND data_base<=? ORDER BY data_base DESC LIMIT 1',
-        (key, proposed_day)
-    ).fetchone()
-    base_day = opening_row['data_base'] if opening_row else None
-    next_snapshot_row = db().execute(
-        'SELECT MIN(data_base) FROM saldos_importados WHERE upper(ticker)=? AND data_base>?',
-        (key, proposed_day)
-    ).fetchone()
-    next_snapshot_day = next_snapshot_row[0] if next_snapshot_row else None
-    quantity = float(opening_row['quantidade'] or 0) if opening_row else 0.0
-
-    rows = db().execute(
-        "SELECT id,lado,quantidade,data,data_execucao,status FROM operacoes "
-        "WHERE upper(ticker)=? AND status IN ('executada','agendada')",
-        (key,)
-    ).fetchall()
-    events = []
-    for row in rows:
-        if exclude_id is not None and int(row['id']) == int(exclude_id):
-            continue
-        raw = str(row['data_execucao'] or row['data'] or '')
-        if not raw:
-            continue
-        if base_day and raw[:10] <= base_day:
-            continue
-        # A later full-position snapshot becomes a new authoritative starting point.
-        # This proposal must only be checked in the historical segment it can affect.
-        if next_snapshot_day and raw[:10] >= next_snapshot_day:
-            continue
-        events.append((raw, 0, int(row['id']), str(row['lado']), float(row['quantidade'] or 0)))
-
-    proposed_time = proposed_raw if 'T' in proposed_raw else proposed_raw + 'T10:00:00'
-    events.append((proposed_time, 1, 2**63 - 1, str(proposed_operation.get('lado') or 'venda'),
-                   float(proposed_operation.get('quantidade') or 0)))
-    events.sort(key=lambda event: (event[0], event[1], event[2]))
-
-    for _, _, _, side, amount in events:
-        if side == 'compra':
-            quantity += amount
-        elif side == 'venda':
-            quantity -= amount
-            if quantity < -1e-8:
-                return True
-    return False
-
-
 def json_error(message, status=400):
     return jsonify(ok=False, erro=message), status
 
@@ -2498,6 +2346,11 @@ def valid_operation(data):
             existing_type=asset_type_for_ticker(ticker, dt)
             if not existing_type or existing_type!=tipo:
                 return None,'O ativo selecionado não pertence à categoria informada. Escolha o ativo dentro da categoria correta.'
+            available,_=posicao(ticker, as_of=dt)
+            reserved=0.0
+            if dt >= datetime.now(TZ).date().isoformat():
+                reserved=float(db().execute("SELECT COALESCE(SUM(quantidade),0) FROM operacoes WHERE ticker=? AND lado='venda' AND status='agendada'",(ticker,)).fetchone()[0])
+            if qtd>available-reserved+1e-8: return None,'A quantidade vendida é maior que a posição disponível na data da operação, considerando vendas já agendadas.'
         raw=str(data.get('data_hora') or (dt+'T10:00'))
         requested=datetime.fromisoformat(raw)
         if requested.tzinfo is None: requested=requested.replace(tzinfo=TZ)
@@ -2514,11 +2367,6 @@ def valid_operation(data):
         else:
             execution=next_b3_session(requested)
             status='executada' if execution<=now_minute else 'agendada'
-        if lado=='venda' and sale_breaks_future_position(ticker, {
-            'lado': lado, 'quantidade': qtd, 'data': execution.date().isoformat(),
-            'data_execucao': execution.isoformat(timespec='minutes'), 'status': status
-        }):
-            return None,'Esta venda deixaria a posição negativa em alguma data posterior. Revise as compras e vendas do ativo.'
         details=data.get('detalhes') or {}
         if isinstance(details,str): details=json.loads(details)
         return (ticker,tipo,lado,qtd,preco,execution.date().isoformat(),custos,status,now.isoformat(timespec='minutes'),execution.isoformat(timespec='minutes'),json.dumps(details,ensure_ascii=False)),None
@@ -2688,35 +2536,27 @@ def cleanup_pluggy_asset_refs(scope, tipo='', ticker='', operation_ids=None, inv
     return {'pluggy_investments': len(inv_ids), 'pluggy_transactions': int(deleted_tx), 'pluggy_events': int(deleted_events)}
 
 
-_PREDELETE_BACKUP_LOCK = threading.Lock()
-
-
-
 def create_predelete_backup():
     """Cria cópias SQLite consistentes antes de exclusões em massa."""
-    # Serializa a criação e a rotação para não remover uma pasta ainda em gravação.
-    with _PREDELETE_BACKUP_LOCK:
-        backup_root = Path(os.environ.get('BACKUP_DIR', '/data/backups'))
-        backup_root.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(TZ).strftime('%Y%m%d-%H%M%S-%f')
-        folder = backup_root / f'pre-exclusao-{stamp}'
-        folder.mkdir(mode=0o700)
-        try:
-            for source, connection in ((Path(DB_PATH), db()), (Path(TOKEN_DB_PATH), token_db())):
-                target = folder / source.name
-                dest = sqlite3.connect(str(target), timeout=30)
-                try:
-                    connection.backup(dest)
-                    if dest.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
-                        raise RuntimeError('Falha ao validar backup preventivo.')
-                finally:
-                    dest.close()
-            # Só inicia a rotação após a nova cópia passar pela validação de integridade.
-            rotate_predelete_backups(backup_root, keep=10, logger=app.logger)
-            return str(folder)
-        except Exception:
-            shutil.rmtree(folder, ignore_errors=True)
-            raise
+    backup_root = Path(os.environ.get('BACKUP_DIR', '/data/backups'))
+    backup_root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(TZ).strftime('%Y%m%d-%H%M%S-%f')
+    folder = backup_root / f'pre-exclusao-{stamp}'
+    folder.mkdir(mode=0o700)
+    try:
+        for source, connection in ((Path(DB_PATH), db()), (Path(TOKEN_DB_PATH), token_db())):
+            target = folder / source.name
+            dest = sqlite3.connect(str(target), timeout=30)
+            try:
+                connection.backup(dest)
+                if dest.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                    raise RuntimeError('Falha ao validar backup preventivo.')
+            finally:
+                dest.close()
+        return str(folder)
+    except Exception:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
 
 
 @app.route('/api/operacoes/gerenciar', methods=['DELETE'])
@@ -2814,6 +2654,14 @@ def delete_operacao(op_id):
             existing_type=asset_type_for_ticker(ticker, dt)
             if not existing_type or existing_type!=tipo:
                 return json_error('O ativo selecionado não pertence à categoria informada. Escolha o ativo dentro da categoria correta.')
+            available,_=posicao(ticker, as_of=dt)
+            if ticker==current['ticker'] and current['lado']=='venda' and current['status']!='agendada' and current['data']<=dt:
+                available+=float(current['quantidade'] or 0)
+            reserved=0.0
+            if dt >= datetime.now(TZ).date().isoformat():
+                reserved=float(db().execute("SELECT COALESCE(SUM(quantidade),0) FROM operacoes WHERE ticker=? AND lado='venda' AND status='agendada' AND id<>?",(ticker,op_id)).fetchone()[0])
+            if qtd>available-reserved+1e-8:
+                return json_error('A quantidade vendida é maior que a posição disponível na data da operação, considerando vendas já agendadas.')
         raw=str(j.get('data_hora') or (dt+'T10:00'))
         requested=datetime.fromisoformat(raw)
         if requested.tzinfo is None: requested=requested.replace(tzinfo=TZ)
@@ -2826,11 +2674,6 @@ def delete_operacao(op_id):
             execution=requested; status='executada'
         else:
             execution=next_b3_session(requested); status='executada' if execution<=now_minute else 'agendada'
-        if lado=='venda' and sale_breaks_future_position(ticker, {
-            'lado': lado, 'quantidade': qtd, 'data': execution.date().isoformat(),
-            'data_execucao': execution.isoformat(timespec='minutes'), 'status': status
-        }, exclude_id=op_id):
-            return json_error('Esta edição deixaria a posição negativa em alguma data posterior. Revise as compras e vendas do ativo.')
         details=j.get('detalhes',current['detalhes'] or '{}')
         if isinstance(details,dict): details=json.dumps(details,ensure_ascii=False)
         else:
@@ -3104,7 +2947,7 @@ def importar_b3():
             current_items = (carteira().json or {}).get('itens', [])
             dividend_sync = sync_brapi_proventos(force=False, quote_items=current_items, active_items=current_items)
         except Exception as dividend_exc:
-            dividend_sync = {'ok': False, 'mensagem': safe_error_text(dividend_exc, 140)}
+            dividend_sync = {'ok': False, 'mensagem': str(dividend_exc)[:180]}
         return jsonify(ok=True,importadas=inserted_ops+inserted_provs,operacoes=inserted_ops,proventos=inserted_provs,duplicados=duplicates,lote_id=lote_id, sincronizacao_proventos=dividend_sync)
     except Exception as exc:
         return json_error(str(exc) if isinstance(exc,ValueError) else 'Não foi possível ler a planilha B3. Confira o arquivo e tente novamente.')
@@ -5305,9 +5148,6 @@ def darf_item(darf_id):
 
 @app.route('/api/ativo/<ticker>')
 def ativo(ticker): return jsonify(cotacao(ticker.upper()))
-
-
-threading.Thread(target=pluggy_scheduler_loop, daemon=True, name='pluggy-server-scheduler').start()
 
 
 if __name__ == '__main__': app.run(host='0.0.0.0',port=8080)

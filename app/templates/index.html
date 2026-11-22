@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="pt-br" class="dashboard-wait-lock"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#14161d"><style>html,body{background:#14161d;color-scheme:dark}html.light-theme,html.light-theme body{background:#f3f5f8!important;color-scheme:light!important}</style><script>try{if(localStorage.getItem('lonelyWalletLightTheme')==='1')document.documentElement.classList.add('light-theme');}catch(e){}</script><title>Lonely Wallet | Investimentos</title><link rel="icon" type="image/png" href="/static/lonely-wallet-favicon.png"><link rel="apple-touch-icon" href="/static/lonely-wallet-favicon.png">
 
-<script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <style>
 :root{--bg:#14161d;--panel:#20232c;--panel2:#171a22;--line:#303541;--text:#f3f5f8;--muted:#929baa;--green:#20bd82;--red:#ef6680;--blue:#78b7f5;--gold:#d5a85e;--table-hover:#262b36}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px Inter,system-ui,-apple-system,Segoe UI,sans-serif}button,input,select{font:inherit}button{cursor:pointer}.top{height:62px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 4.5%;position:sticky;top:0;background:#151820;z-index:5}.brand{font-size:18px;font-weight:750;letter-spacing:-.5px}.brand span{color:var(--gold)}.topright{display:flex;gap:10px;align-items:center;color:var(--muted)}.pillbtn,.primary,.ghost{border:1px solid var(--line);border-radius:8px;padding:9px 13px;background:#222631;color:var(--text)}.primary{background:#2478d4;border-color:#2478d4}.nav{display:flex;gap:4px;padding:0 4.5%;border-bottom:1px solid var(--line);overflow:auto;background:#171a22}.nav button{white-space:nowrap;background:none;color:#aeb7c5;border:0;padding:15px 12px;border-bottom:2px solid transparent}.nav button.active{color:white;border-color:var(--blue)}
 .dashboard-data-wait{position:fixed;inset:0;z-index:99999;background:var(--bg);display:none;align-items:center;justify-content:center;padding:24px;text-align:center;width:100vw;height:100vh;height:100dvh;overscroll-behavior:contain;touch-action:none}
@@ -2132,7 +2132,7 @@ body.light-theme .lw-select-option:hover,body.light-theme .lw-select-option.acti
 
 
 
-<div class="footer">Lonely Wallet v4.2.17 · Controle pessoal de investimentos<br>Dados de cotação podem sofrer atrasos ou indisponibilidade. Este sistema é apenas informativo.</div>
+<div class="footer">Lonely Wallet v4.2.14 · Controle pessoal de investimentos<br>Dados de cotação podem sofrer atrasos ou indisponibilidade. Este sistema é apenas informativo.</div>
 </main>
 <div class="modalback" id="launchDistributionBack" onclick="if(event.target===this)closeLaunchDistribution()"><div class="modal" style="width:min(900px,100%)"><div class="modalhead"><div><h2 id="launchDistributionTitle">Distribuição de aportes</h2><div class="sub" id="launchDistributionSubtitle">Operações do período selecionado.</div></div><button class="close" type="button" onclick="closeLaunchDistribution()">×</button></div><div class="launch-distribution-switch segmented"><button type="button" id="launchDistAssetTab" class="active" onclick="setLaunchDistributionMode('ativo')">◉ Por Ativo</button><button type="button" id="launchDistTypeTab" onclick="setLaunchDistributionMode('tipo')">◉ Por Tipo</button><span class="launch-dist-switch-spacer"></span><button type="button" id="launchDistBuyTab" class="active" onclick="setLaunchDistributionSide('compra')">Compra</button><button type="button" id="launchDistSellTab" onclick="setLaunchDistributionSide('venda')">Venda</button></div><div class="launch-distribution-layout"><div class="launch-distribution-chart"><canvas id="launchDistributionChart"></canvas></div><div class="launch-distribution-legend"><div class="launch-distribution-total"><b>Total</b><strong id="launchDistributionTotal"></strong></div><div id="launchDistributionRows"></div></div></div><div class="modalactions"><button class="ghost" type="button" onclick="closeLaunchDistribution()">Fechar</button></div></div></div>
 <div class="modalback" id="b3ImportsManagerBack" onclick="if(event.target===this)closeB3ImportsManager()"><div class="modal" style="width:min(860px,100%)"><div class="modalhead"><div><h2>Importações da B3</h2><div class="sub">Histórico das planilhas importadas. Você pode excluir uma importação recente e os registros criados exclusivamente por ela.</div></div><button class="close" onclick="closeB3ImportsManager()">×</button></div><div id="b3ImportsList" class="section mini">Carregando importações…</div><div class="modalactions"><button class="ghost" type="button" onclick="closeB3ImportsManager()">Fechar</button></div></div></div><div class="modalback utility-modal-back" id="operationManagerBack" onclick="if(event.target===this)closeOperationManager()"><div class="modal utility-modal" style="width:min(1100px,100%)"><div class="modalhead"><div><h2>Gerenciar lançamentos de ativos</h2><div class="sub">Filtre por classe e ativo para revisar ou excluir operações. A exclusão em massa é permanente.</div></div><button class="close" onclick="closeOperationManager()">×</button></div><div class="formgrid operation-manager-filters"><div class="field"><label for="operationManagerType">Classe do ativo</label><select id="operationManagerType" onchange="onOperationManagerTypeChange()"><option value="">Todas as classes</option></select></div><div class="field"><label for="operationManagerTicker">Ativo</label><select id="operationManagerTicker" onchange="renderOperationManagerRows()"><option value="">Todos os ativos</option></select></div></div><div id="operationManagerSummary" class="mini" style="margin:12px 0">Carregando lançamentos…</div><div id="operationManagerRows" class="tablewrap"></div><div class="modalactions" style="justify-content:space-between;flex-wrap:wrap"><div class="toolbar"><button class="danger" type="button" onclick="confirmDeleteManaged('ativo')">Excluir todos deste ativo</button><button class="danger" type="button" onclick="confirmDeleteManaged('todas')">Excluir todos os lançamentos</button></div><button class="ghost" type="button" onclick="closeOperationManager()">Fechar</button></div></div></div>
@@ -2703,8 +2703,8 @@ function summaryCategoryPagination(category,totalPages,currentPage){
  if(totalPages<=1)return '';
  const buttons=[...new Set([1,currentPage-1,currentPage,currentPage+1,totalPages].filter(n=>n>=1&&n<=totalPages))].sort((a,b)=>a-b);
  let previous=0;
- const pageButtons=buttons.map(n=>{const gap=previous&&n-previous>1?'<span>…</span>':'';previous=n;return gap+`<button type="button" class="${n===currentPage?'active':''}" ${n===currentPage?'aria-current="page"':''} onclick="changeSummaryAssetsPage(${jsAttrArg(category)},${n})">${n}</button>`;}).join('');
- return `<nav class="summary-assets-pagination" role="navigation" aria-label="Paginação de ${escapeHTML(labels[category]||category)}"><button type="button" ${currentPage===1?'disabled':''} onclick="changeSummaryAssetsPage(${jsAttrArg(category)},${currentPage-1})">Anterior</button>${pageButtons}<button type="button" ${currentPage===totalPages?'disabled':''} onclick="changeSummaryAssetsPage(${jsAttrArg(category)},${currentPage+1})">Próximo</button><span>Página ${currentPage} de ${totalPages}</span></nav>`;
+ const pageButtons=buttons.map(n=>{const gap=previous&&n-previous>1?'<span>…</span>':'';previous=n;return gap+`<button type="button" class="${n===currentPage?'active':''}" ${n===currentPage?'aria-current="page"':''} onclick="changeSummaryAssetsPage('${category}',${n})">${n}</button>`;}).join('');
+ return `<nav class="summary-assets-pagination" role="navigation" aria-label="Paginação de ${escapeHTML(labels[category]||category)}"><button type="button" ${currentPage===1?'disabled':''} onclick="changeSummaryAssetsPage('${category}',${currentPage-1})">Anterior</button>${pageButtons}<button type="button" ${currentPage===totalPages?'disabled':''} onclick="changeSummaryAssetsPage('${category}',${currentPage+1})">Próximo</button><span>Página ${currentPage} de ${totalPages}</span></nav>`;
 }
 function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
  const categories=[
@@ -2776,12 +2776,12 @@ function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
   const widthKeys=[...shown.map(([key])=>key),'opcoes'];
   const widthTotal=widthKeys.reduce((sum,key)=>sum+(columnWeights[key]||.9),0);
   const proportionalCols=`<colgroup>${widthKeys.map(key=>`<col style="width:${((columnWeights[key]||.9)/widthTotal*100).toFixed(3)}%">`).join('')}</colgroup>`;
-  const body=items.length?`<div class="tablewrap"><table class="data proportional-assets-table" data-position-table ${summaryMode&&cat.key==='renda_fixa'?'data-fixed-income-summary="true"':''}>${proportionalCols}<thead><tr>${shown.map(([key,label])=>{const sort=positionSortState[cat.key]||{key:'valor_atual',direction:'desc'};const active=sort.key===key;const arrow=active?(sort.direction==='desc'?'▼':'▲'):'';return `<th data-col="${key}" class="position-sort-th"><button type="button" class="position-sort-button ${active?'is-sorted':''}" onclick="sortPositionAssets(${jsAttrArg(cat.key)},${jsAttrArg(key)})" title="Ordenar por ${escapeHTML(label)}">${label}<span class="position-sort-indicator" aria-hidden="true">${arrow}</span></button></th>`;}).join('')}<th data-col="opcoes">Opções</th></tr></thead><tbody>${items.map(i=>`<tr>${shown.map(([,label,renderCell])=>renderCell(i)).join('')}<td data-col="opcoes" class="asset-options-cell"><button type="button" class="asset-options-trigger" aria-label="Opções de ${escapeHTML(i.ticker)}" onclick='openAssetMenu(event,${jsArg(i.ticker)})'>•••</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${summaryMode&&allCategoryItems.length?"Os ativos desta classe estão em outra página.":"Nenhum ativo cadastrado nesta categoria."}</div>`;
+  const body=items.length?`<div class="tablewrap"><table class="data proportional-assets-table" data-position-table ${summaryMode&&cat.key==='renda_fixa'?'data-fixed-income-summary="true"':''}>${proportionalCols}<thead><tr>${shown.map(([key,label])=>{const sort=positionSortState[cat.key]||{key:'valor_atual',direction:'desc'};const active=sort.key===key;const arrow=active?(sort.direction==='desc'?'▼':'▲'):'';return `<th data-col="${key}" class="position-sort-th"><button type="button" class="position-sort-button ${active?'is-sorted':''}" onclick="sortPositionAssets('${cat.key}','${key}')" title="Ordenar por ${escapeHTML(label)}">${label}<span class="position-sort-indicator" aria-hidden="true">${arrow}</span></button></th>`;}).join('')}<th data-col="opcoes">Opções</th></tr></thead><tbody>${items.map(i=>`<tr>${shown.map(([,label,renderCell])=>renderCell(i)).join('')}<td data-col="opcoes" class="asset-options-cell"><button type="button" class="asset-options-trigger" aria-label="Opções de ${escapeHTML(i.ticker)}" onclick='openAssetMenu(event,${jsArg(i.ticker)})'>•••</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${summaryMode&&allCategoryItems.length?"Os ativos desta classe estão em outra página.":"Nenhum ativo cadastrado nesta categoria."}</div>`;
   const categoryMetrics=`<span class="asset-category-title"><span class="asset-category-icon">${cat.icon}</span>${cat.name}</span><span class="asset-category-metric">Ativos<b>${allCategoryItems.length}</b></span><span class="asset-category-metric">Valor total<b>${brl(total)}</b></span>${cat.key==='renda_fixa'?'<span class="asset-category-metric category-metric-placeholder" aria-hidden="true"><span>Variação</span><b>—</b></span>':`<span class="asset-category-metric">Variação<b class="${allCategoryItems.length?'metric-change '+(variation>=0?'green':'red'):'category-empty-value'}">${allCategoryItems.length?`${variation>=0?'▲':'▼'} ${pct(variation)}`:'-'}</b></span>`}<span class="asset-category-metric">Rentabilidade<b>${allCategoryItems.length?`<span class="variation-pill ${profitability>=0?'positive':'negative'}">${profitability>=0?'↗':'↘'} ${pct(profitability)}</span>`:'<span class="category-empty-pill">-</span>'}</b></span><span class="asset-category-metric">% na carteira<b>${Math.round(portfolioPct)}% / ${Math.round(ideal)}%</b></span><span class="asset-category-chevron">⌄</span>`;
-  const moveControls=`<div class="position-category-move">${categoryIndex>0?`<button type="button" class="position-category-arrow" title="Mover ${cat.name} para cima" aria-label="Mover ${cat.name} para cima" onclick="event.stopPropagation();${summaryMode?'moveSummaryCategory':'movePositionCategory'}(${jsAttrArg(cat.key)},-1)">↑</button>`:''}${categoryIndex<visibleCategories.length-1?`<button type="button" class="position-category-arrow" title="Mover ${cat.name} para baixo" aria-label="Mover ${cat.name} para baixo" onclick="event.stopPropagation();${summaryMode?'moveSummaryCategory':'movePositionCategory'}(${jsAttrArg(cat.key)},1)">↓</button>`:''}</div>`;
+  const moveControls=`<div class="position-category-move">${categoryIndex>0?`<button type="button" class="position-category-arrow" title="Mover ${cat.name} para cima" aria-label="Mover ${cat.name} para cima" onclick="event.stopPropagation();${summaryMode?'moveSummaryCategory':'movePositionCategory'}('${cat.key}',-1)">↑</button>`:''}${categoryIndex<visibleCategories.length-1?`<button type="button" class="position-category-arrow" title="Mover ${cat.name} para baixo" aria-label="Mover ${cat.name} para baixo" onclick="event.stopPropagation();${summaryMode?'moveSummaryCategory':'movePositionCategory'}('${cat.key}',1)">↓</button>`:''}</div>`;
   const header=summaryMode
-   ? `<div class="summary-category-head">${moveControls}<button type="button" class="asset-category-head summary-category-toggle" onclick="toggleSummaryAssetGroup(${jsAttrArg(cat.key)})" aria-expanded="${expanded}">${categoryMetrics}</button></div>`
-   : `<div class="position-category-head">${moveControls}<button type="button" class="asset-category-head position-group-toggle" onclick="toggleAssetGroup(${jsAttrArg(cat.key)})" aria-expanded="${expanded}">${categoryMetrics}</button></div>`;
+   ? `<div class="summary-category-head">${moveControls}<button type="button" class="asset-category-head summary-category-toggle" onclick="toggleSummaryAssetGroup('${cat.key}')" aria-expanded="${expanded}">${categoryMetrics}</button></div>`
+   : `<div class="position-category-head">${moveControls}<button type="button" class="asset-category-head position-group-toggle" onclick="toggleAssetGroup('${cat.key}')" aria-expanded="${expanded}">${categoryMetrics}</button></div>`;
   return `<section class="asset-category ${expanded?'':'collapsed'} ${summaryMode?'summary-draggable-category':''}" ${summaryMode?`data-category-key="${cat.key}"`:!summaryMode?`data-category-key="${cat.key}"`:``}>${header}<div class="asset-category-body">${body}${summaryMode?summaryCategoryPagination(cat.key,categoryPages,categoryPage):''}</div></section>`;
  }).join('');
  applyPositionColumnPrefs();
@@ -3191,7 +3191,7 @@ function openFixedIncomeSalePicker(){
  const body=document.getElementById('fixedIncomeSaleRows');
  body.innerHTML=holdings.length?holdings.map((item,index)=>`
   <tr class="fixed-sale-row" data-ticker="${escapeHTML(item.ticker)}" onclick='selectFixedIncomeSale(${jsArg(item.ticker)})'>
-   <td><label class="fixed-sale-choice"><input type="radio" name="fixedIncomeSaleChoice" value="${escapeHTML(item.ticker)}" onchange="selectFixedIncomeSale(${jsAttrArg(item.ticker)})"><span>${escapeHTML(item.nome||item.ticker)}</span></label></td>
+   <td><label class="fixed-sale-choice"><input type="radio" name="fixedIncomeSaleChoice" value="${escapeHTML(item.ticker)}" onchange="selectFixedIncomeSale('${escapeHTML(item.ticker)}')"><span>${escapeHTML(item.nome||item.ticker)}</span></label></td>
    <td>${brl(item.valor_atual??(Number(item.quantidade)*Number(item.preco_medio)))}</td><td class="muted">›</td>
   </tr>`).join(''):rowEmpty(3,'Nenhum investimento de renda fixa disponível para venda.');
  document.getElementById('fixedIncomeSaleConfirm').disabled=!holdings.length;
@@ -3310,7 +3310,7 @@ function renderProvChartPeriodMenu(availableYears){
  const yearValue=provChartRange.startsWith('ano:')?provChartRange.slice(4):'';
  const selectedLabel=quick.find(x=>x[0]===provChartRange)?.[1]||(yearValue?yearValue:'Últimos 12 meses');
  if(label)label.textContent=selectedLabel;
- const option=(value,text)=>`<label class="period-option ${provChartRange===value?'active':''}"><input type="radio" name="provChartPeriodChoice" ${provChartRange===value?'checked':''} onchange="setProvChartRange(${jsAttrArg(value)})"><span>${text}</span></label>`;
+ const option=(value,text)=>`<label class="period-option ${provChartRange===value?'active':''}"><input type="radio" name="provChartPeriodChoice" ${provChartRange===value?'checked':''} onchange="setProvChartRange('${value}')"><span>${text}</span></label>`;
  menu.innerHTML=`<div class="period-title">Período</div><div class="period-section"><div class="period-title">Filtros rápidos</div>${quick.map(([value,text])=>option(value,escapeHTML(text))).join('')}</div><div class="period-divider"></div><div class="period-section"><div class="period-title">Filtro anual</div>${years.map(year=>option('ano:'+year,String(year))).join('')||'<span class="mini">Nenhum ano disponível.</span>'}</div>`;
 }
 function setProvMode(mode){
@@ -3356,7 +3356,7 @@ function renderProvHistoryFilters(rows,eventType){
  const statusMenu=document.getElementById('provHistoryStatusMenu');
  if(statusMenu){
   const choices=[['todos','Recebidos e Futuros'],['Pago','Recebidos'],['A receber','Futuros']];
-  statusMenu.innerHTML=choices.map(([value,label])=>`<button type="button" role="option" aria-selected="${provHistoryStatus===value}" class="native-dropdown-option ${provHistoryStatus===value?'active':''}" onclick="setProvHistoryStatus(${jsAttrArg(value)})">${label}</button>`).join('');
+  statusMenu.innerHTML=choices.map(([value,label])=>`<button type="button" role="option" aria-selected="${provHistoryStatus===value}" class="native-dropdown-option ${provHistoryStatus===value?'active':''}" onclick="setProvHistoryStatus('${value}')">${label}</button>`).join('');
  }
  const typeMenu=document.getElementById('provHistoryTypeMenu');
  const typeValues=[...new Set([...((state.itens||[]).map(x=>x.tipo).filter(Boolean)),...rows.map(eventType).filter(Boolean)])].sort((a,b)=>(labels[a]||a).localeCompare(labels[b]||b,'pt-BR'));
@@ -3364,7 +3364,7 @@ function renderProvHistoryFilters(rows,eventType){
  if(typeMenu){
   const selected=provHistoryTypes[0]||'todos';
   typeMenu.innerHTML=[['todos','Todos os tipos'],...typeValues.map(value=>[value,labels[value]||value])]
-   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selected===value}" class="native-dropdown-option ${selected===value?'active':''}" onclick="setProvHistoryType(${jsAttrArg(value)})">${escapeHTML(text)}</button>`).join('');
+   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selected===value}" class="native-dropdown-option ${selected===value?'active':''}" onclick="setProvHistoryType('${escapeHTML(value)}')">${escapeHTML(text)}</button>`).join('');
   const trigger=document.querySelector('#provHistoryTypeWrap .prov-history-trigger span:first-child');
   if(trigger)trigger.textContent=selected==='todos'?'Tipo de ativo':(labels[selected]||selected);
  }
@@ -3374,7 +3374,7 @@ function renderProvHistoryFilters(rows,eventType){
  if(assetMenu){
   const selected=provHistoryAssets[0]||'todos';
   assetMenu.innerHTML=[['todos','Todos os ativos'],...assetValues.map(value=>[value,value])]
-   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selected===value}" class="native-dropdown-option ${selected===value?'active':''}" onclick="setProvHistoryAsset(${jsAttrArg(value)})">${escapeHTML(text)}</button>`).join('');
+   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selected===value}" class="native-dropdown-option ${selected===value?'active':''}" onclick="setProvHistoryAsset('${escapeHTML(value)}')">${escapeHTML(text)}</button>`).join('');
   const trigger=document.querySelector('#provHistoryAssetWrap .prov-history-trigger span:first-child');
   if(trigger)trigger.textContent=selected==='todos'?'Ativos':selected;
  }
@@ -3586,14 +3586,14 @@ function renderMyProvFilters(rows,eventType){
  const monthNames=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
  const quickLabel=quick.find(x=>x[0]===myProvPeriod)?.[1];
  if(label)label.textContent=quickLabel||(myProvPeriod.startsWith('mes:')?`${monthNames[Number(myProvPeriod.split(':')[2])-1]}/${myProvPeriod.split(':')[1]}`:'Ano atual');
- const option=(value,text)=>`<label class="period-option ${myProvPeriod===value?'active':''}"><input type="radio" name="myProvPeriodChoice" ${myProvPeriod===value?'checked':''} onchange="setMyProvPeriod(${jsAttrArg(value)})"><span>${text}</span></label>`;
+ const option=(value,text)=>`<label class="period-option ${myProvPeriod===value?'active':''}"><input type="radio" name="myProvPeriodChoice" ${myProvPeriod===value?'checked':''} onchange="setMyProvPeriod('${value}')"><span>${text}</span></label>`;
  if(menu)menu.innerHTML=`<div class="period-title">Período</div><div class="period-section"><div class="period-title">Filtros rápidos</div>${quick.map(([v,t])=>option(v,escapeHTML(t))).join('')}</div><div class="period-divider"></div><div class="period-section"><div class="period-title">Filtro mensal</div><div class="my-prov-month-nav"><button type="button" aria-label="Ano anterior" onclick="setMyProvMonthYear(-1)">‹</button><span>${myProvMonthYear}</span><button type="button" aria-label="Próximo ano" onclick="setMyProvMonthYear(1)">›</button></div><div class="period-months">${monthNames.map((m,i)=>option(`mes:${myProvMonthYear}:${String(i+1).padStart(2,'0')}`,m)).reverse().join('')}</div></div>`;
  const typeMenu=document.getElementById('myProvTypeMenu'),typeValues=[...new Set([...((state.itens||[]).map(x=>x.tipo).filter(Boolean)),...rows.map(eventType).filter(Boolean)])].sort((a,b)=>(labels[a]||a).localeCompare(labels[b]||b,'pt-BR'));
  myProvTypes=myProvTypes.filter(x=>typeValues.includes(x));
  const selectedType=myProvTypes[0]||'todos';
  if(typeMenu){
   typeMenu.innerHTML=[['todos','Todos os tipos'],...typeValues.map(v=>[v,labels[v]||v])]
-   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selectedType===value}" class="native-dropdown-option ${selectedType===value?'active':''}" onclick="setMyProvType(${jsAttrArg(value)})">${escapeHTML(text)}</button>`).join('');
+   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selectedType===value}" class="native-dropdown-option ${selectedType===value?'active':''}" onclick="setMyProvType('${escapeHTML(value)}')">${escapeHTML(text)}</button>`).join('');
   const trigger=document.querySelector('#myProvTypeWrap .prov-history-trigger span:first-child');
   if(trigger)trigger.textContent=selectedType==='todos'?'Tipo de ativo':(labels[selectedType]||selectedType);
  }
@@ -3602,7 +3602,7 @@ function renderMyProvFilters(rows,eventType){
  const selectedAsset=myProvAssets[0]||'todos';
  if(assetMenu){
   assetMenu.innerHTML=[['todos','Todos os ativos'],...assetValues.map(v=>[v,v])]
-   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selectedAsset===value}" class="native-dropdown-option ${selectedAsset===value?'active':''}" onclick="setMyProvAsset(${jsAttrArg(value)})">${escapeHTML(text)}</button>`).join('');
+   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selectedAsset===value}" class="native-dropdown-option ${selectedAsset===value?'active':''}" onclick="setMyProvAsset('${escapeHTML(value)}')">${escapeHTML(text)}</button>`).join('');
   const trigger=document.querySelector('#myProvAssetWrap .prov-history-trigger span:first-child');
   if(trigger)trigger.textContent=selectedAsset==='todos'?'Ativos':selectedAsset;
  }
@@ -4023,7 +4023,7 @@ let returnBenchmarkRequestKey = '';
 
 function returnBenchmarkSelectHTML(cardKey){
  const saved=(()=>{try{const v=localStorage.getItem('lonelyWalletReturnBenchmark_'+cardKey)||'';return v==='CDI'?'':v}catch(e){return ''}})();
- return `<div class="return-benchmark-row"><label for="returnBenchmark_${cardKey}">Comparar com</label><select id="returnBenchmark_${cardKey}" class="return-benchmark-select" onchange="setReturnCardBenchmark(${jsAttrArg(cardKey)},this.value)"><option value="">Não comparar</option>${RETURN_BENCHMARKS.map(code=>`<option value="${code}" ${saved===code?'selected':''}>${code}</option>`).join('')}</select><small class="return-card-comparison" id="returnBenchmarkStatus_${cardKey}">Selecione um índice para comparar.</small></div>`;
+ return `<div class="return-benchmark-row"><label for="returnBenchmark_${cardKey}">Comparar com</label><select id="returnBenchmark_${cardKey}" class="return-benchmark-select" onchange="setReturnCardBenchmark('${cardKey}',this.value)"><option value="">Não comparar</option>${RETURN_BENCHMARKS.map(code=>`<option value="${code}" ${saved===code?'selected':''}>${code}</option>`).join('')}</select><small class="return-card-comparison" id="returnBenchmarkStatus_${cardKey}">Selecione um índice para comparar.</small></div>`;
 }
 function setReturnCardBenchmark(cardKey,value){
  if(!['total','12m','month'].includes(cardKey)||!(value===''||RETURN_BENCHMARKS.includes(value)))return;
@@ -4330,9 +4330,9 @@ function operationGroupPagination(key,totalPages,currentPage){
  const ordered=[...pages].sort((a,b)=>a-b);let previous=0;
  const pageButtons=ordered.map(n=>{
   const gap=previous&&n-previous>1?'<span class="page-info">…</span>':'';previous=n;
-  return gap+`<button type="button" class="${n===currentPage?'active':''}" ${n===currentPage?'aria-current="page"':''} onclick="setOperationGroupPage(${jsAttrArg(encoded)},${n})">${n}</button>`;
+  return gap+`<button type="button" class="${n===currentPage?'active':''}" ${n===currentPage?'aria-current="page"':''} onclick="setOperationGroupPage('${encoded}',${n})">${n}</button>`;
  }).join('');
- return `<nav class="operation-group-pagination" aria-label="Paginação dos lançamentos de ${escapeHTML(labels[key]||key)}"><button type="button" ${currentPage===1?'disabled':''} onclick="setOperationGroupPage(${jsAttrArg(encoded)},${currentPage-1})">Anterior</button>${pageButtons}<button type="button" ${currentPage===totalPages?'disabled':''} onclick="setOperationGroupPage(${jsAttrArg(encoded)},${currentPage+1})">Próximo</button><span class="page-info">${rowsCountLabel(totalPages,currentPage)}</span></nav>`;
+ return `<nav class="operation-group-pagination" aria-label="Paginação dos lançamentos de ${escapeHTML(labels[key]||key)}"><button type="button" ${currentPage===1?'disabled':''} onclick="setOperationGroupPage('${encoded}',${currentPage-1})">Anterior</button>${pageButtons}<button type="button" ${currentPage===totalPages?'disabled':''} onclick="setOperationGroupPage('${encoded}',${currentPage+1})">Próximo</button><span class="page-info">${rowsCountLabel(totalPages,currentPage)}</span></nav>`;
 }
 function rowsCountLabel(totalPages,currentPage){return `Página ${currentPage} de ${totalPages}`;}
 function renderOperationsByType(allOps){
@@ -4490,7 +4490,7 @@ function renderAPIProviders(){
   </div>
   <div id="pluggyState" class="pluggy-state mini">Carregando conexões…</div><div id="pluggyInvestments" class="pluggy-investments"></div>
 `:
-  p.auth?`<div class="mini">${p.connected?'Conectada ao motor atual de dados':'Fonte complementar; cobertura depende do provedor e do plano.'}</div><label class="mini" for="apiToken_${p.id}">Token de integração</label><input type="password" id="apiToken_${p.id}" autocomplete="new-password" placeholder="${p.masked?'Cadastrado: '+p.masked:'Cole seu token aqui'}"/><div class="api-provider-actions"><button class="primary" type="button" onclick="saveAPIProvider(${jsAttrArg(p.id)})">Salvar token</button><button class="ghost" type="button" onclick="testAPIProvider(${jsAttrArg(p.id)})">Testar conexão</button>${p.configured?`<button class="ghost" type="button" onclick="toggleAPIProvider(${jsAttrArg(p.id)},${!p.enabled})">${p.enabled?'Desativar':'Ativar'}</button><button class="ghost" type="button" onclick="deleteAPIProvider(${jsAttrArg(p.id)})">Remover</button>`:''}</div>`:
+  p.auth?`<div class="mini">${p.connected?'Conectada ao motor atual de dados':'Fonte complementar; cobertura depende do provedor e do plano.'}</div><label class="mini" for="apiToken_${p.id}">Token de integração</label><input type="password" id="apiToken_${p.id}" autocomplete="new-password" placeholder="${p.masked?'Cadastrado: '+p.masked:'Cole seu token aqui'}"/><div class="api-provider-actions"><button class="primary" type="button" onclick="saveAPIProvider('${p.id}')">Salvar token</button><button class="ghost" type="button" onclick="testAPIProvider('${p.id}')">Testar conexão</button>${p.configured?`<button class="ghost" type="button" onclick="toggleAPIProvider('${p.id}',${!p.enabled})">${p.enabled?'Desativar':'Ativar'}</button><button class="ghost" type="button" onclick="deleteAPIProvider('${p.id}')">Remover</button>`:''}</div>`:
   `<div class="api-provider-actions"><span class="mini">${p.id==='b3'?'Acesso mediante contrato e licença.':'Não é necessário cadastrar token.'}</span></div>`}
   <div class="api-status" id="apiStatus_${p.id}">${p.auth&&p.updated_at?'Última alteração: '+new Date(p.updated_at).toLocaleString('pt-BR'):''}</div>
 
@@ -4579,9 +4579,11 @@ async function loadPluggyAutoSyncSettings(){
  return pluggyAutoSyncIntervalMinutes;
 }
 function configurePluggyAutoSyncTimer(){
- // A sincronização automática é executada pelo agendador do servidor.
- // O navegador apenas exibe e altera a preferência persistida no SQLite.
  if(pluggyAutoSyncTimer){clearInterval(pluggyAutoSyncTimer);pluggyAutoSyncTimer=null;}
+ if(pluggyAutoSyncIntervalMinutes>0){
+  runPluggyAutoSync();
+  pluggyAutoSyncTimer=setInterval(runPluggyAutoSync,60000);
+ }
 }
 async function savePluggyAutoSyncInterval(selectOrValue){
  const select=selectOrValue&&typeof selectOrValue==='object'?selectOrValue:document.getElementById('pluggyAutoSyncInterval');
@@ -4610,8 +4612,21 @@ async function savePluggyAutoSyncInterval(selectOrValue){
  }
 }
 async function runPluggyAutoSync(){
- // Retido como compatibilidade para eventuais chamadas antigas. A rotina é server-side.
- return;
+ if(pluggyAutoSyncRunning||document.hidden)return;
+ const interval=Number(pluggyAutoSyncIntervalMinutes||0);
+ if(!interval)return;
+ let last=0;try{last=Number(localStorage.getItem('lonelyWalletPluggyAutoSyncAt')||0)}catch(e){}
+ if(Date.now()-last<interval*60000)return;
+ pluggyAutoSyncRunning=true;
+ try{
+  await api('/api/pluggy/sync',{method:'POST',body:JSON.stringify({force:true}),skipAutoRefresh:true,timeoutMs:900000});
+  try{localStorage.setItem('lonelyWalletPluggyAutoSyncAt',String(Date.now()))}catch(e){}
+  if(typeof loadPluggyState==='function')await loadPluggyState();
+  if(typeof refresh==='function')refresh();
+ }catch(error){
+  const host=document.getElementById('pluggyState');
+  if(host)host.textContent='Falha na sincronização automática: '+(error.message||'erro desconhecido');
+ }finally{pluggyAutoSyncRunning=false;}
 }
 async function startPluggyAutoSync(){
  await loadPluggyAutoSyncSettings();
@@ -4934,7 +4949,6 @@ function escapeHTML(value){
  return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 function jsArg(value){return JSON.stringify(String(value??'')).replace(/[<>&']/g,c=>({'<':'\\u003c','>':'\\u003e','&':'\\u0026',"'":'\\u0027'}[c]));}
-function jsAttrArg(value){return jsArg(value).replace(/"/g,'&quot;');}
 function closeSuggestions(){suggestions.classList.add('hidden');suggestions.innerHTML='';}
 function moneyInput(value){
  const n=Number(value);
@@ -5266,12 +5280,34 @@ async function exportOperations(){
  }catch(error){toast(error.message||'Falha ao exportar lançamentos.')}
 }
 async function autoSyncPluggyOnPageLoad(){
- // Compatibilidade com chamadas antigas: a sincronização automática é server-side.
+ // Evita consultar a Pluggy em todo F5. Cada conexão é atualizada no máximo
+ // uma vez a cada 30 minutos; o servidor também aplica o mesmo bloqueio.
+ const intervalMs=30*60*1000;
+ try{
+  const stateData=await api('/api/pluggy/state',{skipAutoRefresh:true});
+  const items=stateData.items||[];
+  if(!items.length)return;
+  const now=Date.now();
+  const hasDueItem=items.some(item=>{
+   if(!item.last_synced_at)return true;
+   const last=Date.parse(item.last_synced_at);
+   return !Number.isFinite(last)||(now-last)>=intervalMs;
+  });
+  if(!hasDueItem)return;
+  const configured=await api('/api/integracoes',{skipAutoRefresh:true});
+  const pluggy=(configured.providers||[]).find(p=>p.id==='pluggy'||p.provider==='pluggy');
+  if(pluggy&&(!pluggy.configured||pluggy.enabled===false))return;
+  const result=await api('/api/pluggy/sync',{method:'POST',body:'{}',skipAutoRefresh:true,timeoutMs:900000});
+  if(result&&result.ok!==false&&Number(result.items||0)>0){
+   await refresh();
+   if(document.getElementById('pluggyState'))await loadPluggyState();
+   toast('Pluggy atualizada. Novos ativos e movimentações foram verificados sem duplicar lançamentos.');
+  }
+ }catch(error){console.warn('Sincronização automática Pluggy:',error.message||error)}
 }
 
-
 updateDocumentIdentity('resumo');
-refresh();loadDistribution();
+refresh();loadDistribution();autoSyncPluggyOnPageLoad();
 
 // Preferências locais: tema claro/escuro e ocultação de valores.
 function applyChartTheme(instance){
@@ -5439,7 +5475,7 @@ async function loadB3Imports(){
   const batches=data.lotes||[],legacy=data.legados||[];
   if(!batches.length&&!legacy.length){host.innerHTML='<div class="empty">Nenhuma planilha B3 importada foi registrada.</div>';return;}
   const fmtDate=v=>{const d=new Date(v);return isNaN(d)?escapeHTML(v||''):d.toLocaleString('pt-BR');};
-  host.innerHTML=`${batches.map(b=>`<div class="pluggy-item-row"><div><strong>${escapeHTML(b.arquivo||'Planilha B3')}</strong><div class="mini">${fmtDate(b.importado_em)} · ${Number(b.operacoes||0)} lançamentos · ${Number(b.proventos||0)} proventos · ${Number(b.registros||0)} registros rastreados</div></div><button class="ghost" type="button" onclick="deleteB3ImportBatch(${jsAttrArg(b.id)})">Excluir importação</button></div>`).join('')}${legacy.length?`<div class="section"><strong>Importações anteriores</strong><p class="mini">Estas importações foram feitas antes do histórico por arquivo. O banco não guardou o nome original nem o vínculo seguro de cada registro, por isso aparecem na lista, mas não podem ser apagadas individualmente por esta tela.</p>${legacy.map(b=>`<div class="pluggy-item-row"><div><strong>Planilha B3 antiga</strong><div class="mini">${fmtDate(b.importado_em)} · ${Number(b.operacoes||0)} lançamentos · ${Number(b.proventos||0)} proventos · ${Number(b.registros||0)} registros</div></div><span class="api-status-pill warning">Exclusão indisponível</span></div>`).join('')}</div>`:''}`;
+  host.innerHTML=`${batches.map(b=>`<div class="pluggy-item-row"><div><strong>${escapeHTML(b.arquivo||'Planilha B3')}</strong><div class="mini">${fmtDate(b.importado_em)} · ${Number(b.operacoes||0)} lançamentos · ${Number(b.proventos||0)} proventos · ${Number(b.registros||0)} registros rastreados</div></div><button class="ghost" type="button" onclick="deleteB3ImportBatch('${b.id}')">Excluir importação</button></div>`).join('')}${legacy.length?`<div class="section"><strong>Importações anteriores</strong><p class="mini">Estas importações foram feitas antes do histórico por arquivo. O banco não guardou o nome original nem o vínculo seguro de cada registro, por isso aparecem na lista, mas não podem ser apagadas individualmente por esta tela.</p>${legacy.map(b=>`<div class="pluggy-item-row"><div><strong>Planilha B3 antiga</strong><div class="mini">${fmtDate(b.importado_em)} · ${Number(b.operacoes||0)} lançamentos · ${Number(b.proventos||0)} proventos · ${Number(b.registros||0)} registros</div></div><span class="api-status-pill warning">Exclusão indisponível</span></div>`).join('')}</div>`:''}`;
  }catch(e){host.textContent=e.message||'Não foi possível carregar o histórico.';}
 }
 async function deleteB3ImportBatch(id){
