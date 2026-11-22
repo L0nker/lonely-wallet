@@ -1,5 +1,12 @@
 # Lonely Wallet
 
+## v4.2.24
+
+- Renomeado o card do resumo para **Ranking de proventos**.
+- O card agora reutiliza a mesma estrutura visual de **Últimos ativos lançados**: título em destaque, ticker e classe alinhados à esquerda, valor recebido alinhado à direita e divisórias discretas entre os três itens.
+- O total permanece baseado exclusivamente nos proventos com status **Pago** e data de pagamento até a data atual; eventos a receber, futuros e amortizações continuam excluídos.
+- Corrigida a folha de estilos do card: regras específicas que estavam fora do bloco `<style>` foram removidas, e apenas a regra de destaque do valor foi mantida dentro da folha de estilos válida.
+
 ## v4.2.23
 
 - O card **Rentabilidade** do resumo foi substituído por **Maiores pagadores de proventos**, mantendo a estrutura visual compacta do card Últimos ativos lançados.
@@ -106,13 +113,13 @@
 - Privacidade de valores desativada por padrão; quando ativada permanece até novo clique e cobre também conteúdo dinâmico.
 - Legendas da distribuição de aportes usam nomes localizados e acentuação correta (Ação, FIIs, Renda fixa, Tesouro Direto, ETFs, BDRs e demais classes).
 
-# Lonely Wallet v4.2.23
+# Lonely Wallet v4.2.24
 
 **Carteira pessoal de investimentos | Aplicação web self-hosted | Docker / ZimaOS**
 
 > Guia do usuário, instalação, atualização, segurança, backup, solução de problemas e perguntas frequentes.
 
-- **Versão:** 4.2.23
+- **Versão:** 4.2.24
 - **Idioma da interface:** Português (Brasil)
 - **Backend:** Python 3.12 + Flask + Gunicorn
 - **Persistência:** SQLite e arquivo JSON de última cotação válida
@@ -201,12 +208,12 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve indicar `ok: true` e `version: 4.2.23`.
+O retorno deve indicar `ok: true` e `version: 4.2.24`.
 
 ### Atualização de uma versão anterior
 
 1. Faça um backup antes de substituir os arquivos.
-2. Extraia o pacote 4.2.23 em uma pasta de projeto.
+2. Extraia o pacote 4.2.24 em uma pasta de projeto.
 3. **Mantenha exatamente o volume de dados existente**. O Compose padrão utiliza:
 
 ```yaml

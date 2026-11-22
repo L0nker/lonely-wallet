@@ -15,8 +15,13 @@ class TopPaidDividendPayersTests(unittest.TestCase):
         render_start = HTML.index("function render(){")
         render_end = HTML.index("\n\nconst rows=state.itens||[];", render_start)
         renderer = HTML[render_start:render_end]
-        self.assertIn("Maiores pagadores de proventos", renderer)
+        self.assertIn("Ranking de proventos", renderer)
         self.assertIn("provDash.maiores_pagadores||[]", renderer)
+        self.assertIn('class="insight-title">Ranking de proventos</div>', renderer)
+        self.assertIn('class="insight-recent-list"', renderer)
+        self.assertIn('class="insight-recent-row"', renderer)
+        self.assertIn('class="top-dividend-payer-total"', renderer)
+        self.assertNotIn("Maiores pagadores de proventos", renderer)
         self.assertNotIn('return-stat-card', renderer)
 
     def test_backend_ranking_uses_confirmed_paid_records_for_all_tickers(self):

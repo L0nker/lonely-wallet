@@ -4536,7 +4536,7 @@ document.getElementById('stats').innerHTML=`
  <div class="card stat"><div class="statlabel-row">Patrimônio total<span class="info-tip" tabindex="0" aria-label="Sobre o patrimônio total" data-tip="Valor atual de todos os seus ativos na carteira, considerando a cotação atual de cada posição.">i</span></div><div class="statvalue statvalue-inline">${brl(summaryPatrimony)} <small class="${summaryCapitalGain>=0?'green':'red'}" title="Ganho de capital de ${brl(summaryCapitalGain)} sobre ${brl(summaryApplied)} investidos">${pct(portfolioReturn)} ${summaryCapitalGain>=0?'▲':'▼'}</small></div><div class="statdetail"><span>Valor investido</span><b>${brl(summaryApplied)}</b></div></div>
  <div class="card stat"><div class="statlabel-row">Lucro total<span class="info-tip" tabindex="0" aria-label="Sobre o lucro total" data-tip="Seu resultado acumulado na carteira: ganho de capital (valorização dos ativos) somado aos dividendos e proventos recebidos.">i</span></div><div class="statvalue ${totalProfit>=0?'green':'red'}">${brl(totalProfit)}</div><div class="statdetail"><span>Ganho de capital</span><b>${brl(summaryCapitalGain)}</b></div><div class="statdetail"><span>Dividendos recebidos</span><b>${brl(r.proventos||0)}</b></div></div>
  <div class="card stat"><div class="statlabel-row">Proventos recebidos (12M)<span class="info-tip" tabindex="0" aria-label="Sobre os proventos recebidos" data-tip="Total de dividendos, JCP e rendimentos recebidos nos últimos 12 meses.">i</span></div><div class="statvalue">${brl(provDash.total_12m||0)}</div><div class="statdetail"><span>Total confirmado</span><b>${brl(provDash.total_12m||0)}</b></div></div>
- <div class="card stat top-dividend-payers-card"><div class="statlabel-row">Maiores pagadores de proventos</div><div class="top-dividend-payers-list">${topDividendPayers.length?topDividendPayers.map(item=>`<div class="top-dividend-payer-row"><div><b>${escapeHTML(item.ticker)}</b><span>${escapeHTML(labels[item.tipo]||item.tipo||'Ativo')}</span></div><strong>${brl(item.total)}</strong></div>`).join(''):'<div class="insight-recent-empty">Nenhum provento recebido.</div>'}</div></div>`;
+ <div class="card stat top-dividend-payers-card"><div class="insight-title">Ranking de proventos</div><div class="insight-recent-list">${topDividendPayers.length?topDividendPayers.map(item=>`<div class="insight-recent-row"><div><b>${escapeHTML(item.ticker)}</b><span>${escapeHTML(labels[item.tipo]||item.tipo||'Ativo')}</span></div><strong class="top-dividend-payer-total">${brl(item.total)}</strong></div>`).join(''):'<div class="insight-recent-empty">Nenhum provento recebido.</div>'}</div></div>`;
 
 
 const rows=state.itens||[];
@@ -6471,15 +6471,8 @@ body.light-theme .launch-distribution-row,body.light-theme .launch-distribution-
 /* Remover o tooltip nativo da legenda de distribuição de aportes. */
 .launch-distribution-row .launch-distribution-name span{cursor:default;}
 .launch-distribution-row .launch-distribution-name span[title]{pointer-events:none;}
+
+/* v4.2.24 — valor do Ranking de proventos alinhado ao padrão do card Últimos ativos lançados. */
+.top-dividend-payer-total{font-size:12px;line-height:1.2;color:var(--text);white-space:nowrap;font-weight:700;font-variant-numeric:tabular-nums}
 </style>
 
-
-/* v4.2.23 — card de maiores pagadores usa somente proventos pagos e vencidos. */
-.top-dividend-payers-card{gap:2px}
-.top-dividend-payers-list{display:grid;gap:0;flex:1;align-content:start;min-width:0;margin-top:3px}
-.top-dividend-payer-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);min-width:0}
-.top-dividend-payer-row:last-child{border-bottom:0}
-.top-dividend-payer-row>div{display:grid;gap:2px;min-width:0}
-.top-dividend-payer-row b{font-size:13px;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.top-dividend-payer-row span{font-size:10px;color:var(--muted)}
-.top-dividend-payer-row strong{font-size:12px;line-height:1.2;color:var(--text);white-space:nowrap;font-weight:700;font-variant-numeric:tabular-nums}
