@@ -2132,7 +2132,7 @@ body.light-theme .lw-select-option:hover,body.light-theme .lw-select-option.acti
 
 
 
-<div class="footer">Lonely Wallet v4.2.14 · Controle pessoal de investimentos<br>Dados de cotação podem sofrer atrasos ou indisponibilidade. Este sistema é apenas informativo.</div>
+<div class="footer">Lonely Wallet v4.2.15 · Controle pessoal de investimentos<br>Dados de cotação podem sofrer atrasos ou indisponibilidade. Este sistema é apenas informativo.</div>
 </main>
 <div class="modalback" id="launchDistributionBack" onclick="if(event.target===this)closeLaunchDistribution()"><div class="modal" style="width:min(900px,100%)"><div class="modalhead"><div><h2 id="launchDistributionTitle">Distribuição de aportes</h2><div class="sub" id="launchDistributionSubtitle">Operações do período selecionado.</div></div><button class="close" type="button" onclick="closeLaunchDistribution()">×</button></div><div class="launch-distribution-switch segmented"><button type="button" id="launchDistAssetTab" class="active" onclick="setLaunchDistributionMode('ativo')">◉ Por Ativo</button><button type="button" id="launchDistTypeTab" onclick="setLaunchDistributionMode('tipo')">◉ Por Tipo</button><span class="launch-dist-switch-spacer"></span><button type="button" id="launchDistBuyTab" class="active" onclick="setLaunchDistributionSide('compra')">Compra</button><button type="button" id="launchDistSellTab" onclick="setLaunchDistributionSide('venda')">Venda</button></div><div class="launch-distribution-layout"><div class="launch-distribution-chart"><canvas id="launchDistributionChart"></canvas></div><div class="launch-distribution-legend"><div class="launch-distribution-total"><b>Total</b><strong id="launchDistributionTotal"></strong></div><div id="launchDistributionRows"></div></div></div><div class="modalactions"><button class="ghost" type="button" onclick="closeLaunchDistribution()">Fechar</button></div></div></div>
 <div class="modalback" id="b3ImportsManagerBack" onclick="if(event.target===this)closeB3ImportsManager()"><div class="modal" style="width:min(860px,100%)"><div class="modalhead"><div><h2>Importações da B3</h2><div class="sub">Histórico das planilhas importadas. Você pode excluir uma importação recente e os registros criados exclusivamente por ela.</div></div><button class="close" onclick="closeB3ImportsManager()">×</button></div><div id="b3ImportsList" class="section mini">Carregando importações…</div><div class="modalactions"><button class="ghost" type="button" onclick="closeB3ImportsManager()">Fechar</button></div></div></div><div class="modalback utility-modal-back" id="operationManagerBack" onclick="if(event.target===this)closeOperationManager()"><div class="modal utility-modal" style="width:min(1100px,100%)"><div class="modalhead"><div><h2>Gerenciar lançamentos de ativos</h2><div class="sub">Filtre por classe e ativo para revisar ou excluir operações. A exclusão em massa é permanente.</div></div><button class="close" onclick="closeOperationManager()">×</button></div><div class="formgrid operation-manager-filters"><div class="field"><label for="operationManagerType">Classe do ativo</label><select id="operationManagerType" onchange="onOperationManagerTypeChange()"><option value="">Todas as classes</option></select></div><div class="field"><label for="operationManagerTicker">Ativo</label><select id="operationManagerTicker" onchange="renderOperationManagerRows()"><option value="">Todos os ativos</option></select></div></div><div id="operationManagerSummary" class="mini" style="margin:12px 0">Carregando lançamentos…</div><div id="operationManagerRows" class="tablewrap"></div><div class="modalactions" style="justify-content:space-between;flex-wrap:wrap"><div class="toolbar"><button class="danger" type="button" onclick="confirmDeleteManaged('ativo')">Excluir todos deste ativo</button><button class="danger" type="button" onclick="confirmDeleteManaged('todas')">Excluir todos os lançamentos</button></div><button class="ghost" type="button" onclick="closeOperationManager()">Fechar</button></div></div></div>
@@ -2762,18 +2762,11 @@ function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
   const categoryRows=rows.filter(item=>item.tipo===cat.key),total=categoryRows.reduce((sum,item)=>sum+Number(item.valor_atual||0),0),allCategoryItems=sortCategoryItems(categoryRows,cat.key,totalPortfolio),categoryPages=Math.max(1,Math.ceil(allCategoryItems.length/SUMMARY_ASSETS_PAGE_SIZE)),categoryPage=summaryMode?Math.min(Math.max(1,Number(summaryCategoryPages[cat.key]||1)),categoryPages):1,items=summaryMode?allCategoryItems.slice((categoryPage-1)*SUMMARY_ASSETS_PAGE_SIZE,categoryPage*SUMMARY_ASSETS_PAGE_SIZE):allCategoryItems,invested=allCategoryItems.reduce((sum,item)=>sum+Number(item.investido||0),0);
   if(summaryMode)summaryCategoryPages[cat.key]=categoryPage;
   const variation=allCategoryItems.length?allCategoryItems.reduce((sum,item)=>sum+Number(item.pluggy_variacao_pct??item.variacao_dia??0),0)/allCategoryItems.length:0;
-  // Rentabilidade da classe é ponderada pelo capital de cada ativo. A média
-  // simples das porcentagens dava o mesmo peso a posições pequenas e grandes.
-  // Quando Pluggy fornece retorno e capital histórico, usa esse par; nos demais
-  // casos usa ganho de preço + proventos sobre o valor efetivamente investido.
-  const categoryReturn=allCategoryItems.reduce((acc,item)=>{
-   const hasPluggy=Number.isFinite(Number(item.pluggy_retorno_valor))&&Number.isFinite(Number(item.pluggy_investido_historico))&&Number(item.pluggy_investido_historico)>0;
-   const base=hasPluggy?Number(item.pluggy_investido_historico):Number(item.investido||0);
-   const result=hasPluggy?Number(item.pluggy_retorno_valor):Number(item.lucro||0)+Number(item.proventos||0);
-   if(base>0){acc.base+=base;acc.result+=result;}
-   return acc;
-  },{base:0,result:0});
-  const profitability=categoryReturn.base>0?categoryReturn.result/categoryReturn.base*100:0;
+  // Rentabilidade da classe: média aritmética simples das rentabilidades
+  // individuais. Cada ativo tem peso igual, independentemente do capital alocado.
+  const profitability=allCategoryItems.length
+   ? allCategoryItems.reduce((sum,item)=>sum+Number(item.lucro_pct||0),0)/allCategoryItems.length
+   : 0;
   const target=distributionItems.find(x=>categoryKeyFromName(x.nome)===cat.key),ideal=Number(target?.percentual||0),portfolioPct=totalPortfolio?total/totalPortfolio*100:0;
   const expanded=summaryMode
    ? summaryExpandedAssetGroups[cat.key]===true
