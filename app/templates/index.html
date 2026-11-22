@@ -2196,7 +2196,7 @@ body.light-theme .lw-select-option:hover,body.light-theme .lw-select-option.acti
 
 
 
-<div class="footer">Lonely Wallet v4.2.20 · Controle pessoal de investimentos<br>Dados de cotação podem sofrer atrasos ou indisponibilidade. Este sistema é apenas informativo.</div>
+<div class="footer">Lonely Wallet v4.2.21 · Controle pessoal de investimentos<br>Dados de cotação podem sofrer atrasos ou indisponibilidade. Este sistema é apenas informativo.</div>
 </main>
 <div class="modalback" id="launchDistributionBack" onclick="if(event.target===this)closeLaunchDistribution()"><div class="modal" style="width:min(900px,100%)"><div class="modalhead"><div><h2 id="launchDistributionTitle">Distribuição de aportes</h2><div class="sub" id="launchDistributionSubtitle">Operações do período selecionado.</div></div><button class="close" type="button" onclick="closeLaunchDistribution()">×</button></div><div class="launch-distribution-switch segmented"><button type="button" id="launchDistAssetTab" class="active" onclick="setLaunchDistributionMode('ativo')">◉ Por Ativo</button><button type="button" id="launchDistTypeTab" onclick="setLaunchDistributionMode('tipo')">◉ Por Tipo</button><span class="launch-dist-switch-spacer"></span><button type="button" id="launchDistBuyTab" class="active" onclick="setLaunchDistributionSide('compra')">Compra</button><button type="button" id="launchDistSellTab" onclick="setLaunchDistributionSide('venda')">Venda</button></div><div class="launch-distribution-layout"><div class="launch-distribution-chart"><canvas id="launchDistributionChart"></canvas></div><div class="launch-distribution-legend"><div class="launch-distribution-total"><b>Total</b><strong id="launchDistributionTotal"></strong></div><div id="launchDistributionRows"></div></div></div><div class="modalactions"><button class="ghost" type="button" onclick="closeLaunchDistribution()">Fechar</button></div></div></div>
 <div class="modalback" id="b3ImportsManagerBack" onclick="if(event.target===this)closeB3ImportsManager()"><div class="modal" style="width:min(860px,100%)"><div class="modalhead"><div><h2>Importações da B3</h2><div class="sub">Histórico das planilhas importadas. Você pode excluir uma importação recente e os registros criados exclusivamente por ela.</div></div><button class="close" onclick="closeB3ImportsManager()">×</button></div><div id="b3ImportsList" class="section mini">Carregando importações…</div><div class="modalactions"><button class="ghost" type="button" onclick="closeB3ImportsManager()">Fechar</button></div></div></div><div class="modalback utility-modal-back" id="operationManagerBack" onclick="if(event.target===this)closeOperationManager()"><div class="modal utility-modal" style="width:min(1100px,100%)"><div class="modalhead"><div><h2>Gerenciar lançamentos de ativos</h2><div class="sub">Filtre por classe e ativo para revisar ou excluir operações. A exclusão em massa é permanente.</div></div><button class="close" onclick="closeOperationManager()">×</button></div><div class="formgrid operation-manager-filters"><div class="field"><label for="operationManagerType">Classe do ativo</label><select id="operationManagerType" onchange="onOperationManagerTypeChange()"><option value="">Todas as classes</option></select></div><div class="field"><label for="operationManagerTicker">Ativo</label><select id="operationManagerTicker" onchange="renderOperationManagerRows()"><option value="">Todos os ativos</option></select></div></div><div id="operationManagerSummary" class="mini" style="margin:12px 0">Carregando lançamentos…</div><div id="operationManagerRows" class="tablewrap"></div><div class="modalactions" style="justify-content:space-between;flex-wrap:wrap"><div class="toolbar"><button class="danger" type="button" onclick="confirmDeleteManaged('ativo')">Excluir todos deste ativo</button><button class="danger" type="button" onclick="confirmDeleteManaged('todas')">Excluir todos os lançamentos</button></div><button class="ghost" type="button" onclick="closeOperationManager()">Fechar</button></div></div></div>
@@ -2997,7 +2997,6 @@ function openAssetMenu(event,ticker){
   <button type="button" onclick='assetMenuAction("add",${jsArg(ticker)})'><span>＋</span>Adicionar Lançamento</button>
   <button type="button" onclick='assetMenuAction("transactions",${jsArg(ticker)})'><span>☷</span>Ver lançamentos</button>
   <button type="button" onclick='assetMenuAction("notes",${jsArg(ticker)})'><span>▱</span>Minhas observações</button>
-  <button type="button" onclick='assetMenuAction("columns",${jsArg(ticker)})'><span>▤</span>Editar colunas</button>
   <div class="asset-menu-divider"></div>
   <button type="button" class="danger" onclick='assetMenuAction("delete",${jsArg(ticker)})'><span>♜</span>Excluir</button>`;
  document.body.appendChild(menu);
@@ -3067,7 +3066,6 @@ async function assetMenuAction(action,ticker){
  }
  if(action==='transactions'){openAssetTransactions(ticker);return;}
  if(action==='notes'){openAssetNotes(ticker);return;}
- if(action==='columns'){openColumnsModal();return;}
  if(action==='fundamentals'){
   const item=(state.itens||[]).find(x=>String(x.ticker).toUpperCase()===ticker.toUpperCase());
   window.open(investor10Url(ticker,item?.tipo),'_blank','noopener,noreferrer');
@@ -4376,32 +4374,27 @@ function renderReturnSparklines(series12m,seriesTotal,totalFallback){
  draw('returnTotalChart',seriesTotal,'Sem ativos na carteira');
 }
 
-function renderConsolidatedReturnSparklines(value){
- // Rentabilidade mensal = (patrimônio - capital aplicado) / capital aplicado.
- // Usa a mesma série consolidada exibida em Evolução do Patrimônio, sem proventos.
- let history=getAllTypesPortfolioHistory().rows
+function renderConsolidatedReturnSparklines(totalReturn, twelveMonthReturn){
+ // O percentual Total é o mesmo exibido no card Patrimônio total:
+ // ganho/perda de capital atual dividido pelo capital investido.
+ // Os últimos 12 meses usam a série rolling de retornos mensais do backend,
+ // calculada com preços não ajustados e excluindo dividendos/proventos.
+ const history=getAllTypesPortfolioHistory().rows
   .filter(row=>row&&/^\d{4}-\d{2}$/.test(String(row.mes||''))&&Number(row.aplicado)>0)
   .sort((a,b)=>a.mes.localeCompare(b.mes));
- // Se há ativos, mas a API ainda não entregou fechamentos, mostra ao menos a
- // fotografia atual da carteira em vez de declarar o histórico indisponível.
- if(!history.length&&(state.itens||[]).length){
-  const latest=(state.rentabilidade_historica||{}).series_patrimonio||[];
-  const current=latest.filter(row=>row&&Number(row.aplicado)>0).slice(-1)[0];
-  const summary=state.resumo||{};
-  const applied=Number(current?.aplicado??summary.investido??0);
-  const patrimony=Number(current?.patrimonio??summary.atual??0);
-  const now=new Date();
-  if(applied>0&&patrimony>=0)history=[{mes:current?.mes||`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`,aplicado:applied,patrimonio:patrimony}];
- }
+ const performance=state.rentabilidade_historica||{};
  const totalSeries=history.map(row=>({
   mes:row.mes,
   valor:Number(((Number(row.patrimonio||0)-Number(row.aplicado||0))/Number(row.aplicado||0)*100).toFixed(4))
  }));
- // A janela usa os últimos 12 fechamentos disponíveis. Se houver menos,
- // utiliza todos os pontos existentes, sem exigir 12 meses completos.
- const twelveMonths=totalSeries.slice(-12).map(row=>({...row}));
- const last12=twelveMonths.length?twelveMonths[twelveMonths.length-1].valor:null;
- const lastTotal=totalSeries.length?totalSeries[totalSeries.length-1].valor:null;
+ // Cada ponto de series_12m já representa o retorno composto da janela móvel
+ // de até 12 meses, sem proventos. Não usar o retorno acumulado desde o início.
+ const twelveMonths=(Array.isArray(performance.series_12m)?performance.series_12m:[])
+  .filter(row=>row&&/^\d{4}-\d{2}$/.test(String(row.mes||''))&&Number.isFinite(Number(row.valor)))
+  .slice(-12);
+ const last12=twelveMonths.length?Number(twelveMonths[twelveMonths.length-1].valor):
+  (twelveMonthReturn!==null&&twelveMonthReturn!==undefined&&Number.isFinite(Number(twelveMonthReturn))?Number(twelveMonthReturn):null);
+ const lastTotal=totalReturn!==null&&totalReturn!==undefined&&Number.isFinite(Number(totalReturn))?Number(totalReturn):null;
  const hasAssets=(state.itens||[]).length>0;
  const twelveValue=document.querySelector('#return12mChart')?.parentElement?.querySelector('b');
  const totalValue=document.querySelector('#returnTotalChart')?.parentElement?.querySelector('b');
@@ -4510,7 +4503,7 @@ document.getElementById('stats').innerHTML=`
  <div class="card stat"><div class="statlabel-row">Lucro total<span class="info-tip" tabindex="0" aria-label="Sobre o lucro total" data-tip="Seu resultado acumulado na carteira: ganho de capital (valorização dos ativos) somado aos dividendos e proventos recebidos.">i</span></div><div class="statvalue ${totalProfit>=0?'green':'red'}">${brl(totalProfit)}</div><div class="statdetail"><span>Ganho de capital</span><b>${brl(summaryCapitalGain)}</b></div><div class="statdetail"><span>Dividendos recebidos</span><b>${brl(r.proventos||0)}</b></div></div>
  <div class="card stat"><div class="statlabel-row">Proventos recebidos (12M)<span class="info-tip" tabindex="0" aria-label="Sobre os proventos recebidos" data-tip="Total de dividendos, JCP e rendimentos recebidos nos últimos 12 meses.">i</span></div><div class="statvalue">${brl(provDash.total_12m||0)}</div><div class="statdetail"><span>Total confirmado</span><b>${brl(provDash.total_12m||0)}</b></div></div>
  <div class="card stat return-stat-card"><div class="statlabel-row">Rentabilidade<span class="info-tip" tabindex="0" aria-label="Sobre o cálculo da rentabilidade" data-tip="Rentabilidade calculada com base na evolução mensal do patrimônio e do capital líquido aplicado, usando preços não ajustados. Dividendos, JCP e demais proventos não entram no cálculo. O período de 12 meses utiliza até os 12 fechamentos mensais disponíveis. Se houver menos, utiliza os meses existentes.">i</span></div><div class="return-spark-grid"><div class="return-spark-item"><span>Últimos 12 meses</span><svg id="return12mChart" class="sparkline-svg" viewBox="0 0 300 40" role="img" aria-label="Rentabilidade dos últimos 12 meses"></svg><b class="${return12m===null||return12m===undefined?'':Number(return12m)>=0?'green':'red'}">${return12m===null||return12m===undefined?'—':pct(return12m)}</b></div><div class="return-spark-item"><span>Total</span><svg id="returnTotalChart" class="sparkline-svg" viewBox="0 0 300 40" role="img" aria-label="Rentabilidade total"></svg><b class="${portfolioReturn===null?'':portfolioReturn>=0?'green':'red'}">${portfolioReturn===null?'—':pct(portfolioReturn)}</b></div></div></div>`;
-renderConsolidatedReturnSparklines(portfolioReturn);
+renderConsolidatedReturnSparklines(portfolioReturn, return12m);
 
 
 const rows=state.itens||[];
