@@ -17,7 +17,9 @@ class TopPaidDividendPayersTests(unittest.TestCase):
         renderer = HTML[render_start:render_end]
         self.assertIn("Ranking de proventos", renderer)
         self.assertIn("provDash.maiores_pagadores||[]", renderer)
-        self.assertIn('class="insight-title">Ranking de proventos</div>', renderer)
+        self.assertIn('class="statlabel-row">Ranking de proventos', renderer)
+        self.assertIn('class="info-tip" tabindex="0" aria-label="Sobre o ranking de proventos"', renderer)
+        self.assertIn('somente pagamentos confirmados até a data atual', renderer)
         self.assertIn('class="insight-recent-list"', renderer)
         self.assertIn('class="insight-recent-row"', renderer)
         self.assertIn('class="top-dividend-payer-total"', renderer)

@@ -1,5 +1,11 @@
 # Lonely Wallet
 
+## v4.2.25
+
+- O card **Ranking de proventos** utiliza o mesmo cabeçalho dos cards estatísticos vizinhos (`statlabel-row`) e ganhou ícone informativo com tooltip explicando que o ranking considera somente pagamentos confirmados.
+- O texto do tooltip esclarece que o ranking soma dividendos, JCP e rendimentos efetivamente recebidos até a data atual; eventos `A receber` e pagamentos futuros permanecem excluídos.
+- Os valores principais dos três cards estatísticos anteriores ao ranking foram ampliados de 23 px para 25 px no desktop, com ajuste responsivo para 20 px em telas estreitas, aproveitando melhor a área dos cards sem alterar os valores.
+
 ## v4.2.24
 
 - Renomeado o card do resumo para **Ranking de proventos**.
@@ -113,13 +119,13 @@
 - Privacidade de valores desativada por padrão; quando ativada permanece até novo clique e cobre também conteúdo dinâmico.
 - Legendas da distribuição de aportes usam nomes localizados e acentuação correta (Ação, FIIs, Renda fixa, Tesouro Direto, ETFs, BDRs e demais classes).
 
-# Lonely Wallet v4.2.24
+# Lonely Wallet v4.2.25
 
 **Carteira pessoal de investimentos | Aplicação web self-hosted | Docker / ZimaOS**
 
 > Guia do usuário, instalação, atualização, segurança, backup, solução de problemas e perguntas frequentes.
 
-- **Versão:** 4.2.24
+- **Versão:** 4.2.25
 - **Idioma da interface:** Português (Brasil)
 - **Backend:** Python 3.12 + Flask + Gunicorn
 - **Persistência:** SQLite e arquivo JSON de última cotação válida
@@ -208,12 +214,12 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve indicar `ok: true` e `version: 4.2.24`.
+O retorno deve indicar `ok: true` e `version: 4.2.25`.
 
 ### Atualização de uma versão anterior
 
 1. Faça um backup antes de substituir os arquivos.
-2. Extraia o pacote 4.2.24 em uma pasta de projeto.
+2. Extraia o pacote 4.2.25 em uma pasta de projeto.
 3. **Mantenha exatamente o volume de dados existente**. O Compose padrão utiliza:
 
 ```yaml
