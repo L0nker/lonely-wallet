@@ -1,5 +1,12 @@
 # Lonely Wallet
 
+## v4.2.18
+
+- Corrigido o gráfico **Evolução do patrimônio** para mostrar somente valorização ou prejuízo dos ativos, sem adicionar proventos pagos ou futuros. O histórico usa o ganho de capital calculado a partir do patrimônio dos ativos menos o capital líquido aplicado.
+- Corrigido também o gráfico alternativo sem histórico mensal para excluir proventos do resultado apresentado.
+- O tooltip do gráfico informa somente o patrimônio dos ativos e o valor de valorização/prejuízo, sem campos de proventos.
+- Removido o cursor de ajuda (interrogação) da coluna **Preço Atual**. O tooltip com a data da última atualização continua funcionando ao passar o mouse; o cursor permanece normal.
+
 ## v4.2.17
 
 - Tooltips de Variação e Rentabilidade convertem o percentual exibido em reais usando o Saldo (`valor_atual`) da própria linha, conforme a fórmula `Saldo × percentual / 100`.
@@ -58,13 +65,13 @@
 - Privacidade de valores desativada por padrão; quando ativada permanece até novo clique e cobre também conteúdo dinâmico.
 - Legendas da distribuição de aportes usam nomes localizados e acentuação correta (Ação, FIIs, Renda fixa, Tesouro Direto, ETFs, BDRs e demais classes).
 
-# Lonely Wallet v4.2.17
+# Lonely Wallet v4.2.18
 
 **Carteira pessoal de investimentos | Aplicação web self-hosted | Docker / ZimaOS**
 
 > Guia do usuário, instalação, atualização, segurança, backup, solução de problemas e perguntas frequentes.
 
-- **Versão:** 4.2.17
+- **Versão:** 4.2.18
 - **Idioma da interface:** Português (Brasil)
 - **Backend:** Python 3.12 + Flask + Gunicorn
 - **Persistência:** SQLite e arquivo JSON de última cotação válida
@@ -153,12 +160,12 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve indicar `ok: true` e `version: 4.2.17`.
+O retorno deve indicar `ok: true` e `version: 4.2.18`.
 
 ### Atualização de uma versão anterior
 
 1. Faça um backup antes de substituir os arquivos.
-2. Extraia o pacote 4.2.17 em uma pasta de projeto.
+2. Extraia o pacote 4.2.18 em uma pasta de projeto.
 3. **Mantenha exatamente o volume de dados existente**. O Compose padrão utiliza:
 
 ```yaml
