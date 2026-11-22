@@ -37,7 +37,8 @@ class RegressionTests(unittest.TestCase):
             # imported opening balances from leaking into IRPF/position tests.
             for table in (
                 'b3_importados', 'b3_import_lotes', 'proventos_api', 'proventos',
-                'operacoes', 'saldos_importados', 'irpf_lancamentos'
+                'operacoes', 'saldos_importados', 'irpf_lancamentos',
+                'api_response_cache', 'api_request_log', 'api_cache_stats', 'api_provider_state'
             ):
                 con.execute(f'DELETE FROM {table}')
             con.execute("DELETE FROM app_settings WHERE key='pluggy_sync_interval'")
@@ -68,6 +69,99 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(row['value'], '15')
             wallet.db().execute("UPDATE app_settings SET value='30' WHERE key='pluggy_sync_interval'")
             wallet.db().commit()
+
+    def test_pluggy_new_install_default_is_four_hours(self):
+        with wallet.app.app_context():
+            wallet.db().execute("DELETE FROM app_settings WHERE key='pluggy_sync_interval'")
+            wallet.db().commit()
+            self.assertEqual(wallet._pluggy_sync_interval(), 240)
+        response = self.client.get('/api/pluggy/settings')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()['interval_minutes'], 240)
+
+    def test_brapi_response_cache_persists_and_avoids_repeat_request(self):
+        payload = {'results': [{'symbol': 'CACHE4', 'regularMarketPrice': 12.34}]}
+        response = wallet.requests.Response()
+        response.status_code = 200
+        response._content = wallet.json.dumps(payload).encode('utf-8')
+        response.headers['Content-Type'] = 'application/json'
+        with wallet.app.app_context(), patch.object(wallet.requests, 'get', return_value=response) as mocked:
+            first = wallet._brapi_get('https://brapi.dev/api/quote/CACHE4',
+                params={'token': 'test-token-cache'}, headers={'Authorization': 'Bearer test-token-cache'},
+                cache_ttl=3600, stale_ttl=86400)
+            second = wallet._brapi_get('https://brapi.dev/api/quote/CACHE4',
+                params={'token': 'test-token-cache'}, headers={'Authorization': 'Bearer test-token-cache'},
+                cache_ttl=3600, stale_ttl=86400)
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(second.status_code, 200)
+            self.assertEqual(second.headers.get('X-LonelyWallet-Cache'), 'hit')
+            self.assertEqual(mocked.call_count, 1)
+            cache_key = wallet._api_response_cache_key('brapi', 'https://brapi.dev/api/quote/CACHE4',
+                {'token': 'test-token-cache'}, {'Authorization': 'Bearer test-token-cache'})
+            self.assertNotIn('test-token-cache', cache_key)
+            usage = wallet._api_usage_snapshot()
+            self.assertGreaterEqual(usage['cache_hits'], 1)
+
+    def test_pluggy_request_gap_uses_persisted_request_log(self):
+        with wallet.app.app_context():
+            con = wallet.db()
+            now = wallet.time.time()
+            con.execute(
+                'INSERT INTO api_request_log(provider,endpoint,requested_at,status_code) VALUES(?,?,?,?)',
+                ('pluggy', 'GET:investments', now - 0.2, 200)
+            )
+            con.commit()
+            with patch.object(wallet.time, 'sleep') as sleep:
+                wallet._provider_wait_for_gap('pluggy')
+            self.assertEqual(sleep.call_count, 1)
+            self.assertGreater(sleep.call_args.args[0], 0)
+            self.assertLessEqual(sleep.call_args.args[0], wallet.PLUGGY_REQUEST_GAP_SECONDS)
+
+    def test_pluggy_429_cooldown_blocks_requests_even_if_gap_is_disabled(self):
+        with wallet.app.app_context(), patch.object(wallet, 'PLUGGY_REQUEST_GAP_SECONDS', 0):
+            wallet._provider_set_cooldown('pluggy', 60, 429, 'rate_limited')
+            with self.assertRaises(ValueError):
+                wallet._provider_wait_for_gap('pluggy')
+
+    def test_api_provider_cooldown_is_persisted_after_network_failure(self):
+        with wallet.app.app_context():
+            wallet._provider_set_cooldown('brapi', 45, 0, 'network_error')
+            row = wallet.db().execute(
+                'SELECT cooldown_until,last_status_code,last_error FROM api_provider_state WHERE provider=?',
+                ('brapi',)
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertGreater(row['cooldown_until'], wallet.time.time())
+            self.assertEqual(row['last_error'], 'network_error')
+
+    def test_brapi_budget_blocks_network_when_local_limit_is_reached(self):
+        with wallet.app.app_context(), patch.object(wallet, 'BRAPI_LOCAL_30D_BUDGET', 1),              patch.object(wallet.requests, 'get') as mocked:
+            wallet._api_record_request('brapi', 'https://brapi.dev/api/quote/USED4', 200)
+            response = wallet._brapi_get('https://brapi.dev/api/quote/BLOCK4',
+                params={'unique': 'budget-test'}, cache_ttl=3600, stale_ttl=3600)
+            self.assertEqual(response.status_code, 429)
+            mocked.assert_not_called()
+
+    def test_hgbrasil_and_dadosb3_local_budgets_block_network(self):
+        with wallet.app.app_context():
+            cases = (
+                ('hgbrasil', 'https://api.hgbrasil.com/finance', 'HGBRASIL_LOCAL_24H_BUDGET'),
+                ('dadosb3', 'https://dadosb3.com/indices/IFIX/precos', 'DADOSB3_LOCAL_24H_BUDGET'),
+            )
+            for provider, url, setting in cases:
+                with self.subTest(provider=provider), patch.object(wallet, setting, 1), patch.object(wallet.requests, 'get') as mocked:
+                    wallet._api_record_request(provider, 'previous-request', 200)
+                    response = wallet._provider_get(provider, url, params={'unique': provider}, cache_ttl=3600)
+                    self.assertEqual(response.status_code, 429)
+                    mocked.assert_not_called()
+
+    def test_api_usage_endpoint_uses_only_local_database(self):
+        response = self.client.get('/api/integracoes/consumo')
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()['brapi']
+        self.assertIn('requests_last_30_days', payload)
+        self.assertIn('remaining_local_budget', payload)
+        self.assertIn('cache_hits', payload)
 
     def test_retired_market_apis_are_not_available(self):
         self.assertNotIn('twelvedata', wallet.API_PROVIDERS)

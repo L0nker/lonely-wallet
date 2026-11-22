@@ -1,14 +1,14 @@
-# Lonely Wallet v4.2.32
+# Lonely Wallet v4.2.33
 
 **Gerenciador pessoal de investimentos | Docker / ZimaOS | Português (Brasil)**
 
-Esta versão parte da v4.2.31. O objetivo desta atualização é corrigir a confiabilidade dos testes, endurecer a importação de planilhas, proteger as rotinas de backup/migração SQLite, atualizar dependências e eliminar referências de versão fixas na interface.
+Esta versão parte da base estável v4.2.32. Mantém a interface, as regras financeiras, a importação B3 e o fluxo de carregamento do dashboard, com otimizações específicas para reduzir chamadas repetidas às APIs e proteger as cotas de planos gratuitos.
 
-Esta atualização corrige o carregamento do renderer offline de gráficos, adiciona tooltips e animação básica ao fallback, torna a integridade do Chart.js visível no healthcheck e interrompe o build quando um pacote recebido falha na verificação SRI. As versões pinadas de Flask, Gunicorn, cryptography, defusedxml e openpyxl foram verificadas como publicadas no PyPI; Requests foi atualizado para `2.34.2`.
+As consultas da brapi passam a usar cache persistente em SQLite, orçamento local móvel de 30 dias, uma chamada por ticker, concorrência serializada e intervalo mínimo entre chamadas. As respostas recentes podem ser reutilizadas após reinicializações e, durante indisponibilidades temporárias, respostas anteriores dentro da janela de contingência podem ser reaproveitadas. A sincronização Pluggy para novas instalações passa a ter frequência padrão de quatro horas; preferências já salvas pelo usuário são preservadas.
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.32 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.33 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
 - **Persistência:** SQLite, com bancos separados para ativos e tokens
 - **Porta:** `8085` no host e `8080` no container
@@ -38,7 +38,7 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve apresentar `ok: true` e `version: 4.2.32`.
+O retorno deve apresentar `ok: true` e `version: 4.2.33`.
 
 **Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
 
@@ -232,3 +232,29 @@ Consulte o estado da integração e os logs do container. A falta de cotação n
 ### v4.2.25 e anteriores
 
 Consulte as notas históricas preservadas nos pacotes anteriores. Este README prioriza o histórico confirmado a partir da v4.2.25 e as orientações atuais de instalação, segurança e manutenção.
+
+## 12. Controle de consumo das APIs gratuitas
+
+- A brapi usa cache persistente em SQLite, compartilhado entre threads e preservado após reinicializações do container.
+- O cache padrão é de 30 minutos durante o pregão, 12 horas fora do pregão, 12 horas para proventos, 24 horas para histórico e 6 horas para a lista de ativos.
+- O limite padrão é de um ticker por chamada, com apenas uma requisição brapi simultânea e intervalo mínimo de 350 ms entre chamadas.
+- Os orçamentos locais padrão são de 10.000 chamadas brapi por janela móvel de 30 dias, 300 chamadas HG Brasil por 24 horas e 150 chamadas Dados B3 por 24 horas. Os limites reservam margem para outras aplicações que possam compartilhar os tokens; as contagens incluem apenas esta instalação.
+- Quando o orçamento é atingido, a aplicação deixa de chamar a brapi e tenta reutilizar uma resposta em cache ainda dentro da janela de contingência.
+- O painel de consumo aparece em **Integrações e APIs** e mostra os limites locais da brapi, HG Brasil e Dados B3, além das chamadas registradas de Pluggy e outras fontes. Consultá-lo não chama o provedor; lê apenas o SQLite local.
+- A frequência padrão da sincronização Pluggy para novas instalações é de 4 horas. As chamadas Pluggy são espaçadas em pelo menos 1 segundo, com o intervalo persistido entre reinicializações, e a API Key é reutilizada por aproximadamente 115 minutos. Uma frequência já salva pelo usuário não é sobrescrita.
+
+Variáveis configuráveis no Compose:
+
+```yaml
+BRAPI_LOCAL_30D_BUDGET: "10000"
+BRAPI_MAX_TICKERS_PER_REQUEST: "1"
+BRAPI_REQUEST_GAP_SECONDS: "0.35"
+HGBRASIL_LOCAL_24H_BUDGET: "300"
+DADOSB3_LOCAL_24H_BUDGET: "150"
+PLUGGY_REQUEST_GAP_SECONDS: "1.0"
+```
+
+A HG Brasil usa limite local padrão de 300 chamadas por 24 horas, abaixo da cota gratuita publicada de 400 por dia; Dados B3 usa limite local padrão de 150 por 24 horas, abaixo da cota grátis publicada de 200 por dia. Os limites podem ser ajustados com `HGBRASIL_LOCAL_24H_BUDGET` e `DADOSB3_LOCAL_24H_BUDGET`; valor `0` desativa o limite local daquele provedor. Para a brapi, `BRAPI_LOCAL_30D_BUDGET=0` desativa o orçamento local, mas não é recomendado no plano gratuito. Mantenha `BRAPI_MAX_TICKERS_PER_REQUEST=1` no plano gratuito; aumente somente se o plano contratado permitir mais tickers por chamada.
+
+O orçamento é uma proteção local, não uma leitura oficial da cota do provedor. Outras aplicações usando o mesmo token não são contabilizadas. Consulte o painel do próprio provedor para conferir o saldo global.
+
