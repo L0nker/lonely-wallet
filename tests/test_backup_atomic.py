@@ -39,6 +39,23 @@ class BackupAtomicTests(unittest.TestCase):
         self.assertIn('ativos.db', manifest['files'])
         self.assertTrue((folders[0] / 'tokens.db').exists())
 
+    def test_backup_database_supports_special_path_characters(self):
+        from scripts.backup import backup_database
+        root = self.data / 'origem ? # % com espaco'
+        root.mkdir()
+        source = root / 'carteira ? # %.db'
+        target = root / 'backup ? # %.db'
+        con = sqlite3.connect(source)
+        con.execute('CREATE TABLE sample(value TEXT)')
+        con.execute('INSERT INTO sample VALUES(?)', ('backup persistido',))
+        con.commit(); con.close()
+        backup_database(source, target)
+        verify = sqlite3.connect(target)
+        try:
+            self.assertEqual(verify.execute('SELECT value FROM sample').fetchone()[0], 'backup persistido')
+        finally:
+            verify.close()
+
     def test_invalid_cache_leaves_no_partial_backup(self):
         self.data.joinpath('quotes_last_valid.json').write_text('{invalid')
         result = self.run_backup()

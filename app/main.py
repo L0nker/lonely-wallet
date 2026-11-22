@@ -1,4 +1,4 @@
-import os, sqlite3, time, json, threading, hashlib, io, re, unicodedata, uuid, shutil, secrets, hmac, math, tempfile
+import os, sqlite3, time, json, threading, hashlib, io, re, unicodedata, uuid, shutil, secrets, hmac, math, tempfile, zipfile
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
@@ -8,13 +8,30 @@ import requests
 from cryptography.fernet import Fernet, InvalidToken
 from openpyxl import load_workbook, Workbook
 from flask import Flask, g, jsonify, render_template, request, send_file, session, redirect, url_for
+from werkzeug.exceptions import RequestEntityTooLarge
 
 app = Flask(__name__)
-app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax', SESSION_COOKIE_SECURE=os.environ.get('SESSION_COOKIE_SECURE', '0').lower() in ('1', 'true', 'yes'), PERMANENT_SESSION_LIFETIME=timedelta(minutes=30), MAX_CONTENT_LENGTH=16 * 1024 * 1024)
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax', SESSION_COOKIE_SECURE=os.environ.get('SESSION_COOKIE_SECURE', '0').lower() in ('1', 'true', 'yes'), PERMANENT_SESSION_LIFETIME=timedelta(minutes=30), MAX_CONTENT_LENGTH=(16 * 1024 * 1024) + (256 * 1024), MAX_FORM_MEMORY_SIZE=500_000, MAX_FORM_PARTS=100)
 # Dados da carteira ficam em um banco próprio; segredos de APIs ficam em tokens.db.
 DB_PATH = os.environ.get('ASSETS_DB_PATH', '/data/ativos.db')
 LEGACY_DB_PATH = os.environ.get('DB_PATH', '/data/carteira.db')
 TOKEN_DB_PATH = os.environ.get('TOKEN_DB_PATH', '/data/tokens.db')
+VERSION_FILE = Path(__file__).resolve().parents[1] / 'VERSION'
+try:
+    APP_VERSION = VERSION_FILE.read_text(encoding='utf-8').strip() or 'desconhecida'
+except OSError:
+    APP_VERSION = 'desconhecida'
+USER_AGENT = f'Mozilla/5.0 LonelyWallet/{APP_VERSION}'
+
+
+def sqlite_readonly_uri(path):
+    """Build a correctly escaped SQLite file URI for paths containing ?, #, %, or spaces."""
+    return Path(path).expanduser().resolve().as_uri() + '?mode=ro'
+
+
+@app.context_processor
+def inject_app_version():
+    return {'app_version': APP_VERSION}
 TOKEN = os.environ.get('BRAPI_TOKEN') or os.environ.get('BRAPI_API_KEY', '')
 API_KEY_FILE = os.environ.get('API_KEYS_KEY_FILE', '/data/.api-credentials.key')
 TZ = ZoneInfo('America/Sao_Paulo')
@@ -192,7 +209,7 @@ def migrate_legacy_database(source_path, destination_path):
     temporary = Path(temporary_name)
     try:
         # Use SQLite's online backup API so committed WAL pages are included.
-        src = sqlite3.connect(f'file:{source.as_posix()}?mode=ro', uri=True, timeout=30)
+        src = sqlite3.connect(sqlite_readonly_uri(source), uri=True, timeout=30)
         dst = sqlite3.connect(str(temporary), timeout=30)
         try:
             src.backup(dst, pages=256, sleep=0.05)
@@ -203,11 +220,14 @@ def migrate_legacy_database(source_path, destination_path):
         finally:
             dst.close()
             src.close()
-        # Reopen the closed snapshot and verify it once more before publication.
-        with sqlite3.connect(f'file:{temporary.as_posix()}?mode=ro', uri=True, timeout=30) as verify:
+        # Reopen and explicitly close the published snapshot before replacement.
+        verify = sqlite3.connect(sqlite_readonly_uri(temporary), uri=True, timeout=30)
+        try:
             check = verify.execute('PRAGMA integrity_check').fetchone()
             if not check or str(check[0]).lower() != 'ok':
                 raise RuntimeError(f'Banco temporário inválido: {check[0] if check else "sem resultado"}')
+        finally:
+            verify.close()
         os.replace(temporary, destination)
         return True
     except Exception:
@@ -2102,7 +2122,7 @@ def cotacao(ticker, force_refresh=False):
             if response.status_code in (401, 403) and headers:
                 # An expired optional token must not block the public latest-close list.
                 response = requests.get(list_url, params=list_params,
-                    headers={'User-Agent': 'Mozilla/5.0 LonelyWallet/4.2.22'}, timeout=8)
+                    headers={'User-Agent': USER_AGENT}, timeout=8)
             response.raise_for_status()
             stocks = response.json().get('stocks') or []
             def matches_symbol(item):
@@ -2167,7 +2187,7 @@ def cotacao(ticker, force_refresh=False):
 
 def _fallback_market_quote(ticker):
     """Busca cotação/variação em provedores alternativos configurados, sem combinar séries."""
-    headers = {'User-Agent': 'Mozilla/5.0 LonelyWallet/2.0.69'}
+    headers = {'User-Agent': USER_AGENT}
     # HG Brasil: cobertura de ativos B3 conforme o plano.
     token = _get_api_token('hgbrasil')
     if token:
@@ -2873,6 +2893,11 @@ def json_error(message, status=400):
     return jsonify(ok=False, erro=message), status
 
 
+@app.errorhandler(RequestEntityTooLarge)
+def handle_request_too_large(_error):
+    return json_error('Arquivo grande demais. O limite de envio é 16 MB.', 413)
+
+
 def safe_error_text(error, limit=180):
     """Redact credentials, query strings and bearer values before returning errors."""
     text = str(error or 'Erro desconhecido')
@@ -3254,20 +3279,39 @@ def cleanup_pluggy_asset_refs(scope, tipo='', ticker='', operation_ids=None, inv
 
 
 def rotate_predelete_backups(backup_root=None, keep=10):
-    """Keep only the newest complete pre-delete backups; never remove the new one."""
+    """Keep the newest complete backups; tolerate concurrent removal of old folders."""
     root = Path(backup_root or os.environ.get('BACKUP_DIR', '/data/backups'))
     keep = max(1, int(keep))
-    candidates = sorted(
-        (path for path in root.glob('pre-exclusao-*') if path.is_dir()),
-        key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True
-    )
-    removed = []
-    for old in candidates[keep:]:
+    candidates = []
+    try:
+        paths = list(root.glob('pre-exclusao-*'))
+    except OSError as exc:
+        app.logger.warning('Não foi possível listar backups preventivos: %s', exc)
+        return []
+    for path in paths:
         try:
+            if path.is_symlink() or not path.is_dir():
+                continue
+            stat = path.stat()
+            candidates.append((stat.st_mtime_ns, path.name, path))
+        except FileNotFoundError:
+            # Another cleanup process may have removed this directory after glob().
+            continue
+        except OSError as exc:
+            app.logger.warning('Não foi possível inspecionar backup preventivo %s: %s', path.name, exc)
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    removed = []
+    for _mtime, _name, old in candidates[keep:]:
+        try:
+            # Recheck type/existence immediately before deletion to avoid following symlinks.
+            if old.is_symlink() or not old.is_dir():
+                continue
             shutil.rmtree(old)
             removed.append(old.name)
-        except OSError:
-            app.logger.warning('Não foi possível remover backup preventivo antigo: %s', old.name)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            app.logger.warning('Não foi possível remover backup preventivo antigo %s: %s', old.name, exc)
     return removed
 
 
@@ -3515,61 +3559,120 @@ def _b3_asset(product):
     return ticker[:80], 'outros'
 
 
+MAX_B3_UPLOAD_BYTES = 16 * 1024 * 1024
+MAX_B3_XLSX_UNCOMPRESSED_BYTES = 128 * 1024 * 1024
+MAX_B3_XLSX_ENTRIES = 512
+MAX_B3_XLSX_SINGLE_XML_BYTES = 64 * 1024 * 1024
+MAX_B3_XLSX_ROWS = 200_000
+MAX_B3_XLSX_COLUMNS = 64
+
+
+def _validate_b3_xlsx_container(raw):
+    """Reject malformed/oversized ZIP containers before OpenPyXL parses XML."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            infos = archive.infolist()
+            if not infos or len(infos) > MAX_B3_XLSX_ENTRIES:
+                raise ValueError('A planilha contém uma quantidade inválida de arquivos internos.')
+            names = {info.filename for info in infos}
+            if '[Content_Types].xml' not in names or 'xl/workbook.xml' not in names:
+                raise ValueError('O arquivo não possui a estrutura esperada de uma planilha XLSX.')
+            if 'xl/vbaProject.bin' in names:
+                raise ValueError('Planilhas com macros não são aceitas. Exporte novamente como .xlsx sem macros.')
+            expanded_total = 0
+            for info in infos:
+                if info.is_dir():
+                    continue
+                if info.file_size < 0 or info.compress_size < 0:
+                    raise ValueError('A planilha contém metadados ZIP inválidos.')
+                expanded_total += info.file_size
+                if expanded_total > MAX_B3_XLSX_UNCOMPRESSED_BYTES:
+                    raise ValueError('A planilha descompactada ultrapassa o limite seguro de 128 MB.')
+                if info.file_size > MAX_B3_XLSX_SINGLE_XML_BYTES:
+                    raise ValueError('Um componente interno da planilha ultrapassa o limite seguro de 64 MB.')
+                if info.file_size > 1_000_000 and info.compress_size > 0:
+                    if info.file_size / info.compress_size > 200:
+                        raise ValueError('A planilha apresenta uma taxa de compressão suspeita.')
+            if not any(name.startswith('xl/worksheets/sheet') and name.endswith('.xml') for name in names):
+                raise ValueError('A planilha não contém uma aba de dados válida.')
+    except zipfile.BadZipFile as exc:
+        raise ValueError('O arquivo XLSX está corrompido ou não é um ZIP válido.') from exc
+
+
 def _parse_b3_workbook(file_storage):
-    if not file_storage or not file_storage.filename.lower().endswith('.xlsx'):
+    if not file_storage or not str(file_storage.filename or '').lower().endswith('.xlsx'):
         raise ValueError('Selecione uma planilha Excel da B3 no formato .xlsx.')
-    raw = file_storage.read()
+    raw = file_storage.read(MAX_B3_UPLOAD_BYTES + 1)
+    if len(raw) > MAX_B3_UPLOAD_BYTES:
+        raise RequestEntityTooLarge()
     if not raw:
         raise ValueError('O arquivo selecionado está vazio.')
-    wb = load_workbook(io.BytesIO(raw), read_only=False, data_only=True)
-    ws = wb.active
-    rows = ws.iter_rows(values_only=True)
-    header = next(rows, None)
-    if not header:
-        raise ValueError('A planilha não contém cabeçalho.')
-    headers = {_b3_normalize(v): i for i, v in enumerate(header) if v is not None}
-    required = ['entrada/saida', 'data', 'movimentacao', 'produto', 'quantidade', 'preco unitario', 'valor da operacao']
-    missing = [h for h in required if h not in headers]
-    if missing:
-        raise ValueError('Não reconheci o formato da planilha. Confira se é a planilha de movimentações exportada pela B3.')
-    parsed=[]
-    for row_number, row in enumerate(rows, start=2):
-        if not row or not any(v is not None for v in row):
-            continue
-        get=lambda key: row[headers[key]] if headers[key] < len(row) else None
-        movement=str(get('movimentacao') or '').strip()
-        movement_norm=_b3_normalize(movement)
-        entry=_b3_normalize(get('entrada/saida'))
-        product=str(get('produto') or '').strip()
-        ticker, asset_type=_b3_asset(product)
-        if not ticker:
-            continue
-        dt=_b3_date(get('data'))
-        qty=_b3_number(get('quantidade'))
-        price=_b3_number(get('preco unitario'))
-        amount=_b3_number(get('valor da operacao'))
-        category=None; record=None
-        if movement_norm in ('rendimento','juros sobre capital proprio','dividendo'):
-            if amount <= 0:
+    _validate_b3_xlsx_container(raw)
+    # OpenPyXL uses defusedxml when installed. Fail closed rather than process
+    # untrusted workbook XML with an unprotected parser.
+    from openpyxl.xml import DEFUSEDXML
+    if not DEFUSEDXML:
+        raise RuntimeError('Proteção XML indisponível. Instale a dependência defusedxml.')
+    wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    try:
+        ws = wb.active
+        if ws is None or (ws.max_column or 0) > MAX_B3_XLSX_COLUMNS:
+            raise ValueError('A planilha excede o limite de 64 colunas suportadas.')
+        rows = ws.iter_rows(values_only=True)
+        header = next(rows, None)
+        if not header:
+            raise ValueError('A planilha não contém cabeçalho.')
+        headers = {_b3_normalize(v): i for i, v in enumerate(header) if v is not None}
+        required = ['entrada/saida', 'data', 'movimentacao', 'produto', 'quantidade', 'preco unitario', 'valor da operacao']
+        missing = [h for h in required if h not in headers]
+        if missing:
+            raise ValueError('Não reconheci o formato da planilha. Confira se é a planilha de movimentações exportada pela B3.')
+        parsed = []
+        for row_number, row in enumerate(rows, start=2):
+            if row_number > MAX_B3_XLSX_ROWS + 1:
+                raise ValueError('A planilha ultrapassa o limite de 200.000 linhas.')
+            if not row or not any(v is not None for v in row):
                 continue
-            category='provento'
-            record={'ticker':ticker,'valor_total':amount,'data':dt,'tipo_evento':movement}
-        elif movement_norm in ('transferencia - liquidacao','compra / venda'):
-            if qty <= 0 or amount <= 0:
+            get = lambda key: row[headers[key]] if headers[key] < len(row) else None
+            movement = str(get('movimentacao') or '').strip()
+            movement_norm = _b3_normalize(movement)
+            entry = _b3_normalize(get('entrada/saida'))
+            product = str(get('produto') or '').strip()
+            ticker, asset_type = _b3_asset(product)
+            if not ticker:
                 continue
-            side='venda' if entry in ('debito','saida','saída') else 'compra'
-            if movement_norm == 'compra / venda' and asset_type == 'renda_fixa':
-                side='compra' if entry not in ('debito','saida','saída') else 'venda'
-            category='operacao'
-            record={'ticker':ticker,'tipo':asset_type,'lado':side,'quantidade':qty,'preco':price if price > 0 else amount/qty,'data':dt,'custos':0.0,'status':'executada','detalhes':{'origem':'Importação B3','movimentacao':movement,'produto':product}}
-        else:
-            # Eventos sem valor negociado (atualização, transferência entre custódias,
-            # direitos de subscrição etc.) não viram compra/venda ou provento.
-            continue
-        fingerprint=hashlib.sha256(json.dumps([row_number, category, entry, dt, movement_norm, product, qty, price, amount],ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
-        parsed.append({'fingerprint':fingerprint,'categoria':category,'registro':record})
-    wb.close()
-    return parsed
+            dt = _b3_date(get('data'))
+            qty = _b3_number(get('quantidade'))
+            price = _b3_number(get('preco unitario'))
+            amount = _b3_number(get('valor da operacao'))
+            category = None
+            record = None
+            if movement_norm in ('rendimento', 'juros sobre capital proprio', 'dividendo'):
+                if amount <= 0:
+                    continue
+                category = 'provento'
+                record = {'ticker': ticker, 'valor_total': amount, 'data': dt, 'tipo_evento': movement}
+            elif movement_norm in ('transferencia - liquidacao', 'compra / venda'):
+                if qty <= 0 or amount <= 0:
+                    continue
+                side = 'venda' if entry in ('debito', 'saida', 'saída') else 'compra'
+                if movement_norm == 'compra / venda' and asset_type == 'renda_fixa':
+                    side = 'compra' if entry not in ('debito', 'saida', 'saída') else 'venda'
+                category = 'operacao'
+                record = {'ticker': ticker, 'tipo': asset_type, 'lado': side, 'quantidade': qty,
+                          'preco': price if price > 0 else amount / qty, 'data': dt, 'custos': 0.0,
+                          'status': 'executada', 'detalhes': {'origem': 'Importação B3',
+                          'movimentacao': movement, 'produto': product}}
+            else:
+                # Eventos sem valor negociado não viram compra/venda ou provento.
+                continue
+            fingerprint = hashlib.sha256(json.dumps(
+                [row_number, category, entry, dt, movement_norm, product, qty, price, amount],
+                ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+            parsed.append({'fingerprint': fingerprint, 'categoria': category, 'registro': record})
+        return parsed
+    finally:
+        wb.close()
 
 
 @app.route('/api/importar-b3/lotes', methods=['GET'])
@@ -3641,8 +3744,6 @@ def _b3_semantic_duplicate(item):
         (str(rec['ticker']).upper(),rec['data'],float(rec['valor_total']))
     ).fetchone()
     return row['id'] if row else None
-
-
 @app.route('/api/importar-b3', methods=['POST'])
 def importar_b3():
     try:
@@ -3696,8 +3797,13 @@ def importar_b3():
         except Exception as dividend_exc:
             dividend_sync = {'ok': False, 'mensagem': safe_error_text(dividend_exc, 120)}
         return jsonify(ok=True,importadas=inserted_ops+inserted_provs,operacoes=inserted_ops,proventos=inserted_provs,duplicados=duplicates,lote_id=lote_id, sincronizacao_proventos=dividend_sync)
+    except RequestEntityTooLarge:
+        return json_error('Arquivo grande demais. O limite de envio é 16 MB.', 413)
+    except ValueError as exc:
+        return json_error(str(exc))
     except Exception as exc:
-        return json_error(str(exc) if isinstance(exc,ValueError) else 'Não foi possível ler a planilha B3. Confira o arquivo e tente novamente.')
+        app.logger.exception('Falha ao importar planilha B3: %s', exc)
+        return json_error('Não foi possível ler a planilha B3. Confira o arquivo e tente novamente.')
 
 
 @app.route('/api/metas', methods=['GET','POST'])
@@ -4402,7 +4508,8 @@ def _confirmed_proventos_total_12m(received_total, upcoming, as_of=None):
         if not math.isfinite(amount) or amount <= 0:
             continue
         ticker = str(row.get('ticker') or '').strip().upper()
-        fingerprint = (ticker, expected_on.isoformat(), round(amount, 2))
+        event_type = _b3_normalize(row.get('tipo_evento') or row.get('tipo') or 'provento')
+        fingerprint = (ticker, expected_on.isoformat(), event_type, round(amount, 2))
         if fingerprint in seen:
             continue
         seen.add(fingerprint)
@@ -5059,7 +5166,7 @@ def _benchmark_monthly_from_yahoo(symbol, start_date, end_date):
     response = requests.get(
         url,
         params={'period1': period1, 'period2': period2, 'interval': '1mo', 'events': 'div,splits'},
-        headers={'User-Agent': 'Mozilla/5.0 LonelyWallet/2.0'},
+        headers={'User-Agent': USER_AGENT},
         timeout=15
     )
     response.raise_for_status()
@@ -5175,7 +5282,7 @@ def _benchmark_monthly_ibge_ipca(start_date, end_date):
     last_period = end.year * 100 + end.month
     response = requests.get(
         f'https://apisidra.ibge.gov.br/values/t/1737/n1/1/v/63/p/{first_period}-{last_period}',
-        headers={'User-Agent': 'LonelyWallet/2.0.56'},
+        headers={'User-Agent': USER_AGENT},
         timeout=20
     )
     response.raise_for_status()

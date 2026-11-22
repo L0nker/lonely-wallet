@@ -15,7 +15,7 @@ def backup_database(source: Path, target: Path) -> None:
     if not source.exists():
         return
     target.parent.mkdir(parents=True, exist_ok=True)
-    src = sqlite3.connect(f'file:{source}?mode=ro', uri=True, timeout=30)
+    src = sqlite3.connect(source.expanduser().resolve().as_uri() + '?mode=ro', uri=True, timeout=30)
     dst = sqlite3.connect(target, timeout=30)
     try:
         src.backup(dst, pages=256, sleep=0.05)

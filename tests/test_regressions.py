@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 import datetime
+import io
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,13 +26,34 @@ class RegressionTests(unittest.TestCase):
     def setUp(self):
         self.client = wallet.app.test_client()
         with wallet.app.app_context():
-            con = wallet.token_db()
-            con.execute('DELETE FROM app_auth')
-            con.execute('DELETE FROM auth_attempts')
-            con.execute("DELETE FROM operacoes WHERE UPPER(ticker)='IRPFBASE4'")
-            con.execute("DELETE FROM saldos_importados WHERE UPPER(ticker)='IRPFBASE4'")
-            con.execute("DELETE FROM irpf_lancamentos WHERE upper(fonte_pagadora) LIKE '%TESTE DE ISOLAMENTO%'")
+            # Auth data lives in tokens.db; financial fixtures live in ativos.db.
+            secrets_db = wallet.token_db()
+            secrets_db.execute('DELETE FROM app_auth')
+            secrets_db.execute('DELETE FROM auth_attempts')
+            secrets_db.commit()
+
+            con = wallet.db()
+            # Each test starts with clean financial source tables. This prevents
+            # imported opening balances from leaking into IRPF/position tests.
+            for table in (
+                'b3_importados', 'b3_import_lotes', 'proventos_api', 'proventos',
+                'operacoes', 'saldos_importados', 'irpf_lancamentos'
+            ):
+                con.execute(f'DELETE FROM {table}')
+            con.execute("DELETE FROM app_settings WHERE key='pluggy_sync_interval'")
             con.commit()
+
+    def test_00_setup_fixture_leaves_a_balance_for_next_test_to_check(self):
+        with wallet.app.app_context():
+            con = wallet.db()
+            con.execute('INSERT INTO saldos_importados(ticker,tipo,quantidade,preco_medio,preco_base,data_base,nome,origem) VALUES(?,?,?,?,?,?,?,?)',
+                        ('ISOLATION4','acao',1,10,10,'2026-01-01','Fixture isolation','Teste'))
+            con.commit()
+
+    def test_01_setup_clears_all_imported_balances_between_tests(self):
+        with wallet.app.app_context():
+            count = wallet.db().execute('SELECT COUNT(*) FROM saldos_importados').fetchone()[0]
+            self.assertEqual(count, 0)
 
     def test_pluggy_sync_interval_persists_after_new_request(self):
         saved = self.client.post('/api/pluggy/settings', json={'interval_minutes': 15})
@@ -300,6 +322,64 @@ class RegressionTests(unittest.TestCase):
             summary = wallet.build_irpf_summary(2026)
             self.assertGreater(summary['resumo']['resultado_vendas'], 0)
             self.assertTrue(any(x['ticker']=='IRPFBASE4' and x['quantidade']==6 for x in summary['posicoes']))
+
+    def test_confirmed_proventos_same_ticker_date_amount_different_event_types_are_not_merged(self):
+        as_of = datetime.date(2026, 11, 22)
+        upcoming = [
+            {'ticker':'DUPL11','status':'A receber','data_pagamento':'2026-12-10','valor_total':12.50,'tipo_evento':'DIVIDENDO'},
+            {'ticker':'DUPL11','status':'A receber','data_pagamento':'2026-12-10','valor_total':12.50,'tipo_evento':'JCP'},
+        ]
+        self.assertEqual(wallet._confirmed_proventos_total_12m(0, upcoming, as_of=as_of), 25.00)
+
+    def test_upload_over_limit_returns_413_with_clear_message(self):
+        payload = b'x' * (16 * 1024 * 1024 + 1)
+        response = self.client.post('/api/importar-b3', data={
+            'arquivo': (io.BytesIO(payload), 'planilha-grande.xlsx')
+        }, content_type='multipart/form-data')
+        self.assertEqual(response.status_code, 413)
+        self.assertIn('Arquivo grande demais', response.get_json()['erro'])
+
+    def test_legacy_db_migration_supports_special_path_characters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'diretorio ? hash # porcento % e espaco'
+            root.mkdir()
+            source = root / 'origem #1?.db'
+            destination = root / 'destino %2F.db'
+            con = __import__('sqlite3').connect(source)
+            con.execute('CREATE TABLE sample(value TEXT)')
+            con.execute('INSERT INTO sample VALUES(?)', ('persistido',))
+            con.commit(); con.close()
+            self.assertTrue(wallet.migrate_legacy_database(source, destination))
+            verify = __import__('sqlite3').connect(destination)
+            try:
+                self.assertEqual(verify.execute('SELECT value FROM sample').fetchone()[0], 'persistido')
+            finally:
+                verify.close()
+
+    def test_backup_rotation_tolerates_candidate_removed_during_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index in range(3):
+                folder = root / f'pre-exclusao-{index:02d}'
+                folder.mkdir()
+                (folder / 'backup.db').write_text(str(index))
+                os.utime(folder, (index + 1, index + 1))
+            candidate = root / 'pre-exclusao-00'
+            original_stat = Path.stat
+            def race_stat(path, *args, **kwargs):
+                if path == candidate:
+                    raise FileNotFoundError('simulated concurrent cleanup')
+                return original_stat(path, *args, **kwargs)
+            with patch.object(Path, 'stat', race_stat):
+                removed = wallet.rotate_predelete_backups(root, keep=1)
+            self.assertIsInstance(removed, list)
+
+    def test_version_is_dynamic_in_footer_and_user_agent(self):
+        version = (Path(wallet.__file__).resolve().parents[1] / 'VERSION').read_text().strip()
+        self.assertEqual(wallet.APP_VERSION, version)
+        self.assertIn(version, wallet.USER_AGENT)
+        template = (Path(wallet.__file__).resolve().parents[1] / 'app' / 'templates' / 'index.html').read_text(encoding='utf-8')
+        self.assertIn('Lonely Wallet v{{ app_version }}', template)
 
 
 if __name__ == '__main__':

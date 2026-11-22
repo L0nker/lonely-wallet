@@ -1,529 +1,215 @@
-# Lonely Wallet
+# Lonely Wallet v4.2.31
 
-## v4.2.30
+**Gerenciador pessoal de investimentos | Docker / ZimaOS | Português (Brasil)**
 
-- Padronizado o tooltip dos controles de movimentação das categorias, removendo o tooltip nativo do navegador e aplicando o estilo visual do projeto.
-- Corrigida a altura do cabeçalho de **Renda Fixa**: removida a altura mínima exclusiva que deixava esse card maior que FIIs, Ações e as demais categorias.
-- O card **Proventos recebidos (12M)** mantém o valor principal restrito aos pagamentos efetivamente recebidos nos últimos 12 meses.
-- **Total confirmado** passa a somar os recebimentos dos últimos 12 meses aos proventos já anunciados com pagamento previsto para os próximos 12 meses.
-- Valores a receber são considerados somente quando possuem status explícito **A receber**, data de pagamento válida dentro do horizonte de 12 meses e valor positivo; amortizações, pagamentos vencidos, cancelados e duplicados são desconsiderados.
-- Incrementado o formato do cache do dashboard para reconstruir snapshots com o novo campo `total_confirmado_12m`; os bancos SQLite, tokens e demais configurações permanecem preservados.
+Esta versão parte da v4.2.30. O objetivo desta atualização é corrigir a confiabilidade dos testes, endurecer a importação de planilhas, proteger as rotinas de backup/migração SQLite, atualizar dependências e eliminar referências de versão fixas na interface.
 
-## v4.2.29
+## 1. Informações da aplicação
 
-- Adicionado ao cabeçalho da categoria **Renda Fixa** o indicador **Valor total com descontos**, posicionado imediatamente à direita de **Valor total**.
-- O indicador soma o campo **Saldo com descontos** de todas as aplicações da categoria, inclusive as que aparecem em outras páginas da tabela.
-- Se alguma aplicação não tiver estimativa líquida confiável, o total consolidado mostra `—` em vez de apresentar uma soma parcial como total completo.
-- Preservada a coluna individual **Saldo com descontos** e os cálculos tributários por aplicação.
-- Mantidas as melhorias de tipografia dos cards de resumo e os espaçamentos uniformes em **Últimos ativos lançados** da v4.2.27.
+- **Versão:** 4.2.31 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Backend:** Python 3.12, Flask e Gunicorn
+- **Persistência:** SQLite, com bancos separados para ativos e tokens
+- **Porta:** `8085` no host e `8080` no container
+- **Dados persistentes:** `/DATA/AppData/lonely-wallet/data` no host, montado em `/data`
+- **Container:** executa com usuário/grupo não privilegiado `app` (UID/GID `10001`) após preparar as permissões do volume
 
-## v4.2.27
+## 2. Instalação e atualização no ZimaOS
 
-- O card **Últimos ativos lançados** recebeu ícone informativo com tooltip explicando que são exibidos os dois ativos com operações mais recentes.
-- Os cabeçalhos de **Ranking de proventos** e **Últimos ativos lançados** foram padronizados com a tipografia dos rótulos dos cards estatísticos, como **Patrimônio total**.
-- O **Ranking de proventos** passou a exibir somente os dois ativos com maior total histórico de pagamentos confirmados.
-- **Últimos ativos lançados** passou a exibir somente os dois ativos com operações mais recentes.
-- O ranking continua considerando exclusivamente proventos pagos até a data atual; eventos a receber, futuros e amortizações permanecem excluídos.
-
-## v4.2.25
-
-- O card **Ranking de proventos** utiliza o mesmo cabeçalho dos cards estatísticos vizinhos (`statlabel-row`) e ganhou ícone informativo com tooltip explicando que o ranking considera somente pagamentos confirmados.
-- O texto do tooltip esclarece que o ranking soma dividendos, JCP e rendimentos efetivamente recebidos até a data atual; eventos `A receber` e pagamentos futuros permanecem excluídos.
-- Os valores principais dos três cards estatísticos anteriores ao ranking foram ampliados de 23 px para 25 px no desktop, com ajuste responsivo para 20 px em telas estreitas, aproveitando melhor a área dos cards sem alterar os valores.
-
-## v4.2.24
-
-- Renomeado o card do resumo para **Ranking de proventos**.
-- O card agora reutiliza a mesma estrutura visual de **Últimos ativos lançados**: título em destaque, ticker e classe alinhados à esquerda, valor recebido alinhado à direita e divisórias discretas entre os três itens.
-- O total permanece baseado exclusivamente nos proventos com status **Pago** e data de pagamento até a data atual; eventos a receber, futuros e amortizações continuam excluídos.
-- Corrigida a folha de estilos do card: regras específicas que estavam fora do bloco `<style>` foram removidas, e apenas a regra de destaque do valor foi mantida dentro da folha de estilos válida.
-
-## v4.2.23
-
-- O card **Rentabilidade** do resumo foi substituído por **Maiores pagadores de proventos**, mantendo a estrutura visual compacta do card Últimos ativos lançados.
-- O ranking apresenta os três ativos com maior soma histórica de proventos efetivamente recebidos, agrupados por ticker e com o total pago em reais.
-- Entram no ranking somente registros com status `Pago`, data de pagamento válida e não posterior à data local atual. Eventos `A receber`, anunciados, futuros e amortizações são excluídos.
-- A classificação utiliza a lista canônica de recebimentos confirmados do dashboard, que reúne lançamentos manuais e importações reconciliadas sem contar eventos pendentes.
-
-## v4.2.22
-
-- O card **Rentabilidade · Últimos 12 meses** apresenta a média aritmética dos percentuais mensais de ganho/perda de capital dos últimos 12 meses calculáveis, ou dos meses disponíveis quando há menos de 12. Proventos não entram.
-- Adicionada a coluna **Saldo com descontos** à direita de Saldo nas posições de Renda Fixa. A estimativa é calculada por aplicação, com o indexador, taxa, título e data de contratação, aplicando IOF antes do IR quando cabível.
-- Para CDB/RDB/LC/CCB, utiliza IOF regressivo nos primeiros 29 dias e IR regressivo por prazo. LCI é tratada como isenta de IR e pode ter IOF de curto prazo; LCA, CRI, CRA e debêntures incentivadas seguem os perfis de isenção aplicáveis.
-- Quando a data original da aplicação, o tipo de título, indexador ou taxa não permitem estimativa confiável, a coluna mostra `—`. O cálculo é estimativo e não inclui deságio, spread ou penalidade contratual do emissor.
-- Vendas parciais de renda fixa reduzem a base dos lotes pela quantidade resgatada, em vez de reduzir o principal pelo valor bruto recebido.
-- Posições Pluggy sem data original de aplicação usam o saldo institucional atual para valorização; a tributação não é presumida sem a data de contratação.
-- Cache do dashboard incrementado para invalidar snapshots incompatíveis com os novos campos.
-
-## v4.2.21
-
-- O card **Rentabilidade · Total** agora permanece exatamente igual ao percentual do card **Patrimônio total**, usando ganho/perda de capital dividido pelo valor investido.
-- O indicador **Últimos 12 meses** utiliza o último ponto da série móvel composta de rentabilidade mensal, baseada em preços não ajustados e sem incluir dividendos, JCP ou outros proventos. Quando não há histórico disponível, o card mostra `—` em vez de substituir a métrica por retorno acumulado de todo o período.
-- A miniatura de 12 meses utiliza a mesma série móvel do backend; a miniatura Total continua representando a evolução acumulada.
-- Removida a opção **Editar colunas** do menu Opções dos ativos.
-
-## v4.2.20
-
-- O gráfico **Evolução do patrimônio** consolida todas as classes usando exclusivamente o valor aplicado somado ao ganho ou prejuízo de capital; proventos não entram no ganho nem no patrimônio do gráfico.
-- No mês atual, o ganho de capital do gráfico é somado diretamente dos campos de variação monetária dos ativos, sem usar totais agregados que possam incluir proventos.
-- O card **Patrimônio total** passa a exibir valor investido + ganho/perda de capital individual dos ativos, sem acrescentar dividendos ou outros proventos.
-- O percentual exibido no card Patrimônio total usa o mesmo ganho de capital e o mesmo valor investido apresentados no card.
-- O detalhe **Ganho de capital** passa a usar a mesma soma individual de variação dos ativos que fundamenta o patrimônio, garantindo consistência entre os cards.
-- A versão do cache do dashboard foi incrementada para descartar snapshots anteriores e reconstruir os indicadores com a nova regra.
-
-## v4.2.19
-
-- O tooltip do gráfico **Evolução do patrimônio** apresenta Patrimônio, Valor aplicado e Ganho de Capital.
-- O mês atual utiliza o campo explícito de ganho de capital da carteira, sem usar lucro total nem proventos.
-- O gráfico alternativo sem histórico mensal também identifica o patrimônio, o valor aplicado e o ganho de capital.
-- O card **Proventos recebidos (12M)** inclui somente pagamentos com status Pago e data de pagamento até a data atual local. Eventos A receber, pagamentos futuros, amortizações e valores fora da janela de 12 meses são excluídos.
-- O formato do cache do dashboard foi atualizado para invalidar snapshots de versões anteriores e forçar a reconstrução dos indicadores.
-
-## v4.2.18
-
-- Corrigido o gráfico **Evolução do patrimônio** para mostrar somente valorização ou prejuízo dos ativos, sem adicionar proventos pagos ou futuros. O histórico usa o ganho de capital calculado a partir do patrimônio dos ativos menos o capital líquido aplicado.
-- Corrigido também o gráfico alternativo sem histórico mensal para excluir proventos do resultado apresentado.
-- O tooltip do gráfico informa somente o patrimônio dos ativos e o valor de valorização/prejuízo, sem campos de proventos.
-- Removido o cursor de ajuda (interrogação) da coluna **Preço Atual**. O tooltip com a data da última atualização continua funcionando ao passar o mouse; o cursor permanece normal.
-
-## v4.2.17
-
-- Tooltips de Variação e Rentabilidade convertem o percentual exibido em reais usando o Saldo (`valor_atual`) da própria linha, conforme a fórmula `Saldo × percentual / 100`.
-- Tooltips flutuantes e de ajuda ajustados para largura proporcional ao texto, margens menores e conteúdo centralizado.
-- Corrigida a exibição de logos indisponíveis: imagens quebradas são ocultadas e o fallback do ticker aparece sem sobreposição.
-- O gráfico Evolução do Patrimônio passa a incluir, no ganho acumulado, somente proventos efetivamente pagos até cada fechamento mensal. Proventos futuros e a receber permanecem excluídos.
-- O tooltip do gráfico identifica o patrimônio acrescido dos proventos e apresenta o acumulado de pagamentos confirmados.
-- No gráfico sem histórico de preços, o resultado atual também considera somente proventos efetivamente pagos.
-
-## v4.2.16
-
-- Corrigida a associação da rota `/api/carteira` à função `carteira()`.
-- Validada a sequência cronológica de compras e vendas, incluindo operações agendadas, importação de saldos e alterações/exclusões de lançamentos.
-- Incluídos somente proventos efetivamente pagos na consolidação de recebimentos, reconciliando registros manuais, B3, Pluggy e API sem duplicação por ticker/data/valor.
-- Migrada a sincronização automática Pluggy para o servidor, com bloqueio de concorrência, intervalo persistido e intervalo de retentativa após falhas.
-- Impedida a confirmação de dados parcialmente processados quando a sincronização Pluggy falha durante uma etapa.
-- Migração SQLite legada com API de backup, verificação `integrity_check` e publicação atômica de arquivo temporário.
-- Corrigida a migração de permissões: falhas relevantes interrompem a inicialização e o marcador é gravado atomicamente somente ao final.
-- Sanitizadas mensagens de erro de integrações para não expor URLs com tokens ou chaves.
-- Reforçada a codificação de argumentos em handlers dinâmicos e restringidas origens genéricas na CSP.
-- Chart.js passou a ser obtido no build e servido localmente, sem dependência de CDN no navegador.
-- Implementada rotação dos backups preventivos, mantendo os 10 mais recentes.
-- Melhorada a consulta de cotações de FIIs e outros ativos: o fallback do Yahoo utiliza o último fechamento diário válido quando a cotação de mercado retorna zero e preserva a data desse fechamento para consulta no tooltip.
-- A coluna Preço Atual mostra o último fechamento válido disponível, mesmo quando não há negociação recente, sem exibir texto adicional de cotação desatualizada.
-- Ao passar o mouse sobre Preço Atual, um tooltip neutro no padrão visual do tema informa a data da última atualização da cotação, sem cores de positivo/negativo.
-- A busca alternativa do Yahoo foi ampliada para seis meses e seleciona o último fechamento diário positivo quando o provedor retorna preço de mercado zero; a data do candle é preservada sem deslocamento de fuso.
-- Variação individual calculada pelo último preço conhecido versus preço médio; rentabilidade soma a variação de preço aos proventos efetivamente pagos. Os tooltips convertem o percentual efetivamente exibido para reais usando o valor investido como base, sem substituir o cálculo por retorno histórico diferente.
-- Quando não existe cotação de mercado, a carteira não exibe variação inventada a partir de dados antigos; utiliza saldo atual Pluggy quando disponível ou identifica a avaliação como estimativa.
-- A consulta de proventos recebidos foi pré-agregada para evitar consultas repetidas por ativo.
-
-## v4.2.15
-- Rentabilidade dos cards por categoria passou a ser a média aritmética simples das rentabilidades individuais dos ativos, sem ponderação pelo capital investido.
-
-## v4.2.14
-- Removido o cursor de ajuda/interação da coluna Rentabilidade. O tooltip monetário continua aparecendo ao passar o mouse ou navegar por teclado, mas o cursor permanece como seta normal.
-
-## v4.2.13
-- Adicionado tooltip à coluna Rentabilidade, mostrando o valor monetário correspondente ao retorno percentual acumulado da posição. O cálculo prioriza o retorno consolidado da Pluggy e, sem esse dado, soma ganho/perda de preço e proventos recebidos. O tooltip de Variação diária permanece separado.
-
-## v4.2.12
-- O carregamento inicial da carteira repete automaticamente as tentativas quando o servidor ou uma fonte demora a responder, sem exibir a mensagem de falha nem exigir clique manual. O intervalo entre tentativas aumenta progressivamente até 30 segundos.
-- O botão Gerenciar API Pluggy alterna entre abrir e fechar; o painel começa fechado após F5 e é fechado ao navegar para outra página.
-
-## v4.2.11
-- Tema claro refinado com contraste ampliado em tabelas, menus, formulários, grupos de lançamentos, segurança e gráficos.
-- Painel Gerenciar API Pluggy passou a ser expandido em linha, imediatamente abaixo dos controles MeuPluggy na página APIs, sem ser movido para o final de cada página.
-- Botão Gerenciar API com laranja convencional e Limpar dados importados com vermelho convencional.
-- Removido o tooltip de título ao passar o mouse sobre as legendas da Distribuição de aportes.
-
-## v4.2.10
-- Modal Gerenciar API Pluggy expandido para a largura útil do navegador, com layout horizontal e margens simétricas.
-- Preferência de sincronização Pluggy salva com transação SQLite, confirmação de leitura e restauração após F5.
-- Twelve Data e Alpha Vantage removidas do catálogo, das rotas de teste e do motor de cotações/histórico; credenciais antigas dessas integrações são removidas na inicialização.
-- Botões Gerenciar API (laranja claro) e Limpar dados importados (vermelho claro).
-- Correções no tema claro, incluindo fundo da raiz, campos, menus, cards e modal Pluggy.
-- Privacidade de valores desativada por padrão; quando ativada permanece até novo clique e cobre também conteúdo dinâmico.
-- Legendas da distribuição de aportes usam nomes localizados e acentuação correta (Ação, FIIs, Renda fixa, Tesouro Direto, ETFs, BDRs e demais classes).
-
-# Lonely Wallet v4.2.30
-
-**Carteira pessoal de investimentos | Aplicação web self-hosted | Docker / ZimaOS**
-
-> Guia do usuário, instalação, atualização, segurança, backup, solução de problemas e perguntas frequentes.
-
-- **Versão:** 4.2.30
-- **Idioma da interface:** Português (Brasil)
-- **Backend:** Python 3.12 + Flask + Gunicorn
-- **Persistência:** SQLite e arquivo JSON de última cotação válida
-- **Porta padrão:** `8085` no host, `8080` no container
-- **Diretório persistente:** `/DATA/AppData/lonely-wallet/data` no host, montado em `/data` no container
-
----
-
-## Atualização 4.2.7
-
-- Os indicadores e valores financeiros ficam ocultos enquanto as cotações e os indexadores atuais são confirmados.
-- A confirmação dos valores atuais é separada da sincronização complementar de proventos e do histórico de rentabilidade, que continuam em segundo plano.
-- A lista de oportunidades de compra exige preço atual abaixo do preço médio e participação atual abaixo da participação ideal.
-- O rodapé e os metadados do Compose identificam a versão 4.2.7.
-
-## Atualização 4.2.9
-
-- Reorganização do modal **Gerenciar API Pluggy** em duas áreas horizontais: frequência de sincronização e exclusão de dados importados.
-- Modal ampliado para aproveitar a largura disponível, mantendo adaptação para telas menores.
-- Salvamento da frequência com confirmação de leitura após a gravação no SQLite.
-- Requisição de salvamento isolada da atualização geral do dashboard para evitar que a interface seja recriada durante a alteração.
-- Configuração carregada do servidor na inicialização e ao abrir o modal, com cache HTTP desativado para essa preferência.
-- O seletor retorna à última frequência salva quando ocorre erro no salvamento.
-
-## Atualização 4.2.8
-
-- O último dashboard totalmente processado é salvo em `/data/dashboard_cache.json` e reaproveitado no F5 quando bancos, credenciais e arquivo de cotações não mudaram.
-- Na primeira abertura sem cache válido, os valores permanecem ocultos até terminar a geração completa de cotações, indexadores, proventos e histórico.
-- O bloqueio de carregamento cobre toda a janela e impede rolagem enquanto não houver valores confirmados.
-- Cada conexão MeuPluggy recebeu um botão individual de sincronização, além do botão de sincronização geral.
-- O timeout das requisições de sincronização Pluggy foi ampliado e o Gunicorn passou a aceitar solicitações longas.
-
-## Atualização 4.2.8
-
-- O último dashboard totalmente processado é salvo em `/data/dashboard_cache.json` e reaproveitado no F5 quando bancos, credenciais e arquivo de cotações não mudaram.
-- Na primeira abertura sem cache válido, os valores permanecem ocultos até terminar a geração completa de cotações, indexadores, proventos e histórico.
-- O bloqueio de carregamento cobre toda a janela e impede rolagem enquanto não houver valores confirmados.
-- Cada conexão MeuPluggy recebeu um botão individual de sincronização, além do botão de sincronização geral.
-- O tempo limite de sincronização Pluggy foi ampliado no navegador e no servidor.
-
-## 1. O que é o Lonely Wallet
-
-O Lonely Wallet é uma aplicação pessoal para registrar e acompanhar investimentos, posições, operações, proventos e informações auxiliares da carteira. É hospedado pelo próprio usuário e acessado pelo navegador.
-
-**O Lonely Wallet não é corretora, custodiante, banco, consultoria ou serviço de recomendação de investimentos.** Os valores dependem dos lançamentos cadastrados, dos saldos importados e da disponibilidade, cobertura, frequência e regras dos provedores externos. Confira extratos, notas de corretagem e documentos oficiais antes de tomar decisões ou preparar declarações fiscais.
-
-## 2. Novidades da versão 4.2.5
-
-Esta versão é uma atualização de manutenção baseada na 4.2.1.
-
-- O backup manual agora inclui `quotes_last_valid.json`, além dos bancos SQLite.
-- O cache de cotações é validado como JSON antes de ser incluído no backup.
-- O arquivo de cache é copiado com permissões restritas no diretório de backup.
-- Corrigidas as referências de versão no guia de atualização e no Compose para 4.2.5.
-- Documentação reorganizada com procedimentos de instalação, atualização, restauração, segurança e perguntas frequentes.
-
-### Como interpretar a última cotação salva
-
-Quando os provedores não retornam um preço válido, o sistema pode usar a última cotação válida persistida em `/data/quotes_last_valid.json`. Esse valor é uma **referência histórica**, não uma cotação em tempo real. A propriedade `quoteLastUpdated` representa o momento em que a aplicação salvou/observou o preço no cache; não deve ser interpretada como confirmação do horário oficial de negociação informado pela bolsa ou pelo provedor.
-
-## 3. Requisitos
-
-- Servidor Linux compatível com Docker e Docker Compose (ZimaOS é suportado pelo Compose incluído).
-- Arquitetura `amd64` conforme metadados do pacote.
-- Porta TCP `8085` disponível no host.
-- Espaço em disco para bancos, cache e backups.
-- Acesso à rede para consultar provedores externos e, conforme a interface, carregar bibliotecas de terceiros.
-
-## 4. Instalação e atualização no ZimaOS
-
-### Instalação inicial
-
-1. Extraia o ZIP em uma pasta de projeto no servidor.
-2. Confira o `docker-compose.yml` e ajuste o endereço do ícone se necessário. O IP `192.168.31.79` presente no exemplo é específico de uma rede local e pode ser alterado.
-3. Confirme que a pasta persistente existe: `/DATA/AppData/lonely-wallet/data`.
-4. Na pasta que contém o Compose, execute:
-
-```bash
-docker compose up -d --build
-```
-
-5. Abra `http://IP_DO_SERVIDOR:8085` no navegador.
-6. Confira a saúde e a versão:
-
-```bash
-curl http://IP_DO_SERVIDOR:8085/api/health
-```
-
-O retorno deve indicar `ok: true` e `version: 4.2.30`.
-
-### Atualização de uma versão anterior
-
-1. Faça um backup antes de substituir os arquivos.
-2. Extraia o pacote 4.2.30 em uma pasta de projeto.
-3. **Mantenha exatamente o volume de dados existente**. O Compose padrão utiliza:
+1. Faça backup dos dados antes de atualizar.
+2. Extraia o ZIP em uma pasta de projeto.
+3. Mantenha o volume existente no `docker-compose.yml`:
 
 ```yaml
 volumes:
   - /DATA/AppData/lonely-wallet/data:/data
 ```
 
-4. Não apague, renomeie ou recrie a pasta de dados para atualizar o código.
-5. Execute `docker compose up -d --build`.
-6. Confira `/api/health`, faça login e valide a carteira, as cotações, as operações e os proventos.
+4. Na pasta do `docker-compose.yml`, execute:
 
-> Não altere o caminho do volume sem planejar uma migração. Um caminho novo e vazio pode fazer a aplicação parecer recém-instalada, mesmo que os dados antigos continuem no diretório anterior.
+```bash
+docker compose up -d --build
+```
 
-## 5. Persistência: o que existe em `/data`
+5. Consulte a saúde e a versão:
 
-Os arquivos podem variar conforme o histórico de instalação e migrações. Os principais são:
+```bash
+curl http://IP_DO_SERVIDOR:8085/api/health
+```
+
+O retorno deve apresentar `ok: true` e `version: 4.2.31`.
+
+**Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
+
+## 3. Bancos e arquivos persistentes
 
 | Arquivo | Finalidade |
 |---|---|
-| `ativos.db` | Banco principal de ativos/operações na configuração atual |
-| `tokens.db` | PIN, autenticação e dados de credenciais conforme configuração |
-| `carteira.db` | Banco legado, mantido para compatibilidade/migração quando existente |
-| `quotes_last_valid.json` | Última cotação válida salva por ativo |
-| `.api-credentials.key` | Chave usada para proteger credenciais de API, quando criada |
-| `.lonely-wallet-session.key` | Segredo persistente usado para sessões, quando criado |
-| `backups/` | Backups preventivos gerados antes de exclusões em massa |
+| `ativos.db` | Operações, posições, proventos e dados da carteira |
+| `tokens.db` | PIN, autenticação, credenciais e configurações sensíveis |
+| `carteira.db` | Banco legado, preservado para migração/compatibilidade quando existir |
+| `quotes_last_valid.json` | Últimas cotações válidas salvas |
+| `dashboard_cache.json` | Snapshot completo do dashboard, invalidado quando os bancos mudam |
+| `.api-credentials.key` | Chave usada para proteger credenciais de integrações |
+| `.lonely-wallet-session.key` | Segredo persistente das sessões, quando configurado |
+| `backups/pre-exclusao-*` | Backups preventivos antes de exclusões em massa |
 
-**Não edite esses arquivos manualmente com a aplicação em execução.** Faça cópias consistentes e mantenha as chaves protegidas.
+Não copie apenas os bancos de dados se também precisar recuperar credenciais criptografadas. Guarde as chaves em local protegido e separado.
 
-## 6. Backup manual
+## 4. Backup e restauração
 
-O script está disponível no pacote e é copiado para a imagem Docker em `/srv/scripts/backup.py`.
+O script `scripts/backup.py` cria uma pasta de backup e faz cópias consistentes dos bancos usando a API de backup do SQLite. Também valida a integridade das cópias e inclui o cache de cotações quando válido.
 
-### Executar dentro do container
-
-Monte um destino persistente em `/backup` (ou escolha outro destino) e execute:
+Exemplo:
 
 ```bash
-docker exec lonely-wallet python /srv/scripts/backup.py --destination /backup
+python scripts/backup.py --destination /backup
 ```
 
-O script cria uma pasta `lonely-wallet-AAAAmmdd-HHMMSS` com os bancos SQLite existentes e, se presente, `quotes_last_valid.json`. Os bancos são copiados pela API de backup do SQLite e passam por `PRAGMA integrity_check`. O cache JSON é validado antes da cópia.
-
-### Backup incluindo chaves
-
-Por padrão, as chaves **não** são incluídas. Isso reduz o risco de um backup comum carregar junto os segredos que protegem as credenciais. Porém, sem a chave original, credenciais criptografadas podem não ser recuperáveis em outro servidor.
-
-Se precisar migrar a instalação e recuperar credenciais criptografadas, use a opção abaixo somente para um destino criptografado, privado e com controle de acesso:
+Por padrão, as chaves de criptografia não são incluídas. Para incluí-las explicitamente:
 
 ```bash
-docker exec lonely-wallet python /srv/scripts/backup.py --destination /backup-seguro --include-keys
+python scripts/backup.py --destination /backup --include-keys
 ```
 
-O script coloca as chaves em uma subpasta `secrets/` com permissões restritas. Proteja o conjunto inteiro do backup. Não envie esse diretório por e-mail, mensageiros ou armazenamento público.
+Use `--include-keys` somente se o destino for protegido e restrito. Sem a chave original, credenciais armazenadas criptografadas podem não ser recuperáveis, embora os registros financeiros dos bancos continuem preservados.
 
-### Restaurar um backup
+Antes de restaurar, pare o container, guarde uma cópia do diretório atual `/data`, restaure os arquivos para o mesmo volume e confira as permissões. Não faça testes de restauração sobre a única cópia de produção.
 
-1. Pare o container: `docker compose down`.
-2. Faça uma cópia de segurança do diretório `/DATA/AppData/lonely-wallet/data` atual.
-3. Restaure os bancos e `quotes_last_valid.json` para o diretório persistente correto.
-4. Se a migração exigir recuperar credenciais criptografadas, restaure também as chaves correspondentes do backup protegido. Não substitua chaves por outras aleatórias.
-5. Confira permissões dos arquivos e inicie: `docker compose up -d`.
-6. Verifique `/api/health`, autenticação e dados da carteira.
+## 5. Importação de planilhas B3
 
-A restauração pode exigir que os arquivos sejam copiados para o diretório do host que está montado em `/data`. Não restaure bancos de uma versão mais nova sobre uma versão antiga sem avaliar compatibilidade.
+- Aceita arquivos `.xlsx` de até **16 MB**.
+- Arquivos acima do limite retornam HTTP **413** com mensagem específica.
+- A planilha é aberta em modo somente leitura (`read_only=True`) para reduzir o uso de memória.
+- O pacote XLSX é validado antes da leitura: estrutura ZIP, quantidade de entradas, tamanho total descompactado, tamanho máximo de componentes e taxa de compressão.
+- Planilhas com macros não são aceitas.
+- O parser XML protegido de `defusedxml` é obrigatório; a aplicação falha de forma segura se a proteção não estiver disponível.
+- O limite é de 200.000 linhas e 64 colunas. Planilhas acima desses limites devem ser divididas antes da importação.
 
-## 7. Cotações e provedores externos
+A prévia continua sendo a etapa recomendada antes de confirmar a importação. Compare os registros com o extrato oficial e não execute exclusões em massa sem backup.
 
-- A aplicação tenta consultar os provedores configurados e disponíveis para o ativo.
-- A cobertura varia por ticker, tipo de ativo, plano, token, limite de requisições e disponibilidade do provedor.
-- Se não houver preço válido, a aplicação pode recorrer à última cotação válida armazenada.
-- Uma cotação recuperada do cache é histórica e pode estar desatualizada.
-- Se o ativo nunca teve uma cotação válida salva e os provedores não retornarem preço, a interface pode mostrar **Sem cotação**.
-- Não trate cache histórico como preço de execução, preço oficial de fechamento ou valor garantido de liquidação.
+## 6. Segurança e dependências
 
-### O que fazer quando aparece “Sem cotação”
+Dependências Python fixadas nesta versão:
 
-1. Confirme se o ticker está correto e corresponde ao ativo esperado.
-2. Verifique se o servidor tem acesso à internet e se os tokens/provedores configurados estão válidos.
-3. Consulte os logs: `docker compose logs --tail=200 lonely-wallet`.
-4. Tente novamente mais tarde, respeitando limites dos provedores.
-5. Não cadastre um preço estimado como se fosse cotação oficial.
+- Flask `3.1.3`
+- Gunicorn `27.0.1`
+- cryptography `50.0.2`
+- openpyxl `3.1.5`
+- defusedxml `0.7.1`
+- requests `2.32.5`
 
-### Por que o preço pode estar diferente da corretora?
+O Flask foi atualizado para uma versão que inclui a correção CVE-2026-27205. A aplicação define um limite de conteúdo para uploads e retorna uma resposta JSON própria para HTTP 413. As bibliotecas de segurança e autenticação continuam no banco `tokens.db` e no volume persistente.
 
-Provedores podem ter atraso, cobertura diferente, horário de atualização distinto, ajustes corporativos ou indisponibilidade. Compare ticker, mercado, moeda, data e horário. Para fins contábeis e fiscais, use os documentos oficiais pertinentes.
+A atualização das dependências deve ser validada com o container completo e com os fluxos de autenticação, Pluggy, B3, cotações, IRPF e DARF antes de publicar uma imagem de produção.
 
-## 8. Importação B3 e operações
+## 7. Gráficos e Chart.js
 
-- Utilize planilhas exportadas pela B3 em formato compatível com a tela de importação.
-- Revise a prévia antes de confirmar a importação.
-- Mantenha os arquivos originais da B3 como comprovantes.
-- A identificação de duplicidades combina fingerprint e critérios semânticos; ainda assim, confira o relatório de importação e os lançamentos após importar.
-- Execuções parciais, operações no mesmo dia e aportes recorrentes devem ser conferidos individualmente.
-- Antes de importar novamente uma planilha, verifique se ela já foi processada.
+A aplicação prioriza o Chart.js `4.6.1` servido localmente. O script `scripts/vendor_chartjs.py` busca o pacote oficial npm e valida o artefato com o SRI SHA-512 fixado no código antes de extrair a distribuição UMD.
 
-### Por que uma linha pode ser ignorada?
+Se o build estiver sem internet e o bundle não estiver presente, a imagem não falha por causa do download do Chart.js: o frontend carrega `chart-fallback.js`, incluído no projeto, que renderiza os tipos de gráfico usados no dashboard (linha, barra, rosca e pizza) sem CDN externo. O fallback é mais simples que o Chart.js e não reproduz todas as opções avançadas de tooltip/animação. Com o bundle íntegro, o Chart.js completo é usado automaticamente.
 
-Pode ser reconhecida como duplicada, estar fora dos formatos reconhecidos ou não conter dados obrigatórios. Consulte o relatório da importação e compare com a planilha original. Não apague operações para “forçar” uma nova importação sem backup.
+O build ainda precisa ter as dependências Python disponíveis no índice configurado ou no cache/wheelhouse do ambiente. A opção offline para o Chart.js não torna automaticamente o `pip install` independente de rede.
 
-## 9. Saldos-base, Pluggy e vendas retroativas
+## 8. Testes e validação
 
-Saldos-base e snapshots de integração representam posições existentes em uma data de referência. Eles podem ser necessários para validar vendas e reconstruir posições mesmo quando não há compras locais cadastradas.
-
-Ao registrar uma venda retroativa, a validação considera a posição disponível na data da operação. Verifique se a data do saldo-base e a data da venda estão corretas. Sincronizações parciais ou snapshots incompletos podem afetar a reconstrução; compare sempre com extratos e notas.
-
-## 10. Proventos, IRPF e DARF
-
-- Confira ticker, tipo de evento, valor, data de competência e data de pagamento.
-- Diferencie proventos recebidos de eventos futuros/anunciados.
-- Evite importar o mesmo evento por mais de uma origem sem conferir a deduplicação.
-- O resumo de IRPF é uma ferramenta auxiliar, não uma declaração oficial nem aconselhamento tributário.
-- O custo fiscal pode considerar custos de compra e dedução proporcional em vendas, enquanto a posição operacional pode seguir regra distinta de preço médio. Consulte a documentação fiscal e um profissional habilitado antes de transmitir a declaração.
-- Confira DARFs, códigos, competências, vencimentos e valores nos canais oficiais da Receita Federal.
-
-## 11. PIN e segurança
-
-- O PIN protege o acesso conforme a configuração habilitada.
-- Mantenha o PIN privado e não o reutilize em outros serviços.
-- O bloqueio de tentativas reduz tentativas automatizadas, mas não substitui proteção de rede.
-- Evite expor a porta `8085` diretamente à internet. Para acesso remoto, prefira VPN ou proxy reverso com HTTPS e autenticação apropriada.
-- Não compartilhe tokens de APIs, arquivos `.key`, bancos ou backups sem proteção.
-- A configuração padrão do container mantém compatibilidade com volumes existentes e ainda executa como root. Restrinja o acesso ao host e ao diretório de dados.
-
-## 12. Diagnóstico e solução de problemas
-
-### A aplicação não abre
+Com Python 3.12 e as dependências instaladas:
 
 ```bash
-docker compose ps
-docker compose logs --tail=200 lonely-wallet
-```
-
-Confirme a porta publicada, o estado do container e se o diretório persistente está acessível.
-
-### A carteira parece vazia depois da atualização
-
-- Confira se o volume continua apontando para `/DATA/AppData/lonely-wallet/data:/data`.
-- Verifique se os arquivos de banco existem no host.
-- Não crie um banco novo nem copie arquivos aleatórios por cima dos existentes.
-- Pare o container antes de qualquer restauração.
-
-### O PIN correto retorna bloqueio
-
-Aguarde o período de bloqueio e tente novamente. Se houver outros dispositivos na rede, confirme que o endereço IP do cliente está sendo interpretado corretamente pelo ambiente. Não apague o banco de tokens como tentativa de correção.
-
-### O healthcheck falha
-
-Consulte `docker compose logs --tail=200 lonely-wallet` e acesse `/api/health`. Verifique se a aplicação iniciou, se os bancos estão acessíveis e se a versão informada é `4.2.5`.
-
-### A importação B3 apresenta duplicatas ou ignora operações
-
-Compare cada linha da prévia com a planilha original e com as operações já registradas. Guarde a planilha e o relatório de importação para análise. Não execute exclusão em massa sem backup.
-
-### Os gráficos não carregam
-
-A interface atual pode depender de biblioteca Chart.js carregada por CDN. Verifique conectividade do navegador com o CDN e o console de desenvolvedor. A indisponibilidade do CDN pode afetar gráficos sem significar perda dos dados armazenados.
-
-## 13. Perguntas frequentes
-
-**Posso atualizar sem perder meus investimentos?**  
-Sim, desde que mantenha o mesmo diretório persistente e faça backup antes da atualização. Não remova o volume `/DATA/AppData/lonely-wallet/data:/data`.
-
-**O ZIP contém meus dados ou meu PIN?**  
-Não deve conter o banco pessoal do servidor. Os dados persistentes ficam no volume `/data`. Nunca compartilhe um ZIP que tenha sido modificado para incluir bancos ou segredos.
-
-**O backup inclui as últimas cotações?**  
-Na versão 4.2.5, sim. O script inclui `quotes_last_valid.json` quando o arquivo existe e valida seu JSON antes de copiar.
-
-**O backup inclui as chaves de criptografia?**  
-Não por padrão. Use `--include-keys` somente quando necessário e guarde o backup em local criptografado e restrito.
-
-**Se eu não incluir as chaves, perco os investimentos?**  
-Os registros financeiros nos bancos são copiados normalmente. Porém, credenciais de APIs criptografadas podem não ser recuperáveis sem a chave original. Mantenha uma cópia segura das chaves para recuperação/migração.
-
-**Por que um ativo mostra cotação desatualizada?**  
-Porque o provedor não retornou uma cotação válida e a aplicação utilizou a última cotação salva. Esse preço não é em tempo real.
-
-**Por que um ativo continua “Sem cotação”?**  
-Porque não há cotação válida do provedor nem preço histórico válido salvo para aquele ticker.
-
-**O Lonely Wallet envia ordens para a corretora?**  
-Não. É um gerenciador de carteira e não executa ordens de compra ou venda.
-
-**O resumo IRPF substitui o programa da Receita Federal?**  
-Não. É um apoio de organização e conferência. Revise os documentos e as regras fiscais aplicáveis antes de declarar.
-
-**Posso apagar os arquivos `.db` para resolver um erro?**  
-Não. Isso pode causar perda de dados. Faça backup e investigue os logs antes de qualquer intervenção.
-
-**Posso acessar pela internet?**  
-Evite expor diretamente a porta. Prefira VPN ou proxy reverso com HTTPS, autenticação e regras de firewall.
-
-**Onde encontro os logs?**  
-Execute `docker compose logs --tail=200 lonely-wallet` na pasta do Compose.
-
-## 14. Limitações conhecidas
-
-- O container ainda executa como root para manter compatibilidade com bind mounts existentes do ZimaOS.
-- Chart.js permanece dependente de CDN; sem conectividade, gráficos podem não carregar.
-- Não há CSP estrita nesta versão porque o frontend ainda utiliza handlers inline.
-- A cobertura de cotações depende dos provedores, tickers, planos e limites de API.
-- Rentabilidade, benchmarks e reconciliação completa de snapshots exigem validação com dados reais representativos.
-- Backups preventivos de exclusões ficam em `/data/backups/pre-exclusao-*`; monitore o espaço e defina retenção.
-
-## 15. Testes e validação
-
-Em ambiente Python 3.12 com dependências instaladas:
-
-```bash
-python -m py_compile app/main.py scripts/backup.py
+python -m py_compile app/main.py scripts/backup.py scripts/vendor_chartjs.py
 python -m unittest discover -s tests -v
 ```
 
-Para validar o backup em ambiente de teste, use uma cópia dos bancos e do cache, execute o script para um diretório de destino e confirme a presença de `quotes_last_valid.json`. Não use a primeira execução de teste para substituir dados de produção.
+Os testes de runtime JavaScript ficam em `tests/*runtime.js` e podem ser executados no ambiente Node compatível quando disponível.
 
-A validação completa exige ainda inicialização do container, login, compra/venda, venda retroativa, importação B3, proventos, IRPF/DARF, indisponibilidade de APIs, recuperação do cache e restauração de backup.
+A validação de release deve incluir build Docker, login/PIN, carga inicial do dashboard, manutenção do volume `/data`, importação B3 dentro e acima do limite, backup/restauração de ambos os bancos, movimentações, proventos, IRPF/DARF e conexões Pluggy.
 
-## 16. Estrutura do projeto
+## 9. Solução de problemas
 
-```text
-.
-├── Dockerfile
-├── docker-compose.yml
-├── README.md
-├── VERSION
-├── requirements.txt
-├── scripts/
-│   └── backup.py
-├── tests/
-│   └── test_regressions.py
-└── app/
-    ├── main.py
-    ├── static/
-    └── templates/
+### O container parece ter perdido os dados
+
+Confira se o Compose ainda monta `/DATA/AppData/lonely-wallet/data:/data`. Um caminho diferente ou vazio faz a aplicação parecer recém-instalada. Não apague o diretório antigo.
+
+### O healthcheck falha
+
+Consulte:
+
+```bash
+docker compose logs --tail=200 lonely-wallet
+curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-## 17. Suporte para diagnóstico
+Verifique se a porta `8085` está livre e se o UID/GID `10001` possui acesso ao volume persistente.
 
-Ao pedir ajuda, informe:
-- Versão exibida em `/api/health`.
-- Mensagem de erro exata e horário aproximado.
-- Nome/ticker do ativo, sem compartilhar dados pessoais desnecessários.
-- Trecho relevante de `docker compose logs`.
-- Se o problema começou após atualização, importação ou sincronização.
+### A importação B3 retorna HTTP 413
 
-**Nunca envie PIN, tokens de API, arquivos `.key`, bancos completos ou backups sem remover/proteger informações sensíveis.**
+O arquivo excedeu o limite de 16 MB da requisição. Exporte novamente ou divida a planilha. O erro 413 é intencional e não deve aparecer como falha genérica de leitura.
 
----
+### A importação B3 rejeita o XLSX
 
-**Lonely Wallet v4.2.5**  
-Guia do usuário e referência de operação. Valores e informações são auxiliares e devem ser conferidos com as fontes oficiais aplicáveis.
+Confirme que o arquivo é `.xlsx` sem macros, que não foi corrompido ao baixar e que está dentro dos limites de linhas, colunas e tamanho descompactado.
 
-## Atualização 4.2.5
+### Os gráficos não aparecem
 
-Esta versão parte da linha 4.2.2 e mantém os bancos e arquivos persistentes em `/data`.
+Confirme que `/static/vendor/chart.umd.min.js` está presente e íntegro. Sem o bundle, o frontend deve carregar `/static/vendor/chart-fallback.js`. Verifique os logs do build e a aba Network do navegador para identificar erro de arquivo estático.
 
-### Segurança do container
+### O PIN correto retorna bloqueio
 
-- O processo Gunicorn é executado como `app` (UID/GID 10001), sem privilégios de root.
-- O entrypoint inicia como root apenas para migrar a propriedade do volume `/data` uma única vez. O marcador `/data/.lonely-wallet-permissions-v1` evita repetir a varredura em inicializações seguintes.
-- Na primeira inicialização após esta atualização, a migração de propriedade pode levar algum tempo em volumes grandes. Não interrompa o container durante essa etapa.
-- A migração altera a propriedade dos arquivos e diretórios dentro de `/data` para UID/GID 10001. Faça backup antes da atualização.
+Aguarde o período de bloqueio. Não apague `tokens.db`, pois ele contém dados de autenticação e credenciais de integrações.
 
-### Backup
+### Uma API externa está indisponível
 
-- Os backups são montados em uma pasta temporária no próprio destino.
-- Bancos SQLite são copiados pela API de backup e passam por `PRAGMA integrity_check`.
-- O cache `quotes_last_valid.json` é validado como objeto JSON antes de ser incluído.
-- Um manifesto `manifest.json` registra data, arquivos incluídos e se as chaves foram exportadas.
-- A pasta definitiva só aparece após a conclusão bem-sucedida. Falhas removem a pasta temporária.
-- Para o destino ser gravável pelo usuário `app`, monte uma pasta de backup com permissões para UID/GID 10001.
-- As chaves continuam excluídas por padrão. Use `--include-keys` somente em destino privado e protegido.
+Consulte o estado da integração e os logs do container. A falta de cotação não deve ser interpretada como perda de dados da carteira; o sistema pode mostrar a última cotação válida salva, quando existir.
 
-### Cabeçalhos de segurança e ícone
+## 10. Limitações e cuidados
 
-- A aplicação envia Content Security Policy com restrições para objetos, origem base, formulários e enquadramento. `unsafe-inline` permanece temporariamente habilitado por causa dos handlers inline existentes; portanto, não é uma CSP estrita.
-- O ícone do catálogo usa caminho relativo `/static/lonely-wallet-logo.png`, evitando dependência do IP `192.168.31.79`.
+- A cobertura e a atualização de cotações/proventos dependem das fontes externas e dos limites de cada provedor.
+- A aplicação é um gerenciador pessoal, não é corretora, custodiante, banco ou consultoria de investimentos.
+- Os cálculos fiscais e resumos de IRPF/DARF são auxiliares e devem ser conferidos com documentos oficiais e regras vigentes.
+- Não exponha diretamente a porta do container à internet. Prefira VPN ou proxy reverso com HTTPS, autenticação e regras de firewall.
+- Não remova manualmente arquivos SQLite, WAL, chaves ou cache durante o funcionamento do container.
 
-### Atualização no ZimaOS
+## 11. Histórico de versões
 
-Preserve o mapeamento persistente `/DATA/AppData/lonely-wallet/data:/data`. Faça uma cópia de segurança antes de atualizar. A primeira inicialização pode demorar devido à migração de propriedade do volume.
+### v4.2.31
+
+- Corrigida a preparação dos testes de regressão: tabelas financeiras são limpas no banco de ativos e os saldos importados são isolados entre testes.
+- Upload B3 acima de 16 MB retorna HTTP 413 com mensagem específica.
+- XLSX processado em modo somente leitura, com limite de linhas/colunas, validação do pacote ZIP e proteção XML via `defusedxml`.
+- Rotação de backups preventivos tolera diretórios removidos durante a varredura e não segue links simbólicos.
+- Migração de bancos e script de backup usam URI SQLite escapada para caminhos com `?`, `#`, `%` e espaços; conexões de verificação são fechadas explicitamente.
+- Chart.js atualizado para 4.6.1 com verificação SRI SHA-512 do pacote npm; fallback local incluído para builds sem acesso à internet.
+- Flask, Gunicorn e cryptography atualizados; versão do rodapé e User-Agent derivadas do arquivo `VERSION`.
+- README reorganizado e atualizado.
+
+### v4.2.30
+
+- Tooltip dos controles de movimentação das categorias padronizado com o estilo do projeto.
+- Altura do cabeçalho de Renda Fixa alinhada às demais categorias.
+- Total confirmado de proventos passou a somar recebimentos dos últimos 12 meses e pagamentos anunciados com vencimento nos próximos 12 meses.
+
+### v4.2.29
+
+- Adicionado ao cabeçalho de Renda Fixa o indicador Valor total com descontos, calculado a partir do saldo líquido estimado de todas as aplicações.
+- O total consolidado apresenta `—` quando alguma aplicação não possui estimativa líquida confiável.
+- Preservadas as melhorias tipográficas dos cards de resumo e os espaçamentos de Últimos ativos lançados.
+
+### v4.2.28
+
+- Adicionada a coluna Valor total com descontos ao cabeçalho da categoria Renda Fixa, à direita de Valor total.
+- O indicador soma os valores individuais de Saldo com descontos de todas as aplicações, independentemente da paginação.
+- Evitada a reaplicação de impostos sobre valores já calculados por aplicação; totais incompletos são apresentados como `—`.
+- Melhorias nos cards de destaques e últimos ativos, com ajustes de margens, espaçamentos e adaptação a telas menores.
+
+### v4.2.27
+
+- O card Últimos ativos lançados passou a mostrar os dois ativos com operações mais recentes.
+- O Ranking de proventos passou a exibir os dois maiores pagadores com pagamentos confirmados.
+- Cabeçalhos de cards auxiliares padronizados com os cards estatísticos.
+
+### v4.2.26
+
+- O arquivo-base v4.2.30 não continha notas recuperáveis desta versão. O histórico detalhado não foi reconstruído para evitar atribuir alterações sem comprovação.
+
+### v4.2.25 e anteriores
+
+Consulte as notas históricas preservadas nos pacotes anteriores. Este README prioriza o histórico confirmado a partir da v4.2.25 e as orientações atuais de instalação, segurança e manutenção.
