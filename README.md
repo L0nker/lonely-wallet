@@ -1,9 +1,12 @@
 # Lonely Wallet
 
+## v4.2.15
+- Rentabilidade dos cards por categoria passou a ser a média aritmética simples das rentabilidades individuais dos ativos, sem ponderação pelo capital investido.
+
 ## v4.2.14
 - Removido o cursor de ajuda/interação da coluna Rentabilidade. O tooltip monetário continua aparecendo ao passar o mouse ou navegar por teclado, mas o cursor permanece como seta normal.
 
-## v4.2.16
+## v4.2.13
 - Adicionado tooltip à coluna Rentabilidade, mostrando o valor monetário correspondente ao retorno percentual acumulado da posição. O cálculo prioriza o retorno consolidado da Pluggy e, sem esse dado, soma ganho/perda de preço e proventos recebidos. O tooltip de Variação diária permanece separado.
 
 ## v4.2.12
@@ -25,13 +28,13 @@
 - Privacidade de valores desativada por padrão; quando ativada permanece até novo clique e cobre também conteúdo dinâmico.
 - Legendas da distribuição de aportes usam nomes localizados e acentuação correta (Ação, FIIs, Renda fixa, Tesouro Direto, ETFs, BDRs e demais classes).
 
-# Lonely Wallet v4.2.14
+# Lonely Wallet v4.2.15
 
 **Carteira pessoal de investimentos | Aplicação web self-hosted | Docker / ZimaOS**
 
 > Guia do usuário, instalação, atualização, segurança, backup, solução de problemas e perguntas frequentes.
 
-- **Versão:** 4.2.14
+- **Versão:** 4.2.15
 - **Idioma da interface:** Português (Brasil)
 - **Backend:** Python 3.12 + Flask + Gunicorn
 - **Persistência:** SQLite e arquivo JSON de última cotação válida
@@ -120,12 +123,12 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve indicar `ok: true` e `version: 4.2.14`.
+O retorno deve indicar `ok: true` e `version: 4.2.15`.
 
 ### Atualização de uma versão anterior
 
 1. Faça um backup antes de substituir os arquivos.
-2. Extraia o pacote 4.2.14 em uma pasta de projeto.
+2. Extraia o pacote 4.2.15 em uma pasta de projeto.
 3. **Mantenha exatamente o volume de dados existente**. O Compose padrão utiliza:
 
 ```yaml
