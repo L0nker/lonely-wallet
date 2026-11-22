@@ -21,18 +21,14 @@ def main():
         # recursively scanning a potentially large portfolio directory.
         if not MARKER.exists():
             for root, dirs, files in os.walk(DATA):
-                try:
-                    os.chown(root, uid, gid)
-                except PermissionError:
-                    pass
+                os.chown(root, uid, gid)
                 for name in dirs + files:
                     path = os.path.join(root, name)
-                    try:
-                        os.chown(path, uid, gid, follow_symlinks=False)
-                    except (PermissionError, FileNotFoundError):
-                        pass
-            MARKER.touch(mode=0o600, exist_ok=True)
-            os.chown(MARKER, uid, gid)
+                    os.chown(path, uid, gid, follow_symlinks=False)
+            temp_marker = DATA / (MARKER.name + '.tmp')
+            temp_marker.touch(mode=0o600, exist_ok=True)
+            os.chown(temp_marker, uid, gid)
+            os.replace(temp_marker, MARKER)
         os.setgroups([])
         os.setgid(gid)
         os.setuid(uid)
