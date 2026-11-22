@@ -2034,6 +2034,66 @@ body.light-theme .lw-select-option:hover,body.light-theme .lw-select-option.acti
 .price-update-tooltip-trigger{cursor:help;text-decoration:none;border:0}
 .price-update-tooltip-trigger:focus{outline:1px solid var(--line,#3b4352);outline-offset:2px;border-radius:3px}
 </style>
+
+<style id="v4-2-17-tooltip-and-asset-layout-fixes">
+/* Tooltips compactos, proporcionais ao conteúdo e com texto centralizado. */
+.variation-money-floating-tooltip,
+.ideal-balance-floating-tooltip {
+  width: max-content !important;
+  min-width: 0 !important;
+  max-width: min(320px, calc(100vw - 24px)) !important;
+  padding: 8px 11px !important;
+  text-align: center !important;
+  white-space: pre-line !important;
+  overflow-wrap: anywhere !important;
+  line-height: 1.4 !important;
+}
+.info-tip::after {
+  max-width: min(320px, calc(100vw - 24px)) !important;
+  padding: 9px 12px !important;
+  text-align: center !important;
+  line-height: 1.4 !important;
+}
+.stat .info-tip::after {
+  max-width: min(320px, calc(100vw - 24px)) !important;
+}
+/* O atributo hidden precisa vencer o display:block da classe da imagem. */
+.asset-logo[hidden] { display: none !important; }
+.asset-logo-fallback[hidden] { display: none !important; }
+.asset-category .data.proportional-assets-table tbody td[data-col="ticker"] .asset-name-cell {
+  display: inline-flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 9px !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  white-space: nowrap !important;
+  margin: 0 !important;
+}
+.asset-category .data.proportional-assets-table tbody td[data-col="ticker"] .asset-logo-wrap,
+.asset-category .data.proportional-assets-table tbody td[data-col="ticker"] .asset-fixed-logo {
+  display: inline-flex !important;
+  flex: 0 0 34px !important;
+  width: 34px !important;
+  min-width: 34px !important;
+  max-width: 34px !important;
+  height: 34px !important;
+}
+.asset-category .data.proportional-assets-table tbody td[data-col="ticker"] .asset-name-text {
+  display: inline-flex !important;
+  flex: 0 1 auto !important;
+  align-items: center !important;
+  min-width: 0 !important;
+  max-width: calc(100% - 43px) !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  text-align: left !important;
+}
+</style>
+
 </head><body class="dashboard-wait-lock">
 <div class="modalback utility-modal-back" id="notesModalBack" onclick="if(event.target===this)closeUtilityModal('notesModalBack')"><div class="modal utility-modal"><div class="modalhead"><h2 id="notesModalTitle">Minhas observações</h2><button class="close" onclick="closeUtilityModal('notesModalBack')">×</button></div><div id="notesModalContent"></div></div></div>
 <div class="modalback utility-modal-back" id="transactionsModalBack" onclick="if(event.target===this)closeUtilityModal('transactionsModalBack')"><div class="modal utility-modal transactions-modal"><div class="modalhead"><h2 id="transactionsModalTitle">Lançamentos do ativo</h2><button class="close" onclick="closeUtilityModal('transactionsModalBack')">×</button></div><div id="transactionsModalContent"></div></div></div>
@@ -2136,7 +2196,7 @@ body.light-theme .lw-select-option:hover,body.light-theme .lw-select-option.acti
 
 
 
-<div class="footer">Lonely Wallet v4.2.16 · Controle pessoal de investimentos<br>Dados de cotação podem sofrer atrasos ou indisponibilidade. Este sistema é apenas informativo.</div>
+<div class="footer">Lonely Wallet v4.2.17 · Controle pessoal de investimentos<br>Dados de cotação podem sofrer atrasos ou indisponibilidade. Este sistema é apenas informativo.</div>
 </main>
 <div class="modalback" id="launchDistributionBack" onclick="if(event.target===this)closeLaunchDistribution()"><div class="modal" style="width:min(900px,100%)"><div class="modalhead"><div><h2 id="launchDistributionTitle">Distribuição de aportes</h2><div class="sub" id="launchDistributionSubtitle">Operações do período selecionado.</div></div><button class="close" type="button" onclick="closeLaunchDistribution()">×</button></div><div class="launch-distribution-switch segmented"><button type="button" id="launchDistAssetTab" class="active" onclick="setLaunchDistributionMode('ativo')">◉ Por Ativo</button><button type="button" id="launchDistTypeTab" onclick="setLaunchDistributionMode('tipo')">◉ Por Tipo</button><span class="launch-dist-switch-spacer"></span><button type="button" id="launchDistBuyTab" class="active" onclick="setLaunchDistributionSide('compra')">Compra</button><button type="button" id="launchDistSellTab" onclick="setLaunchDistributionSide('venda')">Venda</button></div><div class="launch-distribution-layout"><div class="launch-distribution-chart"><canvas id="launchDistributionChart"></canvas></div><div class="launch-distribution-legend"><div class="launch-distribution-total"><b>Total</b><strong id="launchDistributionTotal"></strong></div><div id="launchDistributionRows"></div></div></div><div class="modalactions"><button class="ghost" type="button" onclick="closeLaunchDistribution()">Fechar</button></div></div></div>
 <div class="modalback" id="b3ImportsManagerBack" onclick="if(event.target===this)closeB3ImportsManager()"><div class="modal" style="width:min(860px,100%)"><div class="modalhead"><div><h2>Importações da B3</h2><div class="sub">Histórico das planilhas importadas. Você pode excluir uma importação recente e os registros criados exclusivamente por ela.</div></div><button class="close" onclick="closeB3ImportsManager()">×</button></div><div id="b3ImportsList" class="section mini">Carregando importações…</div><div class="modalactions"><button class="ghost" type="button" onclick="closeB3ImportsManager()">Fechar</button></div></div></div><div class="modalback utility-modal-back" id="operationManagerBack" onclick="if(event.target===this)closeOperationManager()"><div class="modal utility-modal" style="width:min(1100px,100%)"><div class="modalhead"><div><h2>Gerenciar lançamentos de ativos</h2><div class="sub">Filtre por classe e ativo para revisar ou excluir operações. A exclusão em massa é permanente.</div></div><button class="close" onclick="closeOperationManager()">×</button></div><div class="formgrid operation-manager-filters"><div class="field"><label for="operationManagerType">Classe do ativo</label><select id="operationManagerType" onchange="onOperationManagerTypeChange()"><option value="">Todas as classes</option></select></div><div class="field"><label for="operationManagerTicker">Ativo</label><select id="operationManagerTicker" onchange="renderOperationManagerRows()"><option value="">Todos os ativos</option></select></div></div><div id="operationManagerSummary" class="mini" style="margin:12px 0">Carregando lançamentos…</div><div id="operationManagerRows" class="tablewrap"></div><div class="modalactions" style="justify-content:space-between;flex-wrap:wrap"><div class="toolbar"><button class="danger" type="button" onclick="confirmDeleteManaged('ativo')">Excluir todos deste ativo</button><button class="danger" type="button" onclick="confirmDeleteManaged('todas')">Excluir todos os lançamentos</button></div><button class="ghost" type="button" onclick="closeOperationManager()">Fechar</button></div></div></div>
@@ -2710,6 +2770,15 @@ function summaryCategoryPagination(category,totalPages,currentPage){
  const pageButtons=buttons.map(n=>{const gap=previous&&n-previous>1?'<span>…</span>':'';previous=n;return gap+`<button type="button" class="${n===currentPage?'active':''}" ${n===currentPage?'aria-current="page"':''} onclick='changeSummaryAssetsPage(${jsArg(category)},${n})' >${n}</button>`;}).join('');
  return `<nav class="summary-assets-pagination" role="navigation" aria-label="Paginação de ${escapeHTML(labels[category]||category)}"><button type="button" ${currentPage===1?'disabled':''} onclick='changeSummaryAssetsPage(${jsArg(category)},${currentPage-1})' >Anterior</button>${pageButtons}<button type="button" ${currentPage===totalPages?'disabled':''} onclick='changeSummaryAssetsPage(${jsArg(category)},${currentPage+1})' >Próximo</button><span>Página ${currentPage} de ${totalPages}</span></nav>`;
 }
+// Fallback seguro para logos que falham, inclusive em linhas renderizadas dinamicamente.
+document.addEventListener('error',function(event){
+ const image=event.target;
+ if(!(image instanceof HTMLImageElement)||!image.classList.contains('asset-logo'))return;
+ image.hidden=true;
+ const fallback=image.nextElementSibling;
+ if(fallback&&fallback.classList.contains('asset-logo-fallback'))fallback.hidden=false;
+},true);
+
 function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
  const categories=[
   {key:'acao',name:'Ações',icon:'▣'},{key:'fii',name:'FIIs',icon:'▥'},{key:'stocks',name:'Stocks',icon:'◎'},
@@ -2737,7 +2806,7 @@ function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
    const logoUrl=i.logo||`https://icons.brapi.dev/icons/${encodeURIComponent(i.ticker||'')}.svg`;
    const initials=escapeHTML(String(i.ticker||'').slice(0,2).toUpperCase());
    const fixedLogo=`<span class="asset-fixed-logo" aria-hidden="true"><svg viewBox="0 0 32 32" width="25" height="25" fill="none"><rect x="3.5" y="3.5" width="25" height="25" rx="3" stroke="currentColor" stroke-width="1.8"/><path d="M9 22V17M14 22V11M19 22V14M24 22V8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M7 24.5H25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span>`;
-   const logo=isFixedIncome?fixedLogo:`<span class="asset-logo-wrap"><img class="asset-logo" src="${escapeHTML(logoUrl)}" alt="" loading="lazy" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span class="asset-logo-fallback" hidden>${initials}</span></span>`;
+   const logo=isFixedIncome?fixedLogo:`<span class="asset-logo-wrap"><img class="asset-logo" src="${escapeHTML(logoUrl)}" alt="" loading="lazy"><span class="asset-logo-fallback" hidden>${initials}</span></span>`;
    const name=isFixedIncome?escapeHTML(i.nome||i.ticker):(route?`<a class="asset-market-link" href="https://investidor10.com.br/${route}/${encodeURIComponent(ticker)}/" target="_blank" rel="noopener noreferrer" title="Abrir ${escapeHTML(i.ticker)} no Investidor10">${escapeHTML(i.ticker)}</a>`:escapeHTML(i.ticker));
    return `<td data-col="ticker" class="ticker"><span class="asset-name-cell">${logo}<span class="asset-name-text">${name}</span></span></td>`;
   }],
@@ -2868,16 +2937,15 @@ function quoteUpdatedHint(value){
 }
 
 function variationMoneyHint(item,change){
- // Converte exatamente o percentual exibido para reais usando o custo da posição.
- const base=Number(item?.investido||0);
+ // O valor monetário do tooltip usa exatamente o Saldo exibido na tabela.
+ const base=Number(item?.valor_atual??0);
  const amount=Number.isFinite(base)?base*Number(change||0)/100:0;
  return `Quanto uma variação de ${pct(change)} representa?\n${brl(amount)}`;
 }
 
 function profitabilityMoneyHint(item,profitability){
- // Usa o mesmo percentual individual exibido e a mesma base investida.
- // Assim, o tooltip não diverge de um retorno histórico diferente da Pluggy.
- const base=Number(item?.investido||0);
+ // O valor monetário do tooltip usa exatamente o Saldo exibido na tabela.
+ const base=Number(item?.valor_atual??0);
  const amount=Number.isFinite(base)?base*Number(profitability||0)/100:0;
  return `Quanto uma rentabilidade de ${pct(profitability)} representa?\n${brl(amount)}`;
 }
@@ -3646,6 +3714,50 @@ function getAllTypesPortfolioHistory(){
  return {rows:[...monthly.values()].sort((a,b)=>a.mes.localeCompare(b.mes)).map(row=>({...row,aplicado:Number(row.aplicado.toFixed(2)),ganho:Number(row.ganho.toFixed(2)),patrimonio:Number(row.patrimonio.toFixed(2))})),missing:[...missingTickers]};
 }
 
+function paidDividendCumulativeByMonth(months,selectedType='todos'){
+ const rows=Array.isArray(state.proventos_dashboard?.recebidos)?state.proventos_dashboard.recebidos:[];
+ const typeByTicker=new Map();
+ [...(state.itens||[]),...(state.saldos_importados||[])].forEach(item=>{
+  const ticker=String(item?.ticker||'').trim().toUpperCase();
+  const type=String(item?.tipo||'').trim().toLowerCase();
+  if(ticker&&type&&!typeByTicker.has(ticker))typeByTicker.set(ticker,type);
+ });
+ const aliases={acoes:'acao',acao:'acao',fiis:'fii',fii:'fii',bdrs:'bdr',bdr:'bdr',
+  etfs:'etf',etf:'etf','etfs internacionais':'internacional',internacional:'internacional',
+  'renda fixa':'renda_fixa',renda_fixa:'renda_fixa',stocks:'stocks',reit:'reit',reits:'reit',
+  cripto:'cripto',criptomoedas:'cripto',tesouro_direto:'tesouro',tesouro:'tesouro',
+  fundos:'fundo',fundos_de_investimento:'fundo',fundo:'fundo',outros:'outros'};
+ const wanted=String(selectedType||'todos').trim().toLowerCase();
+ const normalizedWanted=aliases[wanted]||wanted;
+ const today=new Date();
+ const todayIso=`${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+ const events=[];
+ rows.forEach(row=>{
+  if(String(row?.status||'').trim().toLowerCase()!=='pago')return;
+  const paymentDate=String(row?.data_pagamento||'').slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(paymentDate)||paymentDate>todayIso)return;
+  const eventType=String(row?.tipo_evento||row?.tipo||'').toUpperCase();
+  if(eventType.includes('AMORTIZA'))return;
+  const amount=Number(row?.valor_total||0);
+  if(!Number.isFinite(amount)||amount<=0)return;
+  const ticker=String(row?.ticker||'').trim().toUpperCase();
+  const rawType=String(row?.tipo_ativo||typeByTicker.get(ticker)||'outros').trim().toLowerCase();
+  const eventTypeKey=aliases[rawType]||rawType;
+  if(normalizedWanted!=='todos'&&eventTypeKey!==normalizedWanted)return;
+  events.push({date:paymentDate,amount});
+ });
+ events.sort((a,b)=>a.date.localeCompare(b.date));
+ let index=0,total=0;
+ return (Array.isArray(months)?months:[]).map(month=>{
+  const match=String(month||'').match(/^(\d{4})-(\d{2})$/);
+  if(!match)return 0;
+  const lastDay=new Date(Number(match[1]),Number(match[2]),0).getDate();
+  const cutoff=`${match[1]}-${match[2]}-${String(lastDay).padStart(2,'0')}`;
+  while(index<events.length&&events[index].date<=cutoff){total+=events[index].amount;index++;}
+  return Number(total.toFixed(2));
+ });
+}
+
 function renderEvolutionChart(canvasId='aporteChart',periodId='aportePeriod',typeId='aporteType'){
  const ops=state.operacoes||[];
  const period=document.getElementById(periodId)?.value||'12';
@@ -3735,17 +3847,19 @@ function renderEvolutionChart(canvasId='aporteChart',periodId='aportePeriod',typ
  if(visibleHistory.length){
   const labels=visibleHistory.map(row=>row.mes.slice(5,7)+'/'+row.mes.slice(0,4));
   const applied=visibleHistory.map(row=>Number(row.aplicado||0));
-  const gains=visibleHistory.map(row=>Number(row.ganho||0));
+  const paidCumulative=paidDividendCumulativeByMonth(visibleHistory.map(row=>row.mes),selectedType);
+  const chartRows=visibleHistory.map((row,index)=>({...row,proventos_recebidos_acumulados:paidCumulative[index]||0,patrimonio_com_proventos:Number(row.patrimonio||0)+(paidCumulative[index]||0)}));
+  const gains=visibleHistory.map((row,index)=>Number(row.ganho||0)+(paidCumulative[index]||0));
   const note=document.querySelector(`#${canvasId}`)?.closest('.panel')?.querySelector('.chart-footnote');
   if(note){
    const missing=Number(performance.ativos_sem_historico?.length||0);
    note.textContent=missing
-    ? `Patrimônio histórico em barras. ${missing} ativo(s) sem cotação histórica usam custo médio como referência, sem ganho histórico estimado.`
-    : 'Patrimônio histórico em barras: valor aplicado e ganho ou prejuízo de capital em cada mês. Considera fechamentos mensais, compras e vendas; a cobertura depende das APIs configuradas.';
+    ? `Patrimônio histórico em barras. ${missing} ativo(s) sem cotação histórica usam custo médio como referência. O ganho inclui proventos efetivamente pagos.`
+    : 'Patrimônio histórico em barras: valor aplicado e ganho patrimonial, incluindo proventos efetivamente pagos acumulados. Considera fechamentos mensais, compras e vendas; a cobertura depende das APIs configuradas.';
   }
   chart(canvasId,'bar',{labels,datasets:[
    {label:'Valor aplicado',data:applied,backgroundColor:'#28b579',borderRadius:3,stack:'patrimonio'},
-   {label:'Ganho de Capital',data:gains,backgroundColor:'#9be8c3',borderRadius:3,stack:'patrimonio'}
+   {label:'Ganho patrimonial + proventos',data:gains,backgroundColor:'#9be8c3',borderRadius:3,stack:'patrimonio'}
   ]},{interaction:{mode:'index',intersect:false},plugins:{legend:{display:true,labels:{color:'#b8c1ce'}},tooltip:{
    mode:'index',intersect:false,
    backgroundColor:'#11151d',titleColor:'#f4f6fa',bodyColor:'#d7deea',
@@ -3753,7 +3867,7 @@ function renderEvolutionChart(canvasId='aporteChart',periodId='aportePeriod',typ
    displayColors:true,boxPadding:5,
    callbacks:{
     title:items=>{const row=visibleHistory[items?.[0]?.dataIndex||0];return row?row.mes.slice(5,7)+'/'+row.mes.slice(2,4):'';},
-    beforeBody:items=>{const row=visibleHistory[items?.[0]?.dataIndex||0];if(!row)return [];return [`Patrimônio: ${brl(Number(row.patrimonio||0))}`];},
+    beforeBody:items=>{const index=items?.[0]?.dataIndex||0;const row=chartRows[index];if(!row)return [];return [`Patrimônio + proventos: ${brl(Number(row.patrimonio_com_proventos||0))}`,`Proventos pagos acumulados: ${brl(Number(row.proventos_recebidos_acumulados||0))}`];},
     label:ctx=>`${ctx.dataset.label}: ${brl(ctx.raw||0)}`
    }
   }},scales:{x:{stacked:true,ticks:{color:'#8f99a8'},grid:{display:false}},y:{stacked:true,ticks:{color:'#8f99a8',callback:v=>'R$ '+Number(v).toLocaleString('pt-BR')},grid:{color:'#303541'}}}});
@@ -3763,13 +3877,15 @@ function renderEvolutionChart(canvasId='aporteChart',periodId='aportePeriod',typ
  if(isSummary){
   const itemGain=(state.itens||[]).filter(item=>selectedType==='todos'||item.tipo===selectedType)
    .reduce((sum,item)=>sum+Number(item.lucro||0),0);
-  const gain=itemGain!==0?itemGain:(selectedType==='todos'?Number(state.resumo?.lucro||0):0);
+  const baseGain=itemGain!==0?itemGain:(selectedType==='todos'?Number(state.resumo?.lucro||0):0);
+  const paidNow=paidDividendCumulativeByMonth([monthKeys[monthKeys.length-1]||''],selectedType)[0]||0;
+  const gain=baseGain+paidNow;
   const gains=monthKeys.map((_,index)=>index===monthKeys.length-1?Number(gain.toFixed(2)):0);
   const note=document.querySelector(`#${canvasId}`)?.closest('.panel')?.querySelector('.chart-footnote');
-  if(note)note.textContent='Sem histórico mensal disponível para os ativos selecionados. Exibindo aportes registrados e o resultado atual.';
+  if(note)note.textContent='Sem histórico mensal disponível para os ativos selecionados. Exibindo aportes registrados e resultado atual, incluindo proventos efetivamente pagos.';
   chart(canvasId,'bar',{labels:monthKeys.map(m=>m.slice(5,7)+'/'+m.slice(0,4)),datasets:[
    {label:'Valor aplicado',data:cumulative,backgroundColor:'#28b579',borderRadius:3,stack:'patrimonio'},
-   {label:'Resultado atual',data:gains,backgroundColor:'#9be8c3',borderRadius:3,stack:'patrimonio'}
+   {label:'Resultado + proventos pagos',data:gains,backgroundColor:'#9be8c3',borderRadius:3,stack:'patrimonio'}
   ]},{plugins:{legend:{labels:{color:'#b8c1ce'}},tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${brl(ctx.raw||0)}`}}},scales:{x:{stacked:true,ticks:{color:'#8f99a8'},grid:{display:false}},y:{stacked:true,beginAtZero:true,ticks:{color:'#8f99a8',callback:v=>'R$ '+Number(v).toLocaleString('pt-BR')},grid:{color:'#303541'}}}});
   return;
  }

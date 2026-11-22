@@ -2093,7 +2093,7 @@ def cotacao(ticker, force_refresh=False):
             if response.status_code in (401, 403) and headers:
                 # An expired optional token must not block the public latest-close list.
                 response = requests.get(list_url, params=list_params,
-                    headers={'User-Agent': 'Mozilla/5.0 LonelyWallet/4.2.16'}, timeout=8)
+                    headers={'User-Agent': 'Mozilla/5.0 LonelyWallet/4.2.17'}, timeout=8)
             response.raise_for_status()
             stocks = response.json().get('stocks') or []
             def matches_symbol(item):

@@ -1,5 +1,14 @@
 # Lonely Wallet
 
+## v4.2.17
+
+- Tooltips de Variação e Rentabilidade convertem o percentual exibido em reais usando o Saldo (`valor_atual`) da própria linha, conforme a fórmula `Saldo × percentual / 100`.
+- Tooltips flutuantes e de ajuda ajustados para largura proporcional ao texto, margens menores e conteúdo centralizado.
+- Corrigida a exibição de logos indisponíveis: imagens quebradas são ocultadas e o fallback do ticker aparece sem sobreposição.
+- O gráfico Evolução do Patrimônio passa a incluir, no ganho acumulado, somente proventos efetivamente pagos até cada fechamento mensal. Proventos futuros e a receber permanecem excluídos.
+- O tooltip do gráfico identifica o patrimônio acrescido dos proventos e apresenta o acumulado de pagamentos confirmados.
+- No gráfico sem histórico de preços, o resultado atual também considera somente proventos efetivamente pagos.
+
 ## v4.2.16
 
 - Corrigida a associação da rota `/api/carteira` à função `carteira()`.
@@ -49,13 +58,13 @@
 - Privacidade de valores desativada por padrão; quando ativada permanece até novo clique e cobre também conteúdo dinâmico.
 - Legendas da distribuição de aportes usam nomes localizados e acentuação correta (Ação, FIIs, Renda fixa, Tesouro Direto, ETFs, BDRs e demais classes).
 
-# Lonely Wallet v4.2.15
+# Lonely Wallet v4.2.17
 
 **Carteira pessoal de investimentos | Aplicação web self-hosted | Docker / ZimaOS**
 
 > Guia do usuário, instalação, atualização, segurança, backup, solução de problemas e perguntas frequentes.
 
-- **Versão:** 4.2.15
+- **Versão:** 4.2.17
 - **Idioma da interface:** Português (Brasil)
 - **Backend:** Python 3.12 + Flask + Gunicorn
 - **Persistência:** SQLite e arquivo JSON de última cotação válida
@@ -144,12 +153,12 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve indicar `ok: true` e `version: 4.2.16`.
+O retorno deve indicar `ok: true` e `version: 4.2.17`.
 
 ### Atualização de uma versão anterior
 
 1. Faça um backup antes de substituir os arquivos.
-2. Extraia o pacote 4.2.16 em uma pasta de projeto.
+2. Extraia o pacote 4.2.17 em uma pasta de projeto.
 3. **Mantenha exatamente o volume de dados existente**. O Compose padrão utiliza:
 
 ```yaml
