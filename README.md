@@ -1,6 +1,14 @@
 # Lonely Wallet
 
-## v4.2.26
+## v4.2.28
+
+- Adicionado ao cabeçalho da categoria **Renda Fixa** o indicador **Valor total com descontos**, posicionado imediatamente à direita de **Valor total**.
+- O indicador soma o campo **Saldo com descontos** de todas as aplicações da categoria, inclusive as que aparecem em outras páginas da tabela.
+- Se alguma aplicação não tiver estimativa líquida confiável, o total consolidado mostra `—` em vez de apresentar uma soma parcial como total completo.
+- Preservada a coluna individual **Saldo com descontos** e os cálculos tributários por aplicação.
+- Mantidas as melhorias de tipografia dos cards de resumo e os espaçamentos uniformes em **Últimos ativos lançados** da v4.2.27.
+
+## v4.2.27
 
 - O card **Últimos ativos lançados** recebeu ícone informativo com tooltip explicando que são exibidos os dois ativos com operações mais recentes.
 - Os cabeçalhos de **Ranking de proventos** e **Últimos ativos lançados** foram padronizados com a tipografia dos rótulos dos cards estatísticos, como **Patrimônio total**.
@@ -127,13 +135,13 @@
 - Privacidade de valores desativada por padrão; quando ativada permanece até novo clique e cobre também conteúdo dinâmico.
 - Legendas da distribuição de aportes usam nomes localizados e acentuação correta (Ação, FIIs, Renda fixa, Tesouro Direto, ETFs, BDRs e demais classes).
 
-# Lonely Wallet v4.2.26
+# Lonely Wallet v4.2.28
 
 **Carteira pessoal de investimentos | Aplicação web self-hosted | Docker / ZimaOS**
 
 > Guia do usuário, instalação, atualização, segurança, backup, solução de problemas e perguntas frequentes.
 
-- **Versão:** 4.2.26
+- **Versão:** 4.2.28
 - **Idioma da interface:** Português (Brasil)
 - **Backend:** Python 3.12 + Flask + Gunicorn
 - **Persistência:** SQLite e arquivo JSON de última cotação válida
@@ -222,12 +230,12 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve indicar `ok: true` e `version: 4.2.26`.
+O retorno deve indicar `ok: true` e `version: 4.2.28`.
 
 ### Atualização de uma versão anterior
 
 1. Faça um backup antes de substituir os arquivos.
-2. Extraia o pacote 4.2.26 em uma pasta de projeto.
+2. Extraia o pacote 4.2.28 em uma pasta de projeto.
 3. **Mantenha exatamente o volume de dados existente**. O Compose padrão utiliza:
 
 ```yaml

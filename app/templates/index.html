@@ -2780,6 +2780,18 @@ document.addEventListener('error',function(event){
  if(fallback&&fallback.classList.contains('asset-logo-fallback'))fallback.hidden=false;
 },true);
 
+function getFixedIncomeDiscountSummary(items){
+ const rows=Array.isArray(items)?items:[];
+ const complete=rows.every(item=>{
+  const value=item?.saldo_com_descontos;
+  return value!==null&&value!==undefined&&value!==''&&Number.isFinite(Number(value));
+ });
+ return {
+  complete,
+  total:complete?rows.reduce((sum,item)=>sum+Number(item.saldo_com_descontos),0):null
+ };
+}
+
 function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
  const categories=[
   {key:'acao',name:'Ações',icon:'▣'},{key:'fii',name:'FIIs',icon:'▥'},{key:'stocks',name:'Stocks',icon:'◎'},
@@ -2848,6 +2860,15 @@ function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
   const profitability=allCategoryItems.length
    ? allCategoryItems.reduce((sum,item)=>sum+Number(item.lucro_pct||0),0)/allCategoryItems.length
    : 0;
+  // Total com descontos da Renda Fixa: soma todas as linhas da categoria,
+  // independentemente da paginação. Se qualquer aplicação não tiver estimativa
+  // confiável, não apresentar um total parcial como se fosse completo.
+  const fixedIncomeDiscountSummary=cat.key==='renda_fixa'
+   ? getFixedIncomeDiscountSummary(allCategoryItems)
+   : {complete:false,total:null};
+  const fixedIncomeDiscountMetric=cat.key==='renda_fixa'
+   ? `<span class="asset-category-metric fixed-income-discount-total">Valor total com descontos<b class="${fixedIncomeDiscountSummary.complete?'':'category-empty-value'}">${fixedIncomeDiscountSummary.complete?brl(fixedIncomeDiscountSummary.total):'—'}</b></span>`
+   : '';
   const target=distributionItems.find(x=>categoryKeyFromName(x.nome)===cat.key),ideal=Number(target?.percentual||0),portfolioPct=totalPortfolio?total/totalPortfolio*100:0;
   const expanded=summaryMode
    ? summaryExpandedAssetGroups[cat.key]===true
@@ -2861,11 +2882,12 @@ function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
   const widthTotal=widthKeys.reduce((sum,key)=>sum+(columnWeights[key]||.9),0);
   const proportionalCols=`<colgroup>${widthKeys.map(key=>`<col style="width:${((columnWeights[key]||.9)/widthTotal*100).toFixed(3)}%">`).join('')}</colgroup>`;
   const body=items.length?`<div class="tablewrap"><table class="data proportional-assets-table" data-position-table ${summaryMode&&cat.key==='renda_fixa'?'data-fixed-income-summary="true"':''}>${proportionalCols}<thead><tr>${shown.map(([key,label])=>{const sort=positionSortState[cat.key]||{key:'valor_atual',direction:'desc'};const active=sort.key===key;const arrow=active?(sort.direction==='desc'?'▼':'▲'):'';return `<th data-col="${key}" class="position-sort-th"><button type="button" class="position-sort-button ${active?'is-sorted':''}" onclick='sortPositionAssets(${jsArg(cat.key)},${jsArg(key)})'  title="Ordenar por ${escapeHTML(label)}">${label}<span class="position-sort-indicator" aria-hidden="true">${arrow}</span></button></th>`;}).join('')}<th data-col="opcoes">Opções</th></tr></thead><tbody>${items.map(i=>`<tr>${shown.map(([,label,renderCell])=>renderCell(i)).join('')}<td data-col="opcoes" class="asset-options-cell"><button type="button" class="asset-options-trigger" aria-label="Opções de ${escapeHTML(i.ticker)}" onclick='openAssetMenu(event,${jsArg(i.ticker)})'>•••</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${summaryMode&&allCategoryItems.length?"Os ativos desta classe estão em outra página.":"Nenhum ativo cadastrado nesta categoria."}</div>`;
-  const categoryMetrics=`<span class="asset-category-title"><span class="asset-category-icon">${cat.icon}</span>${cat.name}</span><span class="asset-category-metric">Ativos<b>${allCategoryItems.length}</b></span><span class="asset-category-metric">Valor total<b>${brl(total)}</b></span>${cat.key==='renda_fixa'?'<span class="asset-category-metric category-metric-placeholder" aria-hidden="true"><span>Variação</span><b>—</b></span>':`<span class="asset-category-metric">Variação<b class="${validVariationItems.length?'metric-change '+(variation>=0?'green':'red'):'category-empty-value'}">${validVariationItems.length?`${variation>=0?'▲':'▼'} ${pct(variation)}`:'-'}</b></span>`}<span class="asset-category-metric">Rentabilidade<b>${allCategoryItems.length?`<span class="variation-pill ${profitability>=0?'positive':'negative'}">${profitability>=0?'↗':'↘'} ${pct(profitability)}</span>`:'<span class="category-empty-pill">-</span>'}</b></span><span class="asset-category-metric">% na carteira<b>${Math.round(portfolioPct)}% / ${Math.round(ideal)}%</b></span><span class="asset-category-chevron">⌄</span>`;
+  const categoryMetrics=`<span class="asset-category-title"><span class="asset-category-icon">${cat.icon}</span>${cat.name}</span><span class="asset-category-metric">Ativos<b>${allCategoryItems.length}</b></span><span class="asset-category-metric">Valor total<b>${brl(total)}</b></span>${fixedIncomeDiscountMetric}${cat.key==='renda_fixa'?'<span class="asset-category-metric category-metric-placeholder" aria-hidden="true"><span>Variação</span><b>—</b></span>':`<span class="asset-category-metric">Variação<b class="${validVariationItems.length?'metric-change '+(variation>=0?'green':'red'):'category-empty-value'}">${validVariationItems.length?`${variation>=0?'▲':'▼'} ${pct(variation)}`:'-'}</b></span>`}<span class="asset-category-metric">Rentabilidade<b>${allCategoryItems.length?`<span class="variation-pill ${profitability>=0?'positive':'negative'}">${profitability>=0?'↗':'↘'} ${pct(profitability)}</span>`:'<span class="category-empty-pill">-</span>'}</b></span><span class="asset-category-metric">% na carteira<b>${Math.round(portfolioPct)}% / ${Math.round(ideal)}%</b></span><span class="asset-category-chevron">⌄</span>`;
   const moveControls=`<div class="position-category-move">${categoryIndex>0?`<button type="button" class="position-category-arrow" title="Mover ${cat.name} para cima" aria-label="Mover ${cat.name} para cima" onclick='event.stopPropagation();${summaryMode?'moveSummaryCategory':'movePositionCategory'}(${jsArg(cat.key)},-1)' >↑</button>`:''}${categoryIndex<visibleCategories.length-1?`<button type="button" class="position-category-arrow" title="Mover ${cat.name} para baixo" aria-label="Mover ${cat.name} para baixo" onclick='event.stopPropagation();${summaryMode?'moveSummaryCategory':'movePositionCategory'}(${jsArg(cat.key)},1)' >↓</button>`:''}</div>`;
+  const fixedIncomeHeadClass=cat.key==='renda_fixa'?' fixed-income-category-head':'';
   const header=summaryMode
-   ? `<div class="summary-category-head">${moveControls}<button type="button" class="asset-category-head summary-category-toggle" onclick='toggleSummaryAssetGroup(${jsArg(cat.key)})'  aria-expanded="${expanded}">${categoryMetrics}</button></div>`
-   : `<div class="position-category-head">${moveControls}<button type="button" class="asset-category-head position-group-toggle" onclick='toggleAssetGroup(${jsArg(cat.key)})'  aria-expanded="${expanded}">${categoryMetrics}</button></div>`;
+   ? `<div class="summary-category-head">${moveControls}<button type="button" class="asset-category-head summary-category-toggle${fixedIncomeHeadClass}" onclick='toggleSummaryAssetGroup(${jsArg(cat.key)})'  aria-expanded="${expanded}">${categoryMetrics}</button></div>`
+   : `<div class="position-category-head">${moveControls}<button type="button" class="asset-category-head position-group-toggle${fixedIncomeHeadClass}" onclick='toggleAssetGroup(${jsArg(cat.key)})'  aria-expanded="${expanded}">${categoryMetrics}</button></div>`;
   return `<section class="asset-category ${expanded?'':'collapsed'} ${summaryMode?'summary-draggable-category':''}" ${summaryMode?`data-category-key="${cat.key}"`:!summaryMode?`data-category-key="${cat.key}"`:``}>${header}<div class="asset-category-body">${body}${summaryMode?summaryCategoryPagination(cat.key,categoryPages,categoryPage):''}</div></section>`;
  }).join('');
  applyPositionColumnPrefs();
@@ -6484,5 +6506,71 @@ body.light-theme .launch-distribution-row,body.light-theme .launch-distribution-
 .summary-investor10>.top-dividend-payers-card .statlabel-row{min-height:18px}
 .summary-investor10>.top-dividend-payers-card .insight-recent-list{margin-top:4px}
 @media(max-width:560px){.summary-investor10>.stat:not(.top-dividend-payers-card) .statvalue{font-size:20px}}
+
+
+/* v4.2.27 — padronização dos cards de insights com os rótulos estatísticos. */
+.position-insights > .insight-card{
+  padding:18px 20px;
+}
+.position-insights .insight-title{
+  min-height:18px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  color:var(--muted);
+  font-size:12px;
+  font-weight:400;
+  line-height:1.2;
+}
+.position-insights .insight-title .info-tip{
+  flex:0 0 16px;
+  margin-left:auto;
+}
+.position-insights .insight-recent-card .insight-recent-list{
+  margin-top:8px;
+  display:grid;
+  gap:0;
+  align-content:start;
+}
+.position-insights .insight-recent-card .insight-recent-row{
+  min-height:40px;
+  padding:8px 0;
+}
+.position-insights .insight-recent-card .insight-recent-row:last-child{
+  border-bottom:0;
+}
+
+
+/* v4.2.28 — resumo consolidado do saldo líquido da Renda Fixa. */
+.asset-category-head.fixed-income-category-head{
+  grid-template-columns:minmax(140px,1.2fr) repeat(6,minmax(72px,.7fr)) 28px;
+}
+.summary-position-groups .summary-category-toggle.fixed-income-category-head{
+  grid-template-columns:minmax(140px,1.2fr) repeat(6,minmax(72px,.7fr)) 26px;
+}
+.fixed-income-category-head .fixed-income-discount-total b{
+  font-variant-numeric:tabular-nums;
+}
+@media(max-width:1100px){
+  .asset-category-head.fixed-income-category-head,
+  .summary-position-groups .summary-category-toggle.fixed-income-category-head{
+    grid-template-columns:minmax(110px,1fr) repeat(3,minmax(0,.72fr)) 22px;
+    gap:7px;
+  }
+  .fixed-income-category-head .asset-category-metric:nth-of-type(n+5){display:none}
+}
+@media(max-width:620px){
+  .asset-category-head.fixed-income-category-head,
+  .summary-position-groups .summary-category-toggle.fixed-income-category-head{
+    grid-template-columns:minmax(90px,1fr) minmax(0,.85fr) minmax(0,1fr) 20px;
+    gap:5px;
+    padding:12px 7px;
+  }
+  .fixed-income-category-head .asset-category-metric:nth-of-type(2),
+  .fixed-income-category-head .asset-category-metric:nth-of-type(n+5){display:none}
+  .fixed-income-category-head .asset-category-metric{font-size:9px;line-height:1.2}
+  .fixed-income-category-head .asset-category-metric b{font-size:11px}
+}
+
 </style>
 
