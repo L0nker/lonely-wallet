@@ -2827,7 +2827,7 @@ function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
   }],
   ['quantidade','Quant.',i=>`<td data-col="quantidade">${Number(i.quantidade).toLocaleString('pt-BR',{maximumFractionDigits:4})}</td>`],
   ['preco_medio','Preço Médio',i=>`<td data-col="preco_medio">${brl(i.preco_medio)}</td>`],
-  ['preco_atual','Preço Atual',i=>{const hasReference=Boolean(i.cotacao_referencia_disponivel||i.cotacao_disponivel);const priceText=hasReference&&Number(i.preco_atual)>0?`<span class="price-update-tooltip-trigger" data-hint="${escapeHTML(quoteUpdatedHint(i.cotacao_ultima_atualizacao))}" aria-label="${escapeHTML(quoteUpdatedHint(i.cotacao_ultima_atualizacao))}" onmouseenter="showVariationMoneyTooltip(event,this)" onmousemove="moveVariationMoneyTooltip(event,this)" onmouseleave="hideVariationMoneyTooltip()" onfocus="showVariationMoneyTooltip(event,this)" onblur="hideVariationMoneyTooltip()" tabindex="0">${brl(i.preco_atual)}</span>`:(i.tipo==='renda_fixa'?(i.aviso_calculo==='Indexador ou taxa não informado'?'Informe o indexador':'Cálculo indisponível'):'Sem cotação');return `<td data-col="preco_atual">${priceText}${i.tipo==='renda_fixa'&&i.cotacao_disponivel?`<div class="mini">${i.valor_atual_origem==='Indexador'?'Calculado pelo indexador':i.valor_atual_origem==='Saldo atual informado pela instituição'?'Saldo informado pela instituição':''}</div>`:''}</td>`;}],
+  ['preco_atual','Preço Atual',i=>{const hasReference=Boolean(i.cotacao_referencia_disponivel||i.cotacao_disponivel);const priceText=hasReference&&Number(i.preco_atual)>0?`<span class="price-update-tooltip-trigger" data-hint="${escapeHTML(quoteUpdatedHint(i.cotacao_ultima_atualizacao,i.cotacao_desatualizada))}" aria-label="${escapeHTML(quoteUpdatedHint(i.cotacao_ultima_atualizacao,i.cotacao_desatualizada))}" onmouseenter="showVariationMoneyTooltip(event,this)" onmousemove="moveVariationMoneyTooltip(event,this)" onmouseleave="hideVariationMoneyTooltip()" onfocus="showVariationMoneyTooltip(event,this)" onblur="hideVariationMoneyTooltip()" tabindex="0">${brl(i.preco_atual)}</span>`:(i.tipo==='renda_fixa'?(i.aviso_calculo==='Indexador ou taxa não informado'?'Informe o indexador':'Cálculo indisponível'):'Sem cotação');return `<td data-col="preco_atual">${priceText}${i.tipo==='renda_fixa'&&i.cotacao_disponivel?`<div class="mini">${i.valor_atual_origem==='Indexador'?'Calculado pelo indexador':i.valor_atual_origem==='Saldo atual informado pela instituição'?'Saldo informado pela instituição':''}</div>`:''}</td>`;}],
   ['preco_alvo','Meu Preço-Alvo',i=>`<td data-col="preco_alvo">—</td>`],
   ['preco_graham','Preço Justo (Graham)',i=>`<td data-col="preco_graham">—</td>`],
   ['preco_teto_bazin','Preço-teto (Bazin)',i=>`<td data-col="preco_teto_bazin">${i.preco_teto_bazin?brl(i.preco_teto_bazin):'—'}</td>`],
@@ -2959,15 +2959,19 @@ function moveIdealBalanceTooltip(event,el){
  if(tip && document.activeElement!==el)showIdealBalanceTooltip(event,el);
 }
 
-function quoteUpdatedHint(value){
- if(!value)return 'Data da última atualização não disponível';
- const raw=String(value);
- // Datas de candles diários são datas de pregão, não horários locais.
- const dayOnly=raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
- if(dayOnly)return `Última atualização: ${dayOnly[3]}/${dayOnly[2]}/${dayOnly[1]}`;
- const parsed=new Date(raw);
- if(Number.isNaN(parsed.getTime()))return 'Data da última atualização não disponível';
- return `Última atualização: ${parsed.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'})}`;
+function quoteUpdatedHint(value,isStale=false){
+ let updated='Data da última atualização não disponível';
+ if(value){
+  const raw=String(value);
+  // Datas de candles diários são datas de pregão, não horários locais.
+  const dayOnly=raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(dayOnly)updated=`Última atualização real: ${dayOnly[3]}/${dayOnly[2]}/${dayOnly[1]}`;
+  else{
+   const parsed=new Date(raw);
+   if(!Number.isNaN(parsed.getTime()))updated=`Última atualização real: ${parsed.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'})}`;
+  }
+ }
+ return isStale?`⚠ Cotação antiga reutilizada de cache/último valor válido. Não foi confirmada nesta atualização. ${updated}`:updated;
 }
 
 function variationMoneyHint(item,change){
@@ -3544,8 +3548,9 @@ function renderProventosDashboard(){
   const imported=Number(sync.importados||0);
   const ignored=Number(sync.ignorados||0);
   const errors=Array.isArray(sync.erros)?sync.erros:[];
+  const staleWarning=sync.dados_desatualizados?`<span class="prov-sync-stale">⚠ ${escapeHTML(sync.aviso_cache||'Parte dos dados foi reutilizada de cache antigo. Confira a última consulta real da fonte.')} (${Number(sync.fontes_de_cache_antigo||0)} fonte(s), ${Number(sync.eventos_de_cache_antigo||0)} evento(s))</span>`:'';
   const errorDetails=errors.length?`<details class="prov-sync-details"><summary>Detalhes técnicos (${errors.length})</summary><div>${errors.map(error=>`<p>${escapeHTML(String(error))}</p>`).join('')}</div></details>`:'';
-  syncStatus.innerHTML=`<span class="prov-sync-summary">${imported} evento(s) novo(s) · ${ignored} ignorado(s) · Atualizado: ${escapeHTML(when)}</span>${errorDetails}`;
+  syncStatus.innerHTML=`<span class="prov-sync-summary">${imported} evento(s) novo(s) · ${ignored} ignorado(s) · Última consulta real: ${escapeHTML(when)}</span>${staleWarning}${errorDetails}`;
  }
  const distNames=Object.keys(distribution).sort((a,b)=>distribution[b]-distribution[a]);
  const distValues=distNames.map(k=>distribution[k]);
@@ -4294,9 +4299,11 @@ function renderRentabilidadePage(){
   const missingAssets=Array.isArray(performance.ativos_sem_historico)?performance.ativos_sem_historico:[];
   const coveredAssets=Number(performance.ativos_com_historico||0),assetTotal=Number(performance.total_ativos||0);
   const coverageText=(assetTotal?` Cobertura de histórico: ${coveredAssets}/${assetTotal} ativos.`:'')+(missingAssets.length?' Sem histórico: '+missingAssets.join(', ')+'.':'');
+  const staleHistory=Object.entries(performance.fontes_historico||{}).filter(([,meta])=>meta?.dados_desatualizados).map(([ticker])=>ticker);
+  const staleHistoryText=staleHistory.length?' Histórico reutilizado de cache antigo: '+staleHistory.join(', ')+'. Confira a última consulta real da fonte.':'';
   note.textContent=allTypesSelected
-   ?(chartRows.length?'A linha da carteira utiliza movimentações Pluggy/B3 e preços históricos disponíveis. Os índices são exibidos independentemente da cobertura histórica dos ativos. ':'Ainda não há histórico de preços suficiente para a carteira. Os índices são exibidos conforme a disponibilidade das fontes. ')+coverageText
-   :'Série histórica da classe selecionada, calculada somente com os ativos que possuem histórico disponível. Dados ausentes não são interpolados.'+coverageText+ipcaInfo+(activeSources.length?' Fontes: '+activeSources.join(' | '):'');
+   ?(chartRows.length?'A linha da carteira utiliza movimentações Pluggy/B3 e preços históricos disponíveis. Os índices são exibidos independentemente da cobertura histórica dos ativos. ':'Ainda não há histórico de preços suficiente para a carteira. Os índices são exibidos conforme a disponibilidade das fontes. ')+coverageText+staleHistoryText
+   :'Série histórica da classe selecionada, calculada somente com os ativos que possuem histórico disponível. Dados ausentes não são interpolados.'+coverageText+staleHistoryText+ipcaInfo+(activeSources.length?' Fontes: '+activeSources.join(' | '):'');
  }
  // A ausência temporária de dados não deve bloquear a interação da legenda.
  const datasets=[];
@@ -4618,7 +4625,7 @@ async function loadAPIUsage(){
   const last=item.last_request_epoch?new Date(Number(item.last_request_epoch)*1000).toLocaleString('pt-BR'):'Nenhuma chamada registrada';
   const labels={pluggy:'Pluggy',hgbrasil:'HG Brasil',dadosb3:'Dados B3',fred:'FRED',yahoo:'Yahoo Finance'};
   const otherUsage=Object.entries(item.providers||{}).filter(([name])=>name!=='brapi').map(([name,stats])=>`${escapeHTML(labels[name]||name)}: ${Number(stats.requests_last_30_days||0).toLocaleString('pt-BR')}`).join(' · ');
-  const otherBudgets=Object.entries(item.provider_budgets||{}).filter(([name])=>name!=='brapi').map(([name,row])=>`${escapeHTML(labels[name]||name)}: ${Number(row.requests||0).toLocaleString('pt-BR')}/${row.enabled?Number(row.local_budget||0).toLocaleString('pt-BR'):'sem limite local'} em ${Number(row.window_hours||24)}h`).join(' · ');
+  const otherBudgets=Object.entries(item.provider_budgets||{}).filter(([name])=>name!=='brapi').map(([name,row])=>{const daily=`${Number(row.requests||0).toLocaleString('pt-BR')}/${row.enabled?Number(row.local_budget||0).toLocaleString('pt-BR'):'sem limite local'} em ${Number(row.window_hours||24)}h`;const monthly=Number.isFinite(Number(row.local_budget_30d))?` · 30d ${Number(row.requests_30d||0).toLocaleString('pt-BR')}/${Number(row.local_budget_30d||0).toLocaleString('pt-BR')}`:'';return `${escapeHTML(labels[name]||name)}: ${daily}${monthly}`;}).join(' · ');
   host.innerHTML=`<div class="panelhead"><div><h3 style="margin:0">Consumo local das APIs</h3><div class="mini">Estatísticas desta instalação. A consulta não consome cota externa.</div></div><button class="ghost" type="button" onclick="loadAPIUsage()">↻ Atualizar</button></div><div class="api-usage-grid"><div><span class="mini">brapi · chamadas / 30 dias</span><strong>${used.toLocaleString('pt-BR')}</strong></div><div><span class="mini">Orçamento interno brapi</span><strong>${item.budget_enabled?budget.toLocaleString('pt-BR'):'Sem limite local'}</strong></div><div><span class="mini">Saldo do orçamento</span><strong>${remaining===null?'—':remaining.toLocaleString('pt-BR')}</strong></div><div><span class="mini">Cache brapi reutilizado</span><strong>${Number(item.cache_hits||0).toLocaleString('pt-BR')} <small>· antigo ${Number(item.stale_cache_hits||0).toLocaleString('pt-BR')}</small></strong></div></div>${item.budget_enabled?`<div class="api-usage-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent.toFixed(1)}"><span style="width:${percent.toFixed(1)}%"></span></div>`:''}<div class="mini">Última chamada brapi: ${escapeHTML(last)}. ${escapeHTML(item.note||'')}</div>${otherBudgets?`<div class="mini" style="margin-top:7px"><b>Orçamentos locais · uso e limite:</b> ${otherBudgets}</div>`:''}${otherUsage?`<div class="mini" style="margin-top:7px"><b>Outras fontes · chamadas nos últimos 30 dias:</b> ${otherUsage}</div>`:''}`;
  }catch(error){host.innerHTML=`<div class="mini">Não foi possível carregar o consumo local: ${escapeHTML(error.message||'erro desconhecido')}</div>`;}
 }
@@ -6113,6 +6120,7 @@ body.light-theme .prov-chart-period-menu .period-section{color:#202633!important
 
 
 .prov-sync-summary{display:block;color:var(--muted,#8f9bad);font-size:11px;line-height:1.45;margin-top:5px}
+.prov-sync-stale{display:block;color:var(--warning,#e8aa45);font-size:11px;line-height:1.45;margin-top:4px}
 .prov-sync-details{margin-top:4px;font-size:11px;color:var(--muted,#8f9bad)}
 .prov-sync-details summary{cursor:pointer;display:inline-block;color:var(--muted,#8f9bad)}
 .prov-sync-details>div{max-height:180px;overflow:auto;margin-top:6px;padding:8px 10px;border:1px solid var(--border,#343b49);border-radius:8px;background:var(--panel,#20242d)}

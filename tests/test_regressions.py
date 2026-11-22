@@ -38,7 +38,7 @@ class RegressionTests(unittest.TestCase):
             for table in (
                 'b3_importados', 'b3_import_lotes', 'proventos_api', 'proventos',
                 'operacoes', 'saldos_importados', 'irpf_lancamentos',
-                'api_response_cache', 'api_request_log', 'api_cache_stats', 'api_provider_state'
+                'api_response_cache', 'api_request_log', 'api_cache_stats', 'api_provider_state', 'api_provider_state_scoped'
             ):
                 con.execute(f'DELETE FROM {table}')
             con.execute("DELETE FROM app_settings WHERE key='pluggy_sync_interval'")
@@ -107,12 +107,12 @@ class RegressionTests(unittest.TestCase):
             con = wallet.db()
             now = wallet.time.time()
             con.execute(
-                'INSERT INTO api_request_log(provider,endpoint,requested_at,status_code) VALUES(?,?,?,?)',
-                ('pluggy', 'GET:investments', now - 0.2, 200)
+                'INSERT INTO api_request_log(provider,endpoint,requested_at,status_code,credential_hash) VALUES(?,?,?,?,?)',
+                ('pluggy', 'GET:investments', now - 0.2, 200, 'public')
             )
             con.commit()
             with patch.object(wallet.time, 'sleep') as sleep:
-                wallet._provider_wait_for_gap('pluggy')
+                wallet._provider_wait_for_gap('pluggy', 'public')
             self.assertEqual(sleep.call_count, 1)
             self.assertGreater(sleep.call_args.args[0], 0)
             self.assertLessEqual(sleep.call_args.args[0], wallet.PLUGGY_REQUEST_GAP_SECONDS)
@@ -123,12 +123,181 @@ class RegressionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 wallet._provider_wait_for_gap('pluggy')
 
+    def test_budget_reservation_is_atomic_and_scoped_per_credential(self):
+        with wallet.app.app_context(), patch.object(wallet, 'PLUGGY_LOCAL_24H_BUDGET', 1), patch.object(wallet, 'PLUGGY_REQUEST_GAP_SECONDS', 0):
+            first = wallet._api_record_request('pluggy', 'GET:items', 200, 'credential-a', enforce_budget=True)
+            blocked = wallet._api_record_request('pluggy', 'GET:items', 200, 'credential-a', enforce_budget=True)
+            separate_token = wallet._api_record_request('pluggy', 'GET:items', 200, 'credential-b', enforce_budget=True)
+            self.assertIsNotNone(first)
+            self.assertIsNone(blocked)
+            self.assertIsNotNone(separate_token)
+
+    def test_request_gap_is_reserved_atomically_across_workers(self):
+        with wallet.app.app_context(), patch.object(wallet, 'PLUGGY_REQUEST_GAP_SECONDS', 30):
+            first = wallet._api_record_request('pluggy', 'GET:items', 200, 'credential-gap', enforce_budget=True)
+            second = wallet._api_record_request('pluggy', 'GET:items', 200, 'credential-gap', enforce_budget=True)
+            self.assertIsNotNone(first)
+            self.assertIsNone(second)
+            self.assertGreater(wallet._provider_gap_remaining('pluggy', 'credential-gap'), 0)
+
+    def test_brapi_cache_key_normalizes_query_and_authorization_token(self):
+        token = 'brapi-cache-key-normalization-test'
+        with wallet.app.app_context():
+            query_key = wallet._api_response_cache_key(
+                'brapi', 'https://brapi.dev/api/quote/TEST3', {'token': token}, {})
+            header_key = wallet._api_response_cache_key(
+                'brapi', 'https://brapi.dev/api/quote/TEST3', {}, {'Authorization': f'Bearer {token}'})
+            self.assertEqual(query_key, header_key)
+
+    def test_brapi_token_in_query_and_authorization_share_one_budget_identity(self):
+        token = 'brapi-token-fingerprint-test'
+        expected = wallet.hashlib.sha256(token.encode('utf-8')).hexdigest()[:24]
+        with wallet.app.app_context():
+            query_hash = wallet._provider_credential_hash('brapi', {'token':token}, {'Authorization':f'Bearer {token}'})
+            header_hash = wallet._provider_credential_hash('brapi', {}, {'Authorization':f'Bearer {token}'})
+            self.assertEqual(query_hash, expected)
+            self.assertEqual(header_hash, expected)
+            with patch.object(wallet, '_brapi_token', return_value=token):
+                self.assertEqual(wallet._current_provider_credential_hash('brapi'), expected)
+
+    def test_400_cooldown_is_scoped_to_exact_request(self):
+        with wallet.app.app_context():
+            wallet._provider_apply_failure_cooldown('brapi', 400, '/quote', {'symbols':'BAD3'}, 'token-a')
+            same_request = wallet._provider_get_cooldown('brapi', 'token-a', '/quote', {'symbols':'BAD3'})
+            other_request = wallet._provider_get_cooldown('brapi', 'token-a', '/quote', {'symbols':'GOOD3'})
+            self.assertGreater(same_request, wallet.time.time())
+            self.assertEqual(other_request, 0)
+
+    def test_5xx_cooldown_is_credential_scoped(self):
+        with wallet.app.app_context():
+            wallet._provider_apply_failure_cooldown('brapi', 503, '/quote', {'symbols':'BAD3'}, 'token-a')
+            same_credential = wallet._provider_get_cooldown('brapi', 'token-a', '/quote', {'symbols':'GOOD3'})
+            other_credential = wallet._provider_get_cooldown('brapi', 'token-b', '/quote', {'symbols':'BAD3'})
+            self.assertGreater(same_credential, wallet.time.time())
+            self.assertEqual(other_credential, 0)
+
+    def test_401_cooldown_is_scoped_to_credential(self):
+        with wallet.app.app_context():
+            wallet._provider_apply_failure_cooldown('fred', 401, '/fred/series', {'series_id':'GDP'}, 'fred-token-a')
+            blocked = wallet._provider_get_cooldown('fred', 'fred-token-a', '/fred/series', {'series_id':'GDP'})
+            other_token = wallet._provider_get_cooldown('fred', 'fred-token-b', '/fred/series', {'series_id':'GDP'})
+            self.assertGreater(blocked, wallet.time.time())
+            self.assertEqual(other_token, 0)
+
+    def test_retry_after_http_date_is_respected_and_capped(self):
+        future = wallet.datetime.fromtimestamp(wallet.time.time() + 300, wallet.timezone.utc)
+        header = future.strftime('%a, %d %b %Y %H:%M:%S GMT')
+        with wallet.app.app_context():
+            wallet._provider_apply_failure_cooldown('fred', 429, '/fred/series', {}, 'fred-token', header)
+            until = wallet._provider_get_cooldown('fred', 'fred-token', '/fred/series', {})
+            self.assertGreater(until, wallet.time.time() + 200)
+            self.assertLessEqual(until, wallet.time.time() + 310)
+
+    def test_include_raw_403_does_not_block_fallback_without_include_raw(self):
+        with wallet.app.app_context():
+            endpoint = 'https://brapi.dev/api/v2/stocks/dividends'
+            raw_params = {'symbols':'TEST3', 'includeRaw':'true'}
+            plain_params = {'symbols':'TEST3'}
+            wallet._provider_apply_failure_cooldown('brapi', 403, endpoint, raw_params, 'brapi-token-a')
+            self.assertGreater(wallet._provider_get_cooldown('brapi', 'brapi-token-a', endpoint, raw_params), wallet.time.time())
+            self.assertEqual(wallet._provider_get_cooldown('brapi', 'brapi-token-a', endpoint, plain_params), 0)
+
+    def test_pluggy_pagination_limit_fails_before_consuming_all_pages(self):
+        with wallet.app.app_context(), patch.object(wallet, 'PLUGGY_MAX_PAGES', 2), patch.object(
+            wallet, '_pluggy_request', return_value={'results':[{'id':'one'}], 'totalPages':50}
+        ) as mocked:
+            with self.assertRaisesRegex(RuntimeError, 'acima do limite'):
+                wallet._pluggy_results('/v2/investments')
+            self.assertEqual(mocked.call_count, 1)
+
+    def test_pluggy_pagination_rejects_changing_total_pages(self):
+        responses = [
+            {'results':[{'id':'one'}], 'totalPages':2},
+            {'results':[{'id':'two'}], 'totalPages':3},
+        ]
+        with wallet.app.app_context(), patch.object(wallet, 'PLUGGY_MAX_PAGES', 5), patch.object(
+            wallet, '_pluggy_request', side_effect=responses
+        ) as mocked:
+            with self.assertRaisesRegex(RuntimeError, 'alterou o total de páginas'):
+                wallet._pluggy_results('/v2/investments')
+            self.assertEqual(mocked.call_count, 2)
+
+    def test_pluggy_pagination_rejects_missing_results_array(self):
+        with wallet.app.app_context(), patch.object(wallet, 'PLUGGY_MAX_PAGES', 5), patch.object(
+            wallet, '_pluggy_request', return_value={'totalPages':1}
+        ) as mocked:
+            with self.assertRaisesRegex(RuntimeError, 'ausente ou inválida'):
+                wallet._pluggy_results('/v2/investments')
+            self.assertEqual(mocked.call_count, 1)
+
+    def test_pluggy_empty_intermediate_page_is_not_accepted_as_complete(self):
+        with wallet.app.app_context(), patch.object(wallet, 'PLUGGY_MAX_PAGES', 5), patch.object(
+            wallet, '_pluggy_request', return_value={'results':[], 'totalPages':2}
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'página vazia'):
+                wallet._pluggy_results('/v2/investments')
+
+    def test_dividend_fetch_returns_stale_provenance_even_when_no_events(self):
+        response = wallet.requests.Response()
+        response.status_code = 200
+        response._content = b'{"results":[]}'
+        response.headers['X-LonelyWallet-Cache'] = 'stale'
+        response.headers['X-LonelyWallet-Fetched-At'] = str(wallet.time.time() - 86400)
+        with wallet.app.app_context(), patch.object(wallet, '_brapi_get', return_value=response):
+            events, errors, sources = wallet._fetch_brapi_dividend_events('acao', ['TEST3'], '2026-01-01')
+            self.assertEqual(events, [])
+            self.assertEqual(errors, [])
+            self.assertEqual(len(sources), 1)
+            self.assertTrue(sources[0]['stale'])
+
+    def test_stale_empty_dividend_response_does_not_advance_last_sync(self):
+        previous = '2026-11-01T10:00:00-03:00'
+        stale_epoch = wallet.time.time() - 3 * 86400
+        stale_meta = {'asset_type':'acao','symbols':['PETR4'],'stale':True,'fetched_at':str(stale_epoch),'endpoint':'brapi-dividends'}
+        with wallet.app.app_context():
+            wallet.db().execute(
+                "INSERT INTO integracao_estado(chave,valor) VALUES('brapi_proventos_ultima_sincronizacao',?) ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor",
+                (previous,)
+            )
+            wallet.db().commit()
+            with patch.object(wallet, '_fetch_brapi_dividend_events', side_effect=[([], [], [stale_meta]), ([], [], [])]), \
+                 patch.object(wallet, 'cotacao', return_value={}):
+                result = wallet.sync_brapi_proventos(force=True, quote_items=[], active_items=[{'ticker':'PETR4','tipo':'acao'}])
+            self.assertTrue(result['dados_desatualizados'])
+            self.assertEqual(result['fontes_de_cache_antigo'], 1)
+            self.assertIn('cache antigo', result['aviso_cache'])
+            saved = wallet.db().execute("SELECT valor FROM integracao_estado WHERE chave='brapi_proventos_ultima_sincronizacao'").fetchone()
+            self.assertEqual(saved['valor'], previous)
+
+    def test_cache_cleanup_removes_expired_rows_without_opening_api_page(self):
+        with wallet.app.app_context(), patch.object(wallet, '_API_CACHE_LAST_CLEANUP', 0):
+            con = wallet.db()
+            now = wallet.time.time()
+            con.execute(
+                "INSERT OR REPLACE INTO api_response_cache(cache_key,provider,endpoint,payload,status_code,fetched_at,expires_at,stale_until) VALUES(?,?,?,?,?,?,?,?)",
+                ('expired-cache-row','brapi','/quote',b'{}',200,now-100000,now-90000,now-1)
+            )
+            con.execute(
+                'INSERT INTO api_request_log(provider,endpoint,requested_at,status_code,credential_hash) VALUES(?,?,?,?,?)',
+                ('brapi','/old',now-50*86400,200,'public')
+            )
+            con.commit()
+            wallet._api_cache_cleanup()
+            self.assertIsNone(con.execute('SELECT 1 FROM api_response_cache WHERE cache_key=?',('expired-cache-row',)).fetchone())
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM api_request_log WHERE endpoint=?',('/old',)).fetchone()[0],0)
+
+    def test_cache_cleanup_runs_on_normal_request(self):
+        with patch.object(wallet, '_api_cache_cleanup') as cleanup:
+            response = self.client.get('/api/auth/status')
+            self.assertEqual(response.status_code, 200)
+            cleanup.assert_called_once()
+
     def test_api_provider_cooldown_is_persisted_after_network_failure(self):
         with wallet.app.app_context():
             wallet._provider_set_cooldown('brapi', 45, 0, 'network_error')
             row = wallet.db().execute(
-                'SELECT cooldown_until,last_status_code,last_error FROM api_provider_state WHERE provider=?',
-                ('brapi',)
+                "SELECT cooldown_until,last_status_code,last_error FROM api_provider_state_scoped WHERE provider=? AND credential_hash=? AND scope='provider'",
+                ('brapi', 'public')
             ).fetchone()
             self.assertIsNotNone(row)
             self.assertGreater(row['cooldown_until'], wallet.time.time())

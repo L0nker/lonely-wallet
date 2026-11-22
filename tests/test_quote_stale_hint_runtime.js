@@ -1,0 +1,15 @@
+const fs = require('fs');
+const vm = require('vm');
+const html = fs.readFileSync('app/templates/index.html', 'utf8');
+const match = html.match(/function quoteUpdatedHint\(value,isStale=false\)\s*\{[\s\S]*?\n\}/);
+if (!match) throw new Error('quoteUpdatedHint function not found');
+const context = { Date, Number, String };
+vm.createContext(context);
+vm.runInContext(`${match[0]}\nthis.quoteUpdatedHint = quoteUpdatedHint;`, context);
+const fresh = context.quoteUpdatedHint('2026-11-22', false);
+if (!fresh.includes('Última atualização real: 22/11/2026')) throw new Error(`fresh date not formatted: ${fresh}`);
+const stale = context.quoteUpdatedHint('2026-11-21', true);
+if (!stale.includes('Cotação antiga reutilizada') || !stale.includes('21/11/2026')) throw new Error(`stale warning missing: ${stale}`);
+const unknownStale = context.quoteUpdatedHint('', true);
+if (!unknownStale.includes('Cotação antiga reutilizada') || !unknownStale.includes('não disponível')) throw new Error(`stale warning without timestamp missing: ${unknownStale}`);
+console.log('3 quote stale tooltip checks passed');

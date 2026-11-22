@@ -1,4 +1,4 @@
-# Lonely Wallet v4.2.33
+# Lonely Wallet v4.2.34
 
 **Gerenciador pessoal de investimentos | Docker / ZimaOS | Português (Brasil)**
 
@@ -8,7 +8,7 @@ As consultas da brapi passam a usar cache persistente em SQLite, orçamento loca
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.33 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.34 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
 - **Persistência:** SQLite, com bancos separados para ativos e tokens
 - **Porta:** `8085` no host e `8080` no container
@@ -38,7 +38,7 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve apresentar `ok: true` e `version: 4.2.33`.
+O retorno deve apresentar `ok: true` e `version: 4.2.34`.
 
 **Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
 
@@ -252,9 +252,52 @@ BRAPI_REQUEST_GAP_SECONDS: "0.35"
 HGBRASIL_LOCAL_24H_BUDGET: "300"
 DADOSB3_LOCAL_24H_BUDGET: "150"
 PLUGGY_REQUEST_GAP_SECONDS: "1.0"
+PLUGGY_LOCAL_24H_BUDGET: "500"
+PLUGGY_LOCAL_30D_BUDGET: "5000"
+PLUGGY_MAX_PAGES: "100"
+PLUGGY_PAGE_SIZE: "500"
+FRED_LOCAL_24H_BUDGET: "300"
+FRED_LOCAL_30D_BUDGET: "5000"
 ```
 
 A HG Brasil usa limite local padrão de 300 chamadas por 24 horas, abaixo da cota gratuita publicada de 400 por dia; Dados B3 usa limite local padrão de 150 por 24 horas, abaixo da cota grátis publicada de 200 por dia. Os limites podem ser ajustados com `HGBRASIL_LOCAL_24H_BUDGET` e `DADOSB3_LOCAL_24H_BUDGET`; valor `0` desativa o limite local daquele provedor. Para a brapi, `BRAPI_LOCAL_30D_BUDGET=0` desativa o orçamento local, mas não é recomendado no plano gratuito. Mantenha `BRAPI_MAX_TICKERS_PER_REQUEST=1` no plano gratuito; aumente somente se o plano contratado permitir mais tickers por chamada.
 
 O orçamento é uma proteção local, não uma leitura oficial da cota do provedor. Outras aplicações usando o mesmo token não são contabilizadas. Consulte o painel do próprio provedor para conferir o saldo global.
 
+
+
+## Lonely Wallet v4.2.34 · Proteções adicionais de consumo das APIs
+
+- Orçamentos locais da Pluggy e FRED por credencial, com janelas diária e móvel de 30 dias; as chamadas de autenticação e de dados Pluggy contam para o mesmo orçamento.
+- Contadores e pausas vinculados à impressão digital SHA-256 normalizada da credencial; trocar o token inicia orçamento e cooldown independentes. O token original não é gravado nos logs.
+- Cooldowns diferenciados: 400 por requisição/parâmetros, 401 por credencial, 403 por endpoint (ou apenas pela variante `includeRaw`), 429 por credencial e falhas transitórias por credencial. `Retry-After` aceita segundos ou data HTTP.
+- Paginação Pluggy falha assim que o total de páginas excede o limite configurado ou quando uma página intermediária chega vazia; não consome o restante das chamadas nem aceita histórico parcial como completo.
+- Dados reutilizados de cache antigo passam a carregar data da última consulta real e aviso visual; eventos de proventos obtidos de cache antigo não atualizam a data de sincronização para o momento atual.
+- Limpeza automática do cache, logs e estados expirados executada durante requisições normais, sem depender da abertura da página de APIs.
+- Orçamento e intervalo mínimo são reservados atomicamente no SQLite (`BEGIN IMMEDIATE`), protegendo também instalações com múltiplos workers Gunicorn.
+- Intervalo brapi/Pluggy é revalidado dentro da reserva, evitando rajadas entre processos.
+- Dados de proventos/histórico/benchmarks reutilizados de cache antigo exibem aviso e preservam a data da última consulta real; uma resposta stale vazia também é sinalizada.
+- A identidade do token brapi é normalizada para que `token` em query string e `Authorization: Bearer` usem o mesmo contador.
+- O botão de sincronização manual Pluggy não ignora limites locais de consumo.
+
+Variáveis adicionais: `PLUGGY_LOCAL_24H_BUDGET`, `PLUGGY_LOCAL_30D_BUDGET`, `PLUGGY_MAX_PAGES`, `PLUGGY_PAGE_SIZE`, `FRED_LOCAL_24H_BUDGET` e `FRED_LOCAL_30D_BUDGET`.
+- A chave do cache brapi usa a mesma impressão digital normalizada quando o token é enviado em query string ou em `Authorization: Bearer`, evitando duplicação de cache e consumo contabilizado em identidades diferentes.
+- A paginação Pluggy exige o array `results` e o campo `totalPages` em todas as páginas, valida que o total permaneça estável durante a consulta e aborta se houver página intermediária vazia ou resposta inconsistente.
+- Os tooltips de cotação identificam explicitamente quando o preço foi reutilizado de cache/último valor válido e mostram a data real da fonte, sem apresentar a reutilização como atualização nova.
+- Foram adicionados testes de regressão para cooldown HTTP 400/401/403/429/5xx, troca de credencial, cache de token normalizado, orçamento/intervalo atômicos, limpeza automática, metadados stale de proventos e respostas incompletas da paginação Pluggy.
+- As chamadas Pluggy agora contam para limites locais móveis de 24 horas e 30 dias por credencial; autenticação e endpoints de dados compartilham o orçamento. A sincronização manual também respeita orçamento e intervalo.
+- A paginação Pluggy exige `results` como lista e `totalPages` como inteiro válido e estável entre páginas. Página intermediária vazia, metadados ausentes, alteração do total ou limite excedido interrompem a sincronização com erro explícito, sem aceitar resultado parcial como completo.
+- Cooldowns de falhas são persistidos e vinculados à impressão digital da credencial: HTTP 400 por combinação de endpoint/parâmetros, 401 por credencial, 403 por endpoint (ou pela variante `includeRaw`), 429 por credencial respeitando `Retry-After` em segundos ou data HTTP, e falhas transitórias por credencial.
+- A contagem e a reserva de orçamento/intervalo são feitas em transação SQLite `BEGIN IMMEDIATE`, protegendo chamadas entre workers/processos. A chave de cache brapi normaliza o mesmo token enviado em query string ou `Authorization: Bearer`.
+- Os tooltips de preço informam quando o valor exibido foi reutilizado de cache antigo/última cotação válida e mostram a data real da fonte quando disponível. Os avisos de dados antigos de proventos e histórico também preservam a data da consulta real.
+- A limpeza de respostas expiradas, logs antigos e pausas vencidas ocorre automaticamente durante requisições normais, sem depender da abertura da página Integrações e APIs.
+
+### Validação da v4.2.34
+
+- 51 testes Python independentes executados e aprovados.
+- 19 verificações de runtime JavaScript executadas e aprovadas.
+- Compilação sintática Python aprovada.
+- Docker Compose YAML analisado e variáveis de orçamento conferidas.
+- Integridade do ZIP conferida após a geração.
+- A suíte `tests/test_regressions.py` não pôde ser executada neste ambiente porque Flask não está instalado e a instalação de dependências não está disponível sem rede.
+- Build Docker real e validação visual final no ZimaOS não foram executados neste ambiente.
