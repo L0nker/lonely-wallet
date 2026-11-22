@@ -1,20 +1,43 @@
 #!/usr/bin/env python3
-"""Baixa o Chart.js fixo para app/static e imprime o hash SRI (executar fora do container, com internet).
-
-Uso: python scripts/vendor_chartjs.py
-Depois reconstrua a imagem: docker compose up -d --build
-"""
-import base64
-import hashlib
-import urllib.request
+"""Vendor the pinned Chart.js UMD build into Flask static assets during image build."""
 from pathlib import Path
+import os
+import tempfile
+import urllib.request
 
-URL = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js'
-TARGET = Path(__file__).resolve().parents[1] / 'app' / 'static' / 'chart.umd.min.js'
+VERSION = "4.4.4"
+URL = f"https://cdn.jsdelivr.net/npm/chart.js@{VERSION}/dist/chart.umd.min.js"
+DESTINATION = Path(__file__).resolve().parents[1] / "app" / "static" / "vendor" / "chart.umd.min.js"
 
-data = urllib.request.urlopen(URL, timeout=30).read()
-if b'Chart' not in data[:4000]:
-    raise SystemExit('Arquivo baixado não parece ser o Chart.js; abortando.')
-TARGET.write_bytes(data)
-print('Salvo em', TARGET)
-print('sha384-' + base64.b64encode(hashlib.sha384(data).digest()).decode())
+
+def main():
+    DESTINATION.parent.mkdir(parents=True, exist_ok=True)
+    request = urllib.request.Request(URL, headers={"User-Agent": "LonelyWallet-build/1.0"})
+    with urllib.request.urlopen(request, timeout=45) as response:
+        final_url = response.geturl()
+        payload = response.read(600_001)
+    if not final_url.startswith("https://cdn.jsdelivr.net/"):
+        raise RuntimeError("Chart.js download redirected to an unexpected host.")
+    if not (100_000 <= len(payload) <= 600_000):
+        raise RuntimeError("Downloaded Chart.js file has an unexpected size.")
+    header = payload[:512].decode("utf-8", errors="ignore")
+    if "Chart.js" not in header or VERSION not in header:
+        raise RuntimeError("Downloaded asset does not identify the pinned Chart.js version.")
+    fd, temp_name = tempfile.mkstemp(prefix=".chartjs-", suffix=".tmp", dir=DESTINATION.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_name, 0o644)
+        os.replace(temp_name, DESTINATION)
+    finally:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+    print(f"Vendored Chart.js {VERSION}: {DESTINATION}")
+
+
+if __name__ == "__main__":
+    main()
