@@ -29,9 +29,50 @@ def sqlite_readonly_uri(path):
     return Path(path).expanduser().resolve().as_uri() + '?mode=ro'
 
 
+def _chart_assets_status():
+    """Describe chart assets actually available to the browser.
+
+    Chart.js is only advertised when its bundled file matches its generated
+    SHA-256 sidecar. The lightweight fallback is always loaded after it.
+    """
+    vendor_dir = Path(app.static_folder or 'static') / 'vendor'
+    bundle = vendor_dir / 'chart.umd.min.js'
+    checksum = vendor_dir / 'chart.umd.min.js.sha256'
+    fallback = vendor_dir / 'chart-fallback.js'
+    chartjs_available = False
+    try:
+        expected = checksum.read_text(encoding='ascii').strip().split()[0].lower()
+        payload = bundle.read_bytes()
+        actual = hashlib.sha256(payload).hexdigest()
+        chartjs_available = len(payload) >= 100_000 and len(expected) == 64 and hmac.compare_digest(actual, expected)
+    except (OSError, ValueError, IndexError):
+        chartjs_available = False
+    try:
+        fallback_available = fallback.is_file() and fallback.stat().st_size > 1_000
+    except OSError:
+        fallback_available = False
+    if chartjs_available:
+        engine, status, warning = 'chartjs', 'ready', None
+    elif fallback_available:
+        engine, status = 'fallback', 'degraded'
+        warning = 'Chart.js local ausente ou sem integridade válida; renderer offline simplificado em uso.'
+    else:
+        engine, status = 'unavailable', 'unhealthy'
+        warning = 'Chart.js e renderer de fallback não estão disponíveis.'
+    return {
+        'engine': engine,
+        'status': status,
+        'chartjs_version': '4.6.1',
+        'chartjs_available': bool(chartjs_available),
+        'chartjs_integrity_verified': bool(chartjs_available),
+        'fallback_available': bool(fallback_available),
+        'warning': warning,
+    }
+
+
 @app.context_processor
 def inject_app_version():
-    return {'app_version': APP_VERSION}
+    return {'app_version': APP_VERSION, 'chart_assets': _chart_assets_status()}
 TOKEN = os.environ.get('BRAPI_TOKEN') or os.environ.get('BRAPI_API_KEY', '')
 API_KEY_FILE = os.environ.get('API_KEYS_KEY_FILE', '/data/.api-credentials.key')
 TZ = ZoneInfo('America/Sao_Paulo')
@@ -3121,10 +3162,24 @@ def health():
     try:
         db().execute('SELECT 1').fetchone()
         token_db().execute('SELECT 1').fetchone()
-        return jsonify(ok=True, status='healthy', version=(Path(__file__).resolve().parents[1] / 'VERSION').read_text(encoding='utf-8').strip()), 200
+        charts = _chart_assets_status()
+        if charts['status'] == 'unhealthy':
+            return jsonify(
+                ok=False,
+                status='unhealthy',
+                version=APP_VERSION,
+                charts=charts,
+            ), 503
+        overall_status = 'degraded' if charts['status'] == 'degraded' else 'healthy'
+        return jsonify(
+            ok=True,
+            status=overall_status,
+            version=APP_VERSION,
+            charts=charts,
+        ), 200
     except Exception:
         app.logger.exception('Healthcheck failed')
-        return jsonify(ok=False, status='unhealthy'), 503
+        return jsonify(ok=False, status='unhealthy', version=APP_VERSION), 503
 
 
 @app.route('/')

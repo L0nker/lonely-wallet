@@ -76,7 +76,19 @@ class RegressionTests(unittest.TestCase):
     def test_health_endpoint(self):
         response = self.client.get('/api/health')
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.get_json()['ok'])
+        payload = response.get_json()
+        self.assertTrue(payload['ok'])
+        self.assertIn(payload['status'], ('healthy', 'degraded'))
+        self.assertIn('charts', payload)
+        self.assertIn(payload['charts']['engine'], ('chartjs', 'fallback'))
+        self.assertTrue(payload['charts']['fallback_available'])
+
+    def test_dashboard_loads_fallback_as_a_separate_script(self):
+        template = (Path(wallet.__file__).resolve().parent / 'templates' / 'index.html').read_text(encoding='utf-8')
+        primary = template.index("filename='vendor/chart.umd.min.js'")
+        fallback = template.index("filename='vendor/chart-fallback.js'")
+        self.assertLess(primary, fallback)
+        self.assertNotIn('onerror=', template[primary - 80:fallback + 100])
 
     def test_non_finite_operation_values_rejected(self):
         with wallet.app.test_request_context('/'):

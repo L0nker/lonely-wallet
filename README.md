@@ -1,12 +1,14 @@
-# Lonely Wallet v4.2.31
+# Lonely Wallet v4.2.32
 
 **Gerenciador pessoal de investimentos | Docker / ZimaOS | Português (Brasil)**
 
-Esta versão parte da v4.2.30. O objetivo desta atualização é corrigir a confiabilidade dos testes, endurecer a importação de planilhas, proteger as rotinas de backup/migração SQLite, atualizar dependências e eliminar referências de versão fixas na interface.
+Esta versão parte da v4.2.31. O objetivo desta atualização é corrigir a confiabilidade dos testes, endurecer a importação de planilhas, proteger as rotinas de backup/migração SQLite, atualizar dependências e eliminar referências de versão fixas na interface.
+
+Esta atualização corrige o carregamento do renderer offline de gráficos, adiciona tooltips e animação básica ao fallback, torna a integridade do Chart.js visível no healthcheck e interrompe o build quando um pacote recebido falha na verificação SRI. As versões pinadas de Flask, Gunicorn, cryptography, defusedxml e openpyxl foram verificadas como publicadas no PyPI; Requests foi atualizado para `2.34.2`.
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.31 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.32 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
 - **Persistência:** SQLite, com bancos separados para ativos e tokens
 - **Porta:** `8085` no host e `8080` no container
@@ -36,7 +38,7 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve apresentar `ok: true` e `version: 4.2.31`.
+O retorno deve apresentar `ok: true` e `version: 4.2.32`.
 
 **Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
 
@@ -96,7 +98,7 @@ Dependências Python fixadas nesta versão:
 - cryptography `50.0.2`
 - openpyxl `3.1.5`
 - defusedxml `0.7.1`
-- requests `2.32.5`
+- requests `2.34.2`
 
 O Flask foi atualizado para uma versão que inclui a correção CVE-2026-27205. A aplicação define um limite de conteúdo para uploads e retorna uma resposta JSON própria para HTTP 413. As bibliotecas de segurança e autenticação continuam no banco `tokens.db` e no volume persistente.
 
@@ -104,9 +106,15 @@ A atualização das dependências deve ser validada com o container completo e c
 
 ## 7. Gráficos e Chart.js
 
-A aplicação prioriza o Chart.js `4.6.1` servido localmente. O script `scripts/vendor_chartjs.py` busca o pacote oficial npm e valida o artefato com o SRI SHA-512 fixado no código antes de extrair a distribuição UMD.
+A aplicação prioriza o Chart.js `4.6.1` servido localmente. O script `scripts/vendor_chartjs.py` busca o pacote oficial npm e valida o artefato com o SRI SHA-512 fixado no código antes de extrair a distribuição UMD. O valor fixado foi conferido com os metadados `dist.integrity` do pacote npm.
 
-Se o build estiver sem internet e o bundle não estiver presente, a imagem não falha por causa do download do Chart.js: o frontend carrega `chart-fallback.js`, incluído no projeto, que renderiza os tipos de gráfico usados no dashboard (linha, barra, rosca e pizza) sem CDN externo. O fallback é mais simples que o Chart.js e não reproduz todas as opções avançadas de tooltip/animação. Com o bundle íntegro, o Chart.js completo é usado automaticamente.
+O carregamento usa dois scripts independentes e sequenciais: primeiro o bundle Chart.js, quando existe e passa na verificação SHA-256 local; logo depois, `chart-fallback.js` é carregado sempre. O fallback se encerra imediatamente quando `window.Chart` já existe. Assim, se a primeira requisição responder 404 ou falhar durante o carregamento, o navegador ainda executa o segundo script, sem tentar reutilizar a tag que falhou.
+
+Se o build estiver sem conexão com o registry npm e o bundle não estiver presente, a imagem pode ser construída com o renderer alternativo incluído no projeto. Essa condição é registrada no log e em `chartjs-build-status.json`. O endpoint `/api/health` expõe `charts.engine`, `charts.status`, `charts.chartjs_integrity_verified` e `charts.fallback_available`; quando somente o fallback estiver disponível, o endpoint continua respondendo HTTP 200, mas retorna `status: degraded` para deixar a limitação visível. Se os dois renderers estiverem ausentes, o healthcheck retorna HTTP 503.
+
+O fallback contempla linha, barra, rosca e pizza, inclui tooltips por hover (respeitando callbacks `title`, `beforeBody`, `label` e `afterBody` mais usados pelo dashboard), callbacks de clique/hover e uma animação simples de entrada. Ele não substitui todos os recursos avançados, plugins, layouts, escalas ou animações do Chart.js completo. Com o bundle íntegro, o Chart.js completo é usado automaticamente.
+
+Falha de rede/timeout é a única condição que permite continuar com o fallback. Se um pacote for recebido com SRI incorreto, estrutura inesperada, HTTP 404 ou outro erro de integridade, o build falha em vez de publicar silenciosamente uma dependência inválida. Um bundle local já existente também precisa corresponder ao SHA-256 do arquivo sidecar.
 
 O build ainda precisa ter as dependências Python disponíveis no índice configurado ou no cache/wheelhouse do ambiente. A opção offline para o Chart.js não torna automaticamente o `pip install` independente de rede.
 
@@ -119,7 +127,7 @@ python -m py_compile app/main.py scripts/backup.py scripts/vendor_chartjs.py
 python -m unittest discover -s tests -v
 ```
 
-Os testes de runtime JavaScript ficam em `tests/*runtime.js` e podem ser executados no ambiente Node compatível quando disponível.
+Os testes de runtime JavaScript ficam em `tests/*runtime.js` e podem ser executados no ambiente Node compatível quando disponível. O teste `tests/test_vendor_chartjs.py` cobre build offline, falha de integridade e verificação do pin SRI.
 
 A validação de release deve incluir build Docker, login/PIN, carga inicial do dashboard, manutenção do volume `/data`, importação B3 dentro e acima do limite, backup/restauração de ambos os bancos, movimentações, proventos, IRPF/DARF e conexões Pluggy.
 
@@ -169,6 +177,17 @@ Consulte o estado da integração e os logs do container. A falta de cotação n
 - Não remova manualmente arquivos SQLite, WAL, chaves ou cache durante o funcionamento do container.
 
 ## 11. Histórico de versões
+
+### v4.2.32
+
+- Corrigido o carregamento offline: `chart-fallback.js` agora é um segundo script independente e sempre carregado após o Chart.js opcional.
+- Adicionada verificação de integridade do bundle no backend; a aplicação não injeta Chart.js no navegador quando o arquivo local está ausente ou não corresponde ao SHA-256 sidecar.
+- `/api/health` agora informa o mecanismo gráfico (`chartjs`, `fallback` ou `unavailable`) e marca o serviço como `degraded` quando somente o renderer alternativo está ativo.
+- Builds sem conexão com o npm registram explicitamente o modo fallback; erro HTTP, arquivo inesperado ou divergência de SRI SHA-512 interrompe o build.
+- Fallback aprimorado com tooltips por hover, suporte aos callbacks `title`, `beforeBody`, `label` e `afterBody`, e animação básica de entrada.
+- SRI SHA-512 de Chart.js 4.6.1 conferido com os metadados npm; versões pinadas de Flask, Gunicorn, cryptography, defusedxml e openpyxl verificadas como existentes no PyPI.
+- Requests atualizado de 2.32.5 para 2.34.2.
+- Adicionados testes para ordem dos scripts, comportamento dos tooltips/animação, modo offline e falhas de integridade.
 
 ### v4.2.31
 

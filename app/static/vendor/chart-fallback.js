@@ -35,9 +35,13 @@
     this._hits = [];
     this._boundClick = event => this._handleClick(event);
     this._boundMove = event => this._handleMove(event);
+    this._boundLeave = () => this._hideTooltip();
+    this._animationFrame = null;
+    this._tooltipElement = null;
     if (canvas) {
       canvas.addEventListener('click', this._boundClick);
       canvas.addEventListener('mousemove', this._boundMove);
+      canvas.addEventListener('mouseleave', this._boundLeave);
     }
     instances[this.id] = this;
     this.update();
@@ -50,6 +54,11 @@
     if (!this.canvas) return;
     this.canvas.removeEventListener('click', this._boundClick);
     this.canvas.removeEventListener('mousemove', this._boundMove);
+    this.canvas.removeEventListener('mouseleave', this._boundLeave);
+    if (this._animationFrame !== null && typeof global.cancelAnimationFrame === 'function') {
+      global.cancelAnimationFrame(this._animationFrame);
+    }
+    this._hideTooltip();
     const ctx = this.canvas.getContext && this.canvas.getContext('2d');
     if (ctx) ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     delete instances[this.id];
@@ -69,23 +78,47 @@
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, width, height);
-    ctx.font = '11px system-ui, sans-serif';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = cssColor(this.options.color, defaults.color);
-    this._hits = [];
     const labels = Array.isArray(this.data.labels) ? this.data.labels : [];
     const datasets = Array.isArray(this.data.datasets) ? this.data.datasets : [];
-    if (!datasets.length || !labels.length) {
+    const draw = opacity => {
+      ctx.clearRect(0, 0, width, height);
+      ctx.globalAlpha = Math.max(0, Math.min(1, opacity));
+      ctx.font = '11px system-ui, sans-serif';
+      ctx.textBaseline = 'middle';
       ctx.fillStyle = cssColor(this.options.color, defaults.color);
-      ctx.textAlign = 'center';
-      ctx.fillText('Sem dados disponíveis para o gráfico', width / 2, height / 2);
-      return;
+      this._hits = [];
+      if (!datasets.length || !labels.length) {
+        ctx.fillStyle = cssColor(this.options.color, defaults.color);
+        ctx.textAlign = 'center';
+        ctx.fillText('Sem dados disponíveis para o gráfico', width / 2, height / 2);
+      } else if (this.type === 'doughnut' || this.type === 'pie') {
+        this._drawDoughnut(ctx, width, height, datasets[0]);
+      } else {
+        this._drawCartesian(ctx, width, height, labels, datasets);
+      }
+      ctx.globalAlpha = 1;
+    };
+
+    if (this._animationFrame !== null && typeof global.cancelAnimationFrame === 'function') {
+      global.cancelAnimationFrame(this._animationFrame);
+      this._animationFrame = null;
     }
-    if (this.type === 'doughnut' || this.type === 'pie') {
-      this._drawDoughnut(ctx, width, height, datasets[0]);
+    const animation = this.options.animation;
+    const duration = animation === false ? 0 :
+      (animation && typeof animation === 'object' && Number.isFinite(Number(animation.duration))
+        ? Math.max(0, Number(animation.duration)) : 260);
+    if (duration > 0 && typeof global.requestAnimationFrame === 'function') {
+      let startedAt = null;
+      const animate = timestamp => {
+        if (startedAt === null) startedAt = timestamp;
+        const progress = Math.min(1, Math.max(0, (timestamp - startedAt) / duration));
+        draw(progress);
+        if (progress < 1) this._animationFrame = global.requestAnimationFrame(animate);
+        else this._animationFrame = null;
+      };
+      this._animationFrame = global.requestAnimationFrame(animate);
     } else {
-      this._drawCartesian(ctx, width, height, labels, datasets);
+      draw(1);
     }
   };
 
@@ -111,7 +144,8 @@
       ctx.closePath();
       ctx.fillStyle = asColor(dataset, index);
       ctx.fill();
-      this._hits.push({ datasetIndex: 0, index, start: angle, end: next, cx, cy, radius, total, value });
+      const labels = Array.isArray(this.data.labels) ? this.data.labels : [];
+      this._hits.push({ datasetIndex: 0, index, start: angle, end: next, cx, cy, radius, total, value, label: labels[index], datasetLabel: dataset.label });
       angle = next;
     });
     if (cutoutRatio > 0) {
@@ -231,32 +265,118 @@
     }
   };
 
-  Chart.prototype._handleClick = function (event) {
-    const callback = this.options.onClick;
-    if (typeof callback !== 'function') return;
+  Chart.prototype._findHit = function (event) {
+    if (!this.canvas || !this.canvas.getBoundingClientRect) return null;
     const rect = this.canvas.getBoundingClientRect();
     const x = event.clientX - rect.left, y = event.clientY - rect.top;
-    const hit = this._hits.find(item => {
+    return this._hits.find(item => {
       if (item.start !== undefined) {
         const dx = x - item.cx, dy = y - item.cy;
         const radius = Math.sqrt(dx * dx + dy * dy);
-        if (radius > item.radius || radius < item.radius * (parseFloat(this.options.cutout || '0') / 100)) return false;
+        const cutoutText = String(this.options.cutout || (this.type === 'doughnut' ? '62%' : '0%'));
+        const innerRadius = this.type === 'pie' ? 0 : item.radius * Math.max(0, Math.min(0.85, parseFloat(cutoutText) / 100 || 0));
+        if (radius > item.radius || radius < innerRadius) return false;
         let angle = Math.atan2(dy, dx);
         if (angle < -Math.PI / 2) angle += Math.PI * 2;
         return angle >= item.start && angle <= item.end;
       }
       return x >= item.x && x <= item.x + item.width && y >= item.y && y <= item.y + item.height;
-    });
+    }) || null;
+  };
+
+  Chart.prototype._tooltipLines = function (hit) {
+    if (!hit) return [];
+    const dataset = (this.data.datasets || [])[hit.datasetIndex] || {};
+    const raw = hit.value !== undefined ? hit.value : numericValues(dataset)[hit.index];
+    const context = {
+      chart: this,
+      dataset,
+      datasetIndex: hit.datasetIndex,
+      dataIndex: hit.index,
+      index: hit.index,
+      label: hit.label !== undefined ? String(hit.label) : String(hit.index + 1),
+      raw,
+      parsed: { x: hit.index, y: raw },
+      formattedValue: Number.isFinite(Number(raw)) ? Number(raw).toLocaleString('pt-BR') : String(raw ?? ''),
+      type: this.type,
+    };
+    const callbacks = (((this.options || {}).plugins || {}).tooltip || {}).callbacks || {};
+    const lines = [];
+    const append = value => {
+      if (value === undefined || value === null || value === false || value === '') return;
+      (Array.isArray(value) ? value : [value]).forEach(line => {
+        if (line !== undefined && line !== null && line !== '') lines.push(String(line));
+      });
+    };
+    try {
+      append(typeof callbacks.title === 'function' ? callbacks.title([context]) : context.label);
+      if (typeof callbacks.beforeBody === 'function') append(callbacks.beforeBody([context]));
+      append(typeof callbacks.label === 'function'
+        ? callbacks.label(context)
+        : `${dataset.label ? dataset.label + ': ' : ''}${context.formattedValue}`);
+      if (typeof callbacks.afterBody === 'function') append(callbacks.afterBody([context]));
+    } catch (error) {
+      append(`${dataset.label ? dataset.label + ': ' : ''}${context.formattedValue}`);
+    }
+    return lines;
+  };
+
+  Chart.prototype._showTooltip = function (hit, event) {
+    const tooltipOptions = (((this.options || {}).plugins || {}).tooltip || {});
+    if (tooltipOptions.enabled === false || !hit || typeof document === 'undefined' || !document.body) {
+      this._hideTooltip();
+      return;
+    }
+    const lines = this._tooltipLines(hit);
+    if (!lines.length) { this._hideTooltip(); return; }
+    if (!this._tooltipElement) {
+      this._tooltipElement = document.createElement('div');
+      this._tooltipElement.setAttribute('role', 'tooltip');
+      Object.assign(this._tooltipElement.style, {
+        position: 'fixed', zIndex: '2147483000', pointerEvents: 'none',
+        maxWidth: 'min(340px, calc(100vw - 24px))', padding: '9px 11px',
+        borderRadius: '7px', border: '1px solid var(--line, rgba(148,163,184,.32))',
+        background: 'var(--panel, rgba(18,22,31,.96))', color: 'var(--text, #f3f5f8)',
+        boxShadow: '0 8px 24px rgba(0,0,0,.28)', font: '12px/1.45 system-ui,sans-serif',
+        whiteSpace: 'pre-line', opacity: '0', transition: 'opacity 110ms ease',
+      });
+      document.body.appendChild(this._tooltipElement);
+    }
+    this._tooltipElement.textContent = lines.join('\n');
+    const x = Number(event.clientX || 0) + 12;
+    const y = Number(event.clientY || 0) + 12;
+    this._tooltipElement.style.left = `${Math.max(4, x)}px`;
+    this._tooltipElement.style.top = `${Math.max(4, y)}px`;
+    this._tooltipElement.style.opacity = '1';
+  };
+
+  Chart.prototype._hideTooltip = function () {
+    if (this._tooltipElement) {
+      if (this._tooltipElement.parentNode && this._tooltipElement.parentNode.removeChild) {
+        this._tooltipElement.parentNode.removeChild(this._tooltipElement);
+      }
+      this._tooltipElement = null;
+    }
+  };
+
+  Chart.prototype._handleClick = function (event) {
+    const callback = this.options.onClick;
+    if (typeof callback !== 'function') return;
+    const hit = this._findHit(event);
     callback(event, hit ? [{ datasetIndex: hit.datasetIndex, index: hit.index }] : [], this);
   };
+
   Chart.prototype._handleMove = function (event) {
+    const hit = this._findHit(event);
     const callback = this.options.onHover;
-    if (typeof callback !== 'function') return;
-    const rect = this.canvas.getBoundingClientRect();
-    const x = event.clientX - rect.left, y = event.clientY - rect.top;
-    const hit = this._hits.find(item => item.x !== undefined && x >= item.x && x <= item.x + item.width && y >= item.y && y <= item.y + item.height);
-    callback({ native: { target: this.canvas }, x, y }, hit ? [{ datasetIndex: hit.datasetIndex, index: hit.index }] : [], this);
+    if (typeof callback === 'function') {
+      const rect = this.canvas.getBoundingClientRect();
+      const x = event.clientX - rect.left, y = event.clientY - rect.top;
+      callback({ native: { target: this.canvas }, x, y }, hit ? [{ datasetIndex: hit.datasetIndex, index: hit.index }] : [], this);
+    }
+    this._showTooltip(hit, event);
   };
+
 
   global.Chart = Chart;
 })(window);
