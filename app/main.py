@@ -25,7 +25,7 @@ QUOTE_HISTORY_PATH = os.environ.get('QUOTE_HISTORY_PATH', '/data/quotes_last_val
 QUOTE_HISTORY_LOCK = threading.RLock()
 DASHBOARD_CACHE_PATH = os.environ.get('DASHBOARD_CACHE_PATH', '/data/dashboard_cache.json')
 DASHBOARD_CACHE_LOCK = threading.RLock()
-DASHBOARD_CACHE_FORMAT = 3
+DASHBOARD_CACHE_FORMAT = 5
 PORTFOLIO_HISTORY_CACHE, PORTFOLIO_HISTORY_TTL = {}, 1800
 PORTFOLIO_HISTORY_EMPTY_TTL = 120
 def _dashboard_cache_signature():
@@ -1140,8 +1140,17 @@ def _pluggy_fixed_income_snapshot_rows(item_id, investments, snapshot_date, now_
             symbol = 'RF' + re.sub(r'[^A-Z0-9]', '', investment_id.upper())[:18]
             quantity, price = 1.0, principal
             name = str(investment.get('name') or investment.get('subtype') or 'Renda fixa')
+            application_date = _pluggy_date(
+                investment.get('applicationDate') or investment.get('investmentDate') or
+                investment.get('startDate') or investment.get('appliedAt') or
+                details.get('applicationDate') or details.get('investmentDate') or
+                details.get('startDate') or details.get('appliedAt')
+            )
+            issuer = str(investment.get('issuerName') or investment.get('issuer') or
+                         details.get('issuerName') or details.get('issuer') or '').strip()
             contract = {'origem': 'Pluggy', 'pluggy_snapshot': origin_tag, 'investment_id': investment_id,
-                        'nome': name, 'indexador': indexer, 'taxa': rate, 'vencimento': maturity,
+                        'nome': name, 'emissor': issuer, 'titulo': str(investment.get('subtype') or details.get('subtype') or ''),
+                        'data_aplicacao': application_date, 'indexador': indexer, 'taxa': rate, 'vencimento': maturity,
                         'saldo_atual': balance, 'subtipo': investment.get('subtype') or ''}
             fixed_count += 1
         elif asset_type in ('acao', 'fii', 'etf', 'bdr', 'fundo', 'stocks', 'internacional', 'cripto', 'reit'):
@@ -2093,7 +2102,7 @@ def cotacao(ticker, force_refresh=False):
             if response.status_code in (401, 403) and headers:
                 # An expired optional token must not block the public latest-close list.
                 response = requests.get(list_url, params=list_params,
-                    headers={'User-Agent': 'Mozilla/5.0 LonelyWallet/4.2.21'}, timeout=8)
+                    headers={'User-Agent': 'Mozilla/5.0 LonelyWallet/4.2.22'}, timeout=8)
             response.raise_for_status()
             stocks = response.json().get('stocks') or []
             def matches_symbol(item):
@@ -2352,41 +2361,76 @@ def _fixed_income_factor(details, start_date, end_date):
 
 
 def _fixed_income_position_value(ticker, invested_cost, fallback_value, as_of=None):
-    """Recalcula lotes de renda fixa desde cada aplicação, preservando legado sem taxa."""
+    """Recalcula renda fixa por lote e não deixa snapshot de outro ticker ocultar operações."""
     cutoff = as_of or datetime.now(TZ).date().isoformat()
     base_date = snapshot_date_for(cutoff)
-    if base_date:
-        ops = db().execute(
-            "SELECT * FROM operacoes WHERE ticker=? AND status='executada' AND data>? AND data<=? ORDER BY data,id",
-            (str(ticker).upper(), base_date, cutoff)
-        ).fetchall()
-        imported = imported_balance(ticker, cutoff)
-        base_cost = (float(imported['quantidade']) * float(imported['preco_medio'])) if imported else 0.0
-        # Saldos-base importados não possuem necessariamente os dados contratuais.
-        lots = [{'principal': base_cost, 'date': base_date, 'details': {}, 'legacy': True}] if base_cost > 0 else []
-    else:
-        ops = db().execute(
-            "SELECT * FROM operacoes WHERE ticker=? AND status='executada' AND data<=? ORDER BY data,id",
-            (str(ticker).upper(), cutoff)
-        ).fetchall()
-        lots = []
-    for op in ops:
-        quantity = float(op['quantidade'] or 0)
-        amount = quantity * float(op['preco'] or 0)
-        if op['lado'] == 'compra':
-            try:
-                details = json.loads(op['detalhes'] or '{}')
-            except Exception:
-                details = {}
-            lots.append({'principal': amount + float(op['custos'] or 0), 'date': op['data'], 'details': details, 'legacy': False})
+    imported = imported_balance(ticker, cutoff) if base_date else None
+
+    def rows(where_sql='', params=()):
+        query = "SELECT * FROM operacoes WHERE UPPER(ticker)=? AND tipo='renda_fixa' AND status='executada' "
+        query += where_sql + ' ORDER BY data,id'
+        return db().execute(query, (str(ticker).upper(), *params)).fetchall()
+
+    def apply_rows(operations, lots):
+        for op in operations:
+            quantity = max(0.0, float(op['quantidade'] or 0))
+            if quantity <= 1e-8:
+                continue
+            amount = quantity * max(0.0, float(op['preco'] or 0))
+            if op['lado'] == 'compra':
+                try:
+                    details = json.loads(op['detalhes'] or '{}')
+                    if not isinstance(details, dict):
+                        details = {}
+                except Exception:
+                    details = {}
+                application_date = _fixed_income_application_date(details, op['data'])
+                is_pluggy_snapshot_without_start = bool(details.get('pluggy_snapshot')) and application_date is None
+                try:
+                    institutional_balance = max(0.0, float(details.get('saldo_atual') or 0)) if is_pluggy_snapshot_without_start else 0.0
+                except (TypeError, ValueError):
+                    institutional_balance = 0.0
+                valuation_date = application_date.isoformat() if application_date else (None if is_pluggy_snapshot_without_start else op['data'])
+                lots.append({'quantity': quantity, 'principal': amount + max(0.0, float(op['custos'] or 0)),
+                             'date': valuation_date, 'details': details, 'institutional_balance': institutional_balance,
+                             'legacy': False})
+            else:
+                remaining_quantity = quantity
+                for lot in lots:
+                    if remaining_quantity <= 1e-8:
+                        break
+                    lot_quantity = max(0.0, float(lot.get('quantity') or 0))
+                    if lot_quantity <= 1e-8:
+                        continue
+                    consumed = min(lot_quantity, remaining_quantity)
+                    fraction = max(0.0, (lot_quantity - consumed) / lot_quantity)
+                    lot['principal'] = max(0.0, float(lot['principal']) * fraction)
+                    if lot.get('institutional_balance', 0) > 0:
+                        lot['institutional_balance'] = max(0.0, float(lot['institutional_balance']) * fraction)
+                    lot['quantity'] = lot_quantity - consumed
+                    remaining_quantity -= consumed
+
+    lots = []
+    if imported:
+        imported_qty = max(0.0, float(imported['quantidade'] or 0))
+        pre_ops = rows('AND data<=?', (base_date,))
+        post_ops = rows('AND data>? AND data<=?', (base_date, cutoff))
+        reconstructed_qty = sum(
+            max(0.0, float(op['quantidade'] or 0)) * (1 if op['lado'] == 'compra' else -1)
+            for op in pre_ops
+        )
+        tolerance = max(0.0001, imported_qty * 0.0001)
+        if pre_ops and abs(reconstructed_qty - imported_qty) <= tolerance:
+            apply_rows(pre_ops, lots)
         else:
-            remaining = amount
-            for lot in lots:
-                if remaining <= 0:
-                    break
-                reduction = min(lot['principal'], remaining)
-                lot['principal'] -= reduction
-                remaining -= reduction
+            base_cost = imported_qty * max(0.0, float(imported['preco_medio'] or 0))
+            if base_cost > 0:
+                lots.append({'quantity': imported_qty, 'principal': base_cost, 'date': base_date,
+                             'details': {}, 'legacy': True})
+        apply_rows(post_ops, lots)
+    else:
+        apply_rows(rows('AND data<=?', (cutoff,)), lots)
+
     total_cost = sum(max(0.0, lot['principal']) for lot in lots)
     total_value = 0.0
     has_calculated = False
@@ -2394,6 +2438,11 @@ def _fixed_income_position_value(ticker, invested_cost, fallback_value, as_of=No
     for lot in lots:
         principal = max(0.0, lot['principal'])
         if principal <= 0:
+            continue
+        if lot.get('institutional_balance', 0) > 0 and not lot.get('date'):
+            total_value += float(lot['institutional_balance'])
+            has_calculated = True
+            warnings.append('Saldo atual informado pela instituição; data original da aplicação indisponível')
             continue
         factor, error = _fixed_income_factor(lot['details'], lot['date'], cutoff)
         if factor is None:
@@ -2407,6 +2456,342 @@ def _fixed_income_position_value(ticker, invested_cost, fallback_value, as_of=No
     if not has_calculated and warnings:
         return total_cost, fallback_value if fallback_value > 0 else total_cost, False, warnings[0]
     return total_cost, total_value, True, (warnings[0] if warnings else None)
+
+
+def _rolling_monthly_arithmetic_average(monthly_returns, window=12):
+    """Média aritmética dos retornos mensais de ganho de capital, sem proventos.
+
+    Usa até os últimos 12 meses calculáveis; lacunas históricas não transformam
+    meses sem dados em retorno zero nem impedem a média dos meses disponíveis.
+    """
+    rolling = []
+    series = []
+    for row in monthly_returns or []:
+        try:
+            value = float(row.get('retorno'))
+            if not math.isfinite(value):
+                continue
+        except (TypeError, ValueError, AttributeError):
+            continue
+        rolling.append(value)
+        if len(rolling) > max(1, int(window or 12)):
+            rolling.pop(0)
+        average = sum(rolling) / len(rolling)
+        series.append({
+            'mes': str(row.get('mes') or ''),
+            'valor': round(average * 100, 4),
+            'ganho_prejuizo_mes': round(float(row.get('resultado') or 0), 2),
+            'meses_base': len(rolling)
+        })
+    last_count = len(rolling)
+    average_percent = round((sum(rolling) / last_count) * 100, 2) if last_count else None
+    return series, average_percent, last_count
+
+
+_FIXED_INCOME_IOF_PERCENT = (
+    96, 93, 90, 86, 83, 80, 76, 73, 70, 66,
+    63, 60, 56, 53, 50, 46, 43, 40, 36, 33,
+    30, 26, 23, 20, 16, 13, 10, 6, 3
+)
+
+
+def _fixed_income_iof_percent(days):
+    """Percentual do rendimento retido como IOF nos primeiros 29 dias."""
+    try:
+        day_count = max(0, int(days))
+    except (TypeError, ValueError):
+        return None
+    if day_count <= 0 or day_count >= 30:
+        return 0.0
+    return float(_FIXED_INCOME_IOF_PERCENT[day_count - 1])
+
+
+def _fixed_income_ir_percent(days):
+    """Alíquota regressiva de IR para pessoa física em renda fixa tributável."""
+    try:
+        day_count = max(0, int(days))
+    except (TypeError, ValueError):
+        return None
+    if day_count <= 180:
+        return 22.5
+    if day_count <= 360:
+        return 20.0
+    if day_count <= 720:
+        return 17.5
+    return 15.0
+
+
+def _fixed_income_tax_profile(details, ticker=''):
+    """Identifica a tributação de pessoa física pelo tipo legal do título.
+
+    O emissor é usado como identificação contratual, não para inferir sozinho o
+    tipo fiscal. Quando o título é genérico/desconhecido, não presume tributação.
+    """
+    details = details if isinstance(details, dict) else {}
+    explicit_title = ' '.join(str(details.get(key) or '') for key in
+                              ('titulo', 'title', 'subtipo', 'subtype'))
+    normalized_explicit = unicodedata.normalize('NFKD', explicit_title).encode('ascii', 'ignore').decode('ascii').upper()
+    normalized_explicit = re.sub(r'[^A-Z0-9]+', ' ', normalized_explicit).strip()
+    # O nome do produto/ticker serve apenas como fallback quando o campo de título
+    # não foi preenchido. O nome do emissor/banco nunca determina a classificação.
+    if normalized_explicit and re.search(r'\bOUTRO\b', normalized_explicit):
+        return None
+    raw = explicit_title if normalized_explicit else ' '.join(
+        str(details.get(key) or '') for key in ('nome', 'name', 'ticker')
+    )
+    normalized = unicodedata.normalize('NFKD', raw).encode('ascii', 'ignore').decode('ascii').upper()
+    normalized = re.sub(r'[^A-Z0-9]+', ' ', normalized)
+
+    profile = None
+    if re.search(r'\b(LCA|CRA|CRI|CDCA)\b', normalized):
+        title = next(token for token in ('LCA', 'CRA', 'CRI', 'CDCA') if re.search(rf'\b{token}\b', normalized))
+        profile = {'titulo': title, 'ir': False, 'iof': False}
+    elif re.search(r'\b(LCI|LH)\b', normalized):
+        title = next(token for token in ('LCI', 'LH') if re.search(rf'\b{token}\b', normalized))
+        profile = {'titulo': title, 'ir': False, 'iof': True}
+    elif 'DEBENTURE' in normalized:
+        incentivada = any(token in normalized for token in ('INCENTIVADA', 'INFRAESTRUTURA', 'LEI 12431'))
+        profile = {'titulo': 'Debênture', 'ir': not incentivada, 'iof': False}
+    elif re.search(r'\bLF\b', normalized):
+        profile = {'titulo': 'LF', 'ir': True, 'iof': False}
+    elif re.search(r'\b(CDB|RDB|LC|CCB)\b', normalized):
+        title = next((token for token in ('CDB', 'RDB', 'LC', 'CCB') if re.search(rf'\b{token}\b', normalized)), 'Renda fixa')
+        profile = {'titulo': title, 'ir': True, 'iof': True}
+    elif any(token in normalized for token in ('TESOURO', 'LFT', 'LTN', 'NTN')):
+        profile = {'titulo': 'Tesouro', 'ir': True, 'iof': True}
+    elif 'POUPANCA' in normalized:
+        profile = {'titulo': 'Poupança', 'ir': False, 'iof': False}
+
+    if not profile:
+        return None
+
+    explicit_ir_exempt = details.get('ir_isento', details.get('isento_ir'))
+    explicit_iof_exempt = details.get('iof_isento', details.get('isento_iof'))
+    if explicit_ir_exempt is True or str(explicit_ir_exempt or '').strip().lower() in ('sim', 'true', '1', 'isento'):
+        profile['ir'] = False
+    if explicit_iof_exempt is True or str(explicit_iof_exempt or '').strip().lower() in ('sim', 'true', '1', 'isento'):
+        profile['iof'] = False
+    return profile
+
+
+def _fixed_income_application_date(details, operation_date=''):
+    """Retorna a data real da aplicação; não confunde snapshot Pluggy com aplicação."""
+    details = details if isinstance(details, dict) else {}
+    sources = [details]
+    for nested_key in ('contract', 'contrato', 'investment', 'aplicacao'):
+        nested = details.get(nested_key)
+        if isinstance(nested, dict):
+            sources.append(nested)
+    keys = (
+        'data_aplicacao', 'application_date', 'applicationDate',
+        'investment_date', 'investmentDate', 'start_date', 'startDate',
+        'applied_at', 'appliedAt', 'data_inicio', 'dataInicio', 'openedAt'
+    )
+    for source in sources:
+        for key in keys:
+            value = source.get(key)
+            if not value:
+                continue
+            try:
+                if isinstance(value, date):
+                    return value
+                raw = str(value).strip()
+                try:
+                    return date.fromisoformat(raw[:10])
+                except ValueError:
+                    parsed = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+                    if parsed.tzinfo:
+                        parsed = parsed.astimezone(TZ)
+                    return parsed.date()
+            except (TypeError, ValueError):
+                continue
+    # Uma linha sintética da Pluggy é criada na data do snapshot. Essa data não
+    # representa necessariamente a contratação e não pode definir faixa de IR.
+    if details.get('pluggy_snapshot'):
+        return None
+    try:
+        return date.fromisoformat(str(operation_date or '')[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _fixed_income_tax_amounts_for_gain(gain, days, profile):
+    """Calcula IOF primeiro e IR sobre o rendimento líquido de IOF."""
+    gain = max(0.0, float(gain or 0))
+    if not profile:
+        return None
+    iof = 0.0
+    if profile.get('iof'):
+        iof_percent = _fixed_income_iof_percent(days)
+        if iof_percent is None:
+            return None
+        iof = min(gain, gain * iof_percent / 100.0)
+    ir = 0.0
+    if profile.get('ir'):
+        ir_percent = _fixed_income_ir_percent(days)
+        if ir_percent is None:
+            return None
+        ir = max(0.0, gain - iof) * ir_percent / 100.0
+    return {'iof': round(iof, 2), 'ir': round(ir, 2)}
+
+
+def _fixed_income_net_balance_estimate(ticker, gross_balance, as_of=None):
+    """Estima saldo líquido de renda fixa após IR/IOF, por título e lote.
+
+    O cálculo utiliza os dados de contratação e o indexador registrado. Se faltar
+    data, título, taxa ou histórico que permita identificar a base tributável,
+    retorna saldo None em vez de inventar alíquota. Não estima deságio/spread ou
+    penalidade contratual de resgate antecipado.
+    """
+    try:
+        cutoff = date.fromisoformat(str(as_of or datetime.now(TZ).date().isoformat())[:10])
+        gross_balance = max(0.0, float(gross_balance or 0))
+        if not math.isfinite(gross_balance):
+            raise ValueError('Saldo inválido')
+    except (TypeError, ValueError):
+        return {'saldo': None, 'iof': None, 'ir': None, 'mensagem': 'Dados insuficientes para estimar os descontos.'}
+    if gross_balance <= 0:
+        return {'saldo': 0.0, 'iof': 0.0, 'ir': 0.0, 'mensagem': 'Sem saldo positivo.'}
+
+    symbol = str(ticker or '').strip().upper()
+    base_date = snapshot_date_for(cutoff.isoformat())
+    imported = imported_balance(symbol, cutoff.isoformat()) if base_date else None
+    lots = []
+
+    def operation_rows(where_sql='', params=()):
+        query = "SELECT * FROM operacoes WHERE UPPER(ticker)=? AND tipo='renda_fixa' AND status='executada' "
+        query += where_sql + ' ORDER BY data,id'
+        return [dict(row) for row in db().execute(query, (symbol, *params)).fetchall()]
+
+    def apply_operations(rows, destination):
+        for operation in rows:
+            try:
+                quantity = max(0.0, float(operation.get('quantidade') or 0))
+                unit_price = max(0.0, float(operation.get('preco') or 0))
+                costs = max(0.0, float(operation.get('custos') or 0))
+            except (TypeError, ValueError):
+                continue
+            if quantity <= 0:
+                continue
+            if operation.get('lado') == 'compra':
+                try:
+                    details = json.loads(operation.get('detalhes') or '{}')
+                    if not isinstance(details, dict):
+                        details = {}
+                except (TypeError, ValueError):
+                    details = {}
+                destination.append({
+                    'quantity': quantity,
+                    'principal': quantity * unit_price + costs,
+                    'details': details,
+                    'date': _fixed_income_application_date(details, operation.get('data'))
+                })
+            elif operation.get('lado') == 'venda':
+                # Reduz a base de cada lote pela fração da quantidade resgatada,
+                # não pelo valor bruto recebido na venda (que inclui rendimento).
+                remaining_quantity = quantity
+                for lot in destination:
+                    if remaining_quantity <= 1e-8:
+                        break
+                    lot_quantity = max(0.0, float(lot.get('quantity') or 0))
+                    if lot_quantity <= 1e-8:
+                        continue
+                    consumed = min(lot_quantity, remaining_quantity)
+                    remaining_fraction = max(0.0, (lot_quantity - consumed) / lot_quantity)
+                    lot['principal'] = max(0.0, float(lot.get('principal') or 0) * remaining_fraction)
+                    lot['quantity'] = lot_quantity - consumed
+                    remaining_quantity -= consumed
+
+    if imported:
+        imported_qty = max(0.0, float(imported.get('quantidade') or 0))
+        pre_rows = operation_rows('AND data<=?', (base_date,))
+        post_rows = operation_rows('AND data>? AND data<=?', (base_date, cutoff.isoformat()))
+        reconstructed_qty = sum(
+            (1.0 if row.get('lado') == 'compra' else -1.0) * max(0.0, float(row.get('quantidade') or 0))
+            for row in pre_rows
+        )
+        tolerance = max(0.0001, imported_qty * 0.0001)
+        if pre_rows and abs(reconstructed_qty - imported_qty) <= tolerance:
+            apply_operations(pre_rows, lots)
+        else:
+            imported_principal = imported_qty * max(0.0, float(imported.get('preco_medio') or 0))
+            if imported_principal > 0:
+                legacy_details = {
+                    'nome': imported.get('nome') or '',
+                    'titulo': imported.get('titulo') or '',
+                    'emissor': imported.get('emissor') or '',
+                    'origem': imported.get('origem') or ''
+                }
+                lots.append({'quantity': imported_qty, 'principal': imported_principal,
+                             'details': legacy_details, 'date': None})
+        apply_operations(post_rows, lots)
+    else:
+        rows = operation_rows('AND data<=?', (cutoff.isoformat(),))
+        apply_operations(rows, lots)
+
+    lots = [lot for lot in lots if float(lot.get('quantity') or 0) > 1e-8 and float(lot.get('principal') or 0) > 0.01]
+    if not lots:
+        return {'saldo': None, 'iof': None, 'ir': None, 'mensagem': 'Histórico dos aportes insuficiente para estimar os descontos.'}
+
+    profiles = [_fixed_income_tax_profile(lot.get('details') or {}, symbol) for lot in lots]
+    if any(profile is None for profile in profiles):
+        return {'saldo': None, 'iof': None, 'ir': None, 'mensagem': 'Tipo de título não identificado; confira o título e o emissor.'}
+    profile_signatures = {(bool(profile.get('ir')), bool(profile.get('iof'))) for profile in profiles}
+    if len(profile_signatures) > 1:
+        return {'saldo': None, 'iof': None, 'ir': None, 'mensagem': 'A posição reúne títulos com tratamentos tributários diferentes; separe os investimentos.'}
+
+    # Títulos integralmente isentos não exigem reconstruir o rendimento para o
+    # cálculo tributário: o saldo bruto conhecido também é o saldo líquido.
+    if all(not profile.get('ir') and not profile.get('iof') for profile in profiles):
+        return {'saldo': round(gross_balance, 2), 'iof': 0.0, 'ir': 0.0,
+                'mensagem': 'Título classificado como isento de IR e IOF para pessoa física.'}
+
+    # Para produtos sujeitos apenas a IOF (ex.: LCI conforme contrato), após 30
+    # dias não há desconto. O prazo precisa estar disponível para confirmar isso.
+    lot_dates = []
+    for lot in lots:
+        start_date = lot.get('date')
+        if not start_date or start_date > cutoff:
+            return {'saldo': None, 'iof': None, 'ir': None,
+                    'mensagem': 'Data original da aplicação não disponível; não é seguro estimar a tributação.'}
+        lot_dates.append((start_date, (cutoff - start_date).days))
+
+    active_iof = any(profile.get('iof') and days < 30 for profile, (_, days) in zip(profiles, lot_dates))
+    active_ir = any(profile.get('ir') for profile in profiles)
+    if not active_iof and not active_ir:
+        return {'saldo': round(gross_balance, 2), 'iof': 0.0, 'ir': 0.0,
+                'mensagem': 'Sem IR ou IOF estimado para os prazos atuais.'}
+
+    total_iof = total_ir = estimated_gross = 0.0
+    for lot, profile, (start_date, days) in zip(lots, profiles, lot_dates):
+        principal = max(0.0, float(lot['principal']))
+        if profile.get('ir') or (profile.get('iof') and days < 30):
+            factor, error = _fixed_income_factor(lot.get('details') or {}, start_date.isoformat(), cutoff.isoformat())
+            if factor is None:
+                return {'saldo': None, 'iof': None, 'ir': None,
+                        'mensagem': error or 'Indexador ou taxa indisponível para estimar os descontos.'}
+            lot_gross = principal * factor
+            gain = max(0.0, lot_gross - principal)
+            taxes = _fixed_income_tax_amounts_for_gain(gain, days, profile)
+            if taxes is None:
+                return {'saldo': None, 'iof': None, 'ir': None, 'mensagem': 'Não foi possível determinar as alíquotas deste título.'}
+            total_iof += taxes['iof']
+            total_ir += taxes['ir']
+            estimated_gross += lot_gross
+        else:
+            # Lote sem tributo aplicável no prazo atual: assume apenas sua
+            # parcela do saldo bruto proporcional ao principal, sem inventar ganho.
+            estimated_gross += principal
+
+    tolerance = max(2.0, gross_balance * 0.015)
+    if abs(estimated_gross - gross_balance) > tolerance:
+        return {'saldo': None, 'iof': None, 'ir': None,
+                'mensagem': 'O histórico dos aportes não reconcilia com o saldo atual; confira os lançamentos.'}
+    net = max(0.0, gross_balance - total_iof - total_ir)
+    return {
+        'saldo': round(net, 2), 'iof': round(total_iof, 2), 'ir': round(total_ir, 2),
+        'mensagem': 'Estimativa de resgate hoje. Não inclui deságio, spread ou penalidade contratual de resgate antecipado.'
+    }
 
 
 def snapshot_date_for(reference_date=None):
@@ -3501,6 +3886,7 @@ def carteira(use_cached_quotes=False, force_refresh_quotes=False):
         cost = qty * avg
         fixed_calc_ok = False
         fixed_calc_warning = None
+        fixed_tax_estimate = {'saldo': None, 'iof': None, 'ir': None, 'mensagem': 'Aguardando atualização do indexador.'}
         if kind == 'renda_fixa':
             if use_cached_quotes:
                 # Não consulta BCB/SGS na primeira pintura; usa o saldo-base ou
@@ -3514,9 +3900,12 @@ def carteira(use_cached_quotes=False, force_refresh_quotes=False):
                 price = value / qty if qty > 0 else value
                 quote_available = fixed_calc_ok
                 price_reference_available = fixed_calc_ok
-                quote_source = 'Indexador' if fixed_calc_ok else 'Sem indexador'
+                quote_source = ('Saldo atual informado pela instituição'
+                                if fixed_calc_warning and 'saldo atual informado pela instituição' in str(fixed_calc_warning).lower()
+                                else 'Indexador' if fixed_calc_ok else 'Sem indexador')
                 if fixed_calc_ok and not quote.get('quoteLastUpdated'):
                     quote['quoteLastUpdated'] = datetime.now(TZ).isoformat(timespec='seconds')
+                fixed_tax_estimate = _fixed_income_net_balance_estimate(ticker, value)
         pluggy_return = _pluggy_total_return(ticker, value, dividends) if pluggy_position else None
         invested += cost; actual += value; received += (0.0 if kind == 'renda_fixa' else dividends)
         default_name = imported.get('nome') if imported else ticker
@@ -3543,7 +3932,7 @@ def carteira(use_cached_quotes=False, force_refresh_quotes=False):
             display_price = observed_price
         else:
             display_price = None
-        itens.append({'ticker':ticker,'tipo':kind,'quantidade':round(qty,6),'preco_medio':round(avg,2),'preco_atual':round(display_price,2) if display_price is not None else None,'cotacao_disponivel':quote_available,'cotacao_desatualizada':stale_quote_available,'cotacao_referencia_disponivel':price_reference_available,'valor_atual_origem':quote_source,'rentabilidade_parcial':not has_usable_valuation,'cotacao_ultima_atualizacao':quote.get('quoteLastUpdated'),'cotacao_origem':quote_source,'investido':round(cost,2),'valor_atual':round(value,2),'lucro':round(variation_value,2) if variation_value is not None else None,'lucro_pct':profitability_pct,'variacao_valor':round(variation_value,2) if variation_value is not None else None,'variacao_pct':variation_pct,'pluggy_variacao_pct':pluggy_return['variation_pct'] if pluggy_return else None,'pluggy_variacao_valor':pluggy_return['variation_value'] if pluggy_return else None,'pluggy_retorno_pct':pluggy_return['total_pct'] if pluggy_return else None,'pluggy_retorno_valor':pluggy_return['total_value'] if pluggy_return else None,'pluggy_investido_historico':pluggy_return['invested'] if pluggy_return else None,'pluggy_primeira_compra':pluggy_return['first_buy'] if pluggy_return else None,'proventos':0.0 if kind=='renda_fixa' else round(dividends,2),'calculo_indexador':fixed_calc_ok if kind=='renda_fixa' else None,'aviso_calculo':fixed_calc_warning if kind=='renda_fixa' else None,'pl':quote.get('priceEarnings'),'pvp':quote.get('priceToBook') or quote.get('priceToBookRatio') or quote.get('priceToBookValue'),'avaliacao':_fundamental_rating(quote, kind),'preco_teto_bazin':round(ceiling,2) if ceiling else None,'abaixo_do_teto':bool(ceiling and market_quote_available and observed_price and observed_price<=ceiling),'nome':quote.get('longName') or quote.get('shortName') or default_name or ticker,'logo':quote.get('logourl') or quote.get('logo') or ('/static/lonely-wallet-logo.png' if kind=='renda_fixa' else f'https://icons.brapi.dev/icons/{ticker}.svg'),'variacao_dia':variation_pct})
+        itens.append({'ticker':ticker,'tipo':kind,'quantidade':round(qty,6),'preco_medio':round(avg,2),'preco_atual':round(display_price,2) if display_price is not None else None,'cotacao_disponivel':quote_available,'cotacao_desatualizada':stale_quote_available,'cotacao_referencia_disponivel':price_reference_available,'valor_atual_origem':quote_source,'rentabilidade_parcial':not has_usable_valuation,'cotacao_ultima_atualizacao':quote.get('quoteLastUpdated'),'cotacao_origem':quote_source,'investido':round(cost,2),'valor_atual':round(value,2),'lucro':round(variation_value,2) if variation_value is not None else None,'lucro_pct':profitability_pct,'variacao_valor':round(variation_value,2) if variation_value is not None else None,'variacao_pct':variation_pct,'pluggy_variacao_pct':pluggy_return['variation_pct'] if pluggy_return else None,'pluggy_variacao_valor':pluggy_return['variation_value'] if pluggy_return else None,'pluggy_retorno_pct':pluggy_return['total_pct'] if pluggy_return else None,'pluggy_retorno_valor':pluggy_return['total_value'] if pluggy_return else None,'pluggy_investido_historico':pluggy_return['invested'] if pluggy_return else None,'pluggy_primeira_compra':pluggy_return['first_buy'] if pluggy_return else None,'proventos':0.0 if kind=='renda_fixa' else round(dividends,2),'calculo_indexador':fixed_calc_ok if kind=='renda_fixa' else None,'aviso_calculo':fixed_calc_warning if kind=='renda_fixa' else None,'saldo_com_descontos':fixed_tax_estimate.get('saldo') if kind=='renda_fixa' else None,'desconto_iof_estimado':fixed_tax_estimate.get('iof') if kind=='renda_fixa' else None,'desconto_ir_estimado':fixed_tax_estimate.get('ir') if kind=='renda_fixa' else None,'aviso_saldo_com_descontos':fixed_tax_estimate.get('mensagem') if kind=='renda_fixa' else None,'pl':quote.get('priceEarnings'),'pvp':quote.get('priceToBook') or quote.get('priceToBookRatio') or quote.get('priceToBookValue'),'avaliacao':_fundamental_rating(quote, kind),'preco_teto_bazin':round(ceiling,2) if ceiling else None,'abaixo_do_teto':bool(ceiling and market_quote_available and observed_price and observed_price<=ceiling),'nome':quote.get('longName') or quote.get('shortName') or default_name or ticker,'logo':quote.get('logourl') or quote.get('logo') or ('/static/lonely-wallet-logo.png' if kind=='renda_fixa' else f'https://icons.brapi.dev/icons/{ticker}.svg'),'variacao_dia':variation_pct})
     allocation={}
     for item in itens: allocation[item['tipo']]=allocation.get(item['tipo'],0)+item['valor_atual']
     return jsonify(itens=itens,resumo={'investido':round(invested,2),'atual':round(actual,2),'lucro':round(actual-invested,2),'lucro_pct':round((actual/invested-1)*100,2) if invested else 0,'proventos':round(received,2),'ativos':len(itens)},alocacao=allocation)
@@ -4579,37 +4968,24 @@ def build_portfolio_performance(operations, dividends, history=None, imported_po
 
     total_factor = 1.0
     series_total = []
-    rolling_returns = []
-    series_12m = []
     for row in monthly_returns:
         factor = 1.0 + row['retorno']
         total_factor *= factor
-        rolling_returns.append(factor)
-        if len(rolling_returns) > 12:
-            rolling_returns.pop(0)
-        rolling_factor = 1.0
-        for value in rolling_returns:
-            rolling_factor *= value
         point = {'mes': row['mes'], 'valor': round((total_factor - 1.0) * 100, 4),
                  'ganho_prejuizo_mes': round(float(row.get('resultado') or 0), 2)}
         series_total.append(point)
-        series_12m.append({'mes': row['mes'], 'valor': round((rolling_factor - 1.0) * 100, 4),
-                           'ganho_prejuizo_mes': round(float(row.get('resultado') or 0), 2)})
 
-    # Retorno de 12 meses só é publicado com 12 fechamentos mensais consecutivos.
-    last_twelve = monthly_returns[-12:]
-    twelve_complete = len(last_twelve) == 12 and all(
-        (int(last_twelve[i]['mes'][:4]) * 12 + int(last_twelve[i]['mes'][5:7])) ==
-        (int(last_twelve[i-1]['mes'][:4]) * 12 + int(last_twelve[i-1]['mes'][5:7]) + 1)
-        for i in range(1, len(last_twelve))
-    )
+    # Regra do card: média aritmética dos percentuais mensais de ganho de capital,
+    # usando até 12 meses calculáveis. Meses sem histórico não entram como zero.
+    series_12m, return_12m_average, months_in_average = _rolling_monthly_arithmetic_average(monthly_returns, 12)
     return {
         **empty,
         'series_12m': series_12m,
         'series_total': series_total,
         'series_roi_total': roi_total_series,
         'series_patrimonio': portfolio_series,
-        'rentabilidade_12m': round((rolling_factor - 1.0) * 100, 2) if twelve_complete else None,
+        'rentabilidade_12m': return_12m_average,
+        'meses_base_12m': months_in_average,
         'rentabilidade_total': round(roi_total, 2) if roi_total is not None else None,
         'meses_disponiveis': len(monthly_returns),
         'primeiro_mes': monthly_returns[0]['mes'],

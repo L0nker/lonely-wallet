@@ -1,5 +1,15 @@
 # Lonely Wallet
 
+## v4.2.22
+
+- O card **Rentabilidade · Últimos 12 meses** apresenta a média aritmética dos percentuais mensais de ganho/perda de capital dos últimos 12 meses calculáveis, ou dos meses disponíveis quando há menos de 12. Proventos não entram.
+- Adicionada a coluna **Saldo com descontos** à direita de Saldo nas posições de Renda Fixa. A estimativa é calculada por aplicação, com o indexador, taxa, título e data de contratação, aplicando IOF antes do IR quando cabível.
+- Para CDB/RDB/LC/CCB, utiliza IOF regressivo nos primeiros 29 dias e IR regressivo por prazo. LCI é tratada como isenta de IR e pode ter IOF de curto prazo; LCA, CRI, CRA e debêntures incentivadas seguem os perfis de isenção aplicáveis.
+- Quando a data original da aplicação, o tipo de título, indexador ou taxa não permitem estimativa confiável, a coluna mostra `—`. O cálculo é estimativo e não inclui deságio, spread ou penalidade contratual do emissor.
+- Vendas parciais de renda fixa reduzem a base dos lotes pela quantidade resgatada, em vez de reduzir o principal pelo valor bruto recebido.
+- Posições Pluggy sem data original de aplicação usam o saldo institucional atual para valorização; a tributação não é presumida sem a data de contratação.
+- Cache do dashboard incrementado para invalidar snapshots incompatíveis com os novos campos.
+
 ## v4.2.21
 
 - O card **Rentabilidade · Total** agora permanece exatamente igual ao percentual do card **Patrimônio total**, usando ganho/perda de capital dividido pelo valor investido.
@@ -89,13 +99,13 @@
 - Privacidade de valores desativada por padrão; quando ativada permanece até novo clique e cobre também conteúdo dinâmico.
 - Legendas da distribuição de aportes usam nomes localizados e acentuação correta (Ação, FIIs, Renda fixa, Tesouro Direto, ETFs, BDRs e demais classes).
 
-# Lonely Wallet v4.2.21
+# Lonely Wallet v4.2.22
 
 **Carteira pessoal de investimentos | Aplicação web self-hosted | Docker / ZimaOS**
 
 > Guia do usuário, instalação, atualização, segurança, backup, solução de problemas e perguntas frequentes.
 
-- **Versão:** 4.2.21
+- **Versão:** 4.2.22
 - **Idioma da interface:** Português (Brasil)
 - **Backend:** Python 3.12 + Flask + Gunicorn
 - **Persistência:** SQLite e arquivo JSON de última cotação válida
@@ -184,12 +194,12 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve indicar `ok: true` e `version: 4.2.21`.
+O retorno deve indicar `ok: true` e `version: 4.2.22`.
 
 ### Atualização de uma versão anterior
 
 1. Faça um backup antes de substituir os arquivos.
-2. Extraia o pacote 4.2.21 em uma pasta de projeto.
+2. Extraia o pacote 4.2.22 em uma pasta de projeto.
 3. **Mantenha exatamente o volume de dados existente**. O Compose padrão utiliza:
 
 ```yaml
