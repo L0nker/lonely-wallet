@@ -7,22 +7,9 @@ from zoneinfo import ZoneInfo
 import requests
 from cryptography.fernet import Fernet, InvalidToken
 from openpyxl import load_workbook, Workbook
-from flask import Flask, g, jsonify, render_template, request, send_file, session, redirect, url_for, make_response
-from scripts.backup_rotation import rotate_predelete_backups
-from scripts.database_migration import migrate_legacy_database
-from scripts.quantity_ledger import quantity_ledger_breaks_position
-from scripts.portfolio_metrics import calculate_position_performance, is_paid_provento
+from flask import Flask, g, jsonify, render_template, request, send_file, session, redirect, url_for
 
 app = Flask(__name__)
-VERSION_FILE = Path(__file__).resolve().parents[1] / 'VERSION'
-
-def application_version():
-    try:
-        value = VERSION_FILE.read_text(encoding='utf-8').strip()
-        return value or 'desconhecida'
-    except OSError:
-        return 'desconhecida'
-
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax', SESSION_COOKIE_SECURE=os.environ.get('SESSION_COOKIE_SECURE', '0').lower() in ('1', 'true', 'yes'), PERMANENT_SESSION_LIFETIME=timedelta(minutes=30), MAX_CONTENT_LENGTH=16 * 1024 * 1024)
 # Dados da carteira ficam em um banco próprio; segredos de APIs ficam em tokens.db.
 DB_PATH = os.environ.get('ASSETS_DB_PATH', '/data/ativos.db')
@@ -159,8 +146,7 @@ def security_headers(response):
     response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
     response.headers.setdefault('X-Frame-Options', 'SAMEORIGIN')
     response.headers.setdefault('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
-    # Inline UI handlers/styles remain in the legacy single-page template; external origins are restricted.
-    response.headers.setdefault('Content-Security-Policy', "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; img-src 'self' data: blob: https://icons.brapi.dev; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; font-src 'self' data:")
+    response.headers.setdefault('Content-Security-Policy', "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' https:; font-src 'self' data: https:")
     return response
 
 
@@ -194,45 +180,10 @@ def close_db(_):
         secrets.close()
 
 
-def _inspect_sqlite_database(path):
-    """Return (integrity_ok, has_core_schema) without creating or modifying the file."""
-    uri = Path(path).resolve().as_uri() + '?mode=ro'
-    connection = None
-    try:
-        connection = sqlite3.connect(uri, uri=True, timeout=15)
-        result = connection.execute('PRAGMA integrity_check').fetchone()
-        integrity_ok = bool(result and result[0] == 'ok')
-        has_core_schema = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='operacoes' LIMIT 1"
-        ).fetchone() is not None
-        return integrity_ok, has_core_schema
-    except sqlite3.Error:
-        return False, False
-    finally:
-        if connection is not None:
-            connection.close()
-
-
 def prepare_database_files():
     os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
-    paths_differ = os.path.abspath(DB_PATH) != os.path.abspath(LEGACY_DB_PATH)
-    legacy_exists = paths_differ and os.path.exists(LEGACY_DB_PATH)
-    destination_exists = os.path.exists(DB_PATH)
-    should_migrate = legacy_exists and not destination_exists
-    if destination_exists:
-        integrity_ok, has_core_schema = _inspect_sqlite_database(DB_PATH)
-        if not integrity_ok:
-            if legacy_exists:
-                app.logger.warning('Banco de ativos existente inválido; será substituído somente após validar a migração do banco legado.')
-                should_migrate = True
-            else:
-                raise RuntimeError('O banco de ativos existente falhou no integrity_check e não há banco legado disponível para recuperação.')
-        elif legacy_exists and not has_core_schema:
-            app.logger.warning('Banco de ativos sem tabela principal; será tentada a migração do banco legado.')
-            should_migrate = True
-    if should_migrate:
-        # migrate_legacy_database grava em arquivo temporário, valida e só então usa os.replace.
-        migrate_legacy_database(LEGACY_DB_PATH, DB_PATH)
+    if os.path.abspath(DB_PATH) != os.path.abspath(LEGACY_DB_PATH) and not os.path.exists(DB_PATH) and os.path.exists(LEGACY_DB_PATH):
+        shutil.copy2(LEGACY_DB_PATH, DB_PATH)
     os.makedirs(os.path.dirname(TOKEN_DB_PATH) or '.', exist_ok=True)
     con = sqlite3.connect(TOKEN_DB_PATH, timeout=15)
     con.execute('PRAGMA busy_timeout=15000')
@@ -1384,12 +1335,8 @@ def pluggy_settings():
         response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
         return response
     payload = request.get_json(silent=True) or {}
-    if not isinstance(payload, dict):
-        return json_error('Corpo JSON inválido.')
-    if 'interval_minutes' not in payload:
-        return json_error('O campo interval_minutes é obrigatório.')
     try:
-        interval = int(payload.get('interval_minutes'))
+        interval = int(payload.get('interval_minutes', 30))
     except (TypeError, ValueError):
         return json_error('Intervalo inválido.')
     if interval not in (0, 15, 30, 60, 240, 720, 1440):
@@ -1464,9 +1411,9 @@ def pluggy_add_item():
         detail = ''
         try: detail = (exc.response.json() or {}).get('message') or (exc.response.json() or {}).get('code') or ''
         except Exception: pass
-        return json_error('Não foi possível validar o itemId na Pluggy. HTTP %s %s' % (code, safe_error_text(detail, 100)), 400)
+        return json_error('Não foi possível validar o itemId na Pluggy. HTTP %s %s' % (code, str(detail)[:140]), 400)
     except Exception as exc:
-        return json_error('Falha ao validar conexão Pluggy: ' + safe_error_text(exc, 180), 400)
+        return json_error('Falha ao validar conexão Pluggy: ' + str(exc)[:180], 400)
 
 
 @app.route('/api/pluggy/items/<item_id>/clear', methods=['POST'])
@@ -1546,92 +1493,8 @@ def pluggy_remove_item(item_id):
     return jsonify(ok=True)
 
 
-_PLUGGY_SYNC_LOCK = threading.Lock()
-
-
-def _acquire_pluggy_file_lock():
-    """Use an OS file lock so multiple Gunicorn workers/containers cannot sync together."""
-    try:
-        import fcntl
-    except ImportError:  # pragma: no cover - Docker/Linux provides fcntl.
-        return None
-    lock_path = Path(DB_PATH).resolve().parent / '.lonely-wallet-pluggy-sync.lock'
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        os.close(fd)
-        return False
-    except Exception:
-        os.close(fd)
-        raise
-    return (fd, fcntl)
-
-
-def _release_pluggy_file_lock(lock_handle):
-    if not lock_handle:
-        return
-    fd, fcntl = lock_handle
-    try:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-    finally:
-        os.close(fd)
-
-
-def _store_pluggy_sync_state(status, error=''):
-    """Persist the last attempt, completion state and a sanitized error for diagnostics."""
-    now_text = datetime.now(TZ).isoformat(timespec='seconds')
-    values = {
-        'pluggy_sync_last_status': str(status),
-        'pluggy_sync_last_error': safe_error_text(error, 180) if error else '',
-    }
-    if status == 'em_andamento':
-        values['pluggy_sync_last_attempt'] = now_text
-    else:
-        values['pluggy_sync_last_completed'] = now_text
-    try:
-        connection = db()
-        for key, value in values.items():
-            connection.execute(
-                'INSERT INTO app_settings(key,value) VALUES(?,?) '
-                'ON CONFLICT(key) DO UPDATE SET value=excluded.value', (key, value)
-            )
-        connection.commit()
-    except Exception as exc:
-        app.logger.warning('Não foi possível registrar o estado da sincronização Pluggy: %s', safe_error_text(exc, 120))
-
-
 @app.route('/api/pluggy/sync', methods=['POST'])
 def pluggy_sync():
-    if not _PLUGGY_SYNC_LOCK.acquire(blocking=False):
-        return json_error('Já existe uma sincronização Pluggy em andamento.', 409)
-    file_lock = None
-    try:
-        file_lock = _acquire_pluggy_file_lock()
-        if file_lock is False:
-            return json_error('Já existe uma sincronização Pluggy em andamento em outro processo.', 409)
-        _store_pluggy_sync_state('em_andamento')
-        result = _pluggy_sync_impl()
-        response = result[0] if isinstance(result, tuple) else result
-        status_code = result[1] if isinstance(result, tuple) and len(result) > 1 else getattr(response, 'status_code', 200)
-        payload = response.get_json(silent=True) if hasattr(response, 'get_json') else {}
-        payload = payload if isinstance(payload, dict) else {}
-        if int(status_code or 200) >= 400 or payload.get('ok') is False:
-            error_message = payload.get('erro') or payload.get('message') or 'Falha na sincronização Pluggy.'
-            _store_pluggy_sync_state('falha', error_message)
-        else:
-            _store_pluggy_sync_state('concluida')
-        return result
-    except Exception as exc:
-        _store_pluggy_sync_state('falha', exc)
-        raise
-    finally:
-        _release_pluggy_file_lock(file_lock)
-        _PLUGGY_SYNC_LOCK.release()
-
-
-def _pluggy_sync_impl():
     payload = request.get_json(silent=True) or {}
     requested_item_id = str(payload.get('item_id') or '').strip()
     if requested_item_id:
@@ -1756,74 +1619,14 @@ def _pluggy_sync_impl():
         return json_error('Falha ao sincronizar Pluggy (HTTP %s). Confira itemId, autorização MeuPluggy e credenciais.' % code, 400)
     except Exception as exc:
         db().commit()
-        return json_error('Falha na sincronização Pluggy: ' + safe_error_text(exc, 180), 400)
+        return json_error('Falha na sincronização Pluggy: ' + str(exc)[:220], 400)
     # Após atualizar as posições/movimentações, reconcilia proventos dos ativos atuais.
     try:
         current_items = (carteira().json or {}).get('itens', [])
         summary['proventos_sync'] = sync_brapi_proventos(force=False, quote_items=current_items, active_items=current_items)
     except Exception as dividend_exc:
-        summary['warnings'].append('Não foi possível atualizar proventos após a sincronização: ' + safe_error_text(dividend_exc, 120))
+        summary['warnings'].append('Não foi possível atualizar proventos após a sincronização: ' + str(dividend_exc)[:160])
     return jsonify(ok=True, summary=summary, synced_at=now_text)
-
-
-PLUGGY_SCHEDULER_POLL_SECONDS = 30
-
-
-def pluggy_scheduler_loop():
-    """Run persisted automatic Pluggy syncs on the server, independent of browsers."""
-    while True:
-        try:
-            with app.app_context():
-                interval = _pluggy_sync_interval()
-                if interval > 0:
-                    active_items = db().execute(
-                        'SELECT last_synced_at FROM pluggy_items WHERE active=1'
-                    ).fetchall()
-                    now = datetime.now(TZ)
-                    due = False
-                    for item in active_items:
-                        raw = str(item['last_synced_at'] or '').strip()
-                        if not raw:
-                            due = True
-                            break
-                        try:
-                            last = datetime.fromisoformat(raw)
-                            if last.tzinfo is None:
-                                last = last.replace(tzinfo=TZ)
-                            if (now - last).total_seconds() >= interval * 60:
-                                due = True
-                                break
-                        except (TypeError, ValueError):
-                            due = True
-                            break
-                    credentials_configured = bool(_get_pluggy_credentials())
-                    attempt_row = db().execute(
-                        "SELECT value FROM app_settings WHERE key='pluggy_sync_last_attempt'"
-                    ).fetchone()
-                    last_attempt = None
-                    if attempt_row and attempt_row['value']:
-                        try:
-                            last_attempt = datetime.fromisoformat(str(attempt_row['value']))
-                            if last_attempt.tzinfo is None:
-                                last_attempt = last_attempt.replace(tzinfo=TZ)
-                        except (TypeError, ValueError):
-                            last_attempt = None
-                    attempt_due = (last_attempt is None or
-                                   (now - last_attempt).total_seconds() >= interval * 60)
-                    if due and active_items and credentials_configured and attempt_due:
-                        # The route acquires both thread and OS locks, then records the attempt.
-                        with app.test_request_context('/api/pluggy/sync', method='POST', json={}):
-                            response = pluggy_sync()
-                        status = getattr(response, 'status_code', 200)
-                        if isinstance(response, tuple) and len(response) > 1:
-                            status = response[1]
-                        if int(status or 200) >= 400:
-                            app.logger.warning('Sincronização automática Pluggy retornou HTTP %s.', status)
-        except Exception as exc:
-            app.logger.warning('Falha no agendador Pluggy: %s', safe_error_text(exc, 160))
-        time.sleep(PLUGGY_SCHEDULER_POLL_SECONDS)
-
-
 
 
 @app.route('/api/integracoes', methods=['GET'])
@@ -2455,41 +2258,6 @@ def posicao(ticker, as_of=None):
     return max(qtd, 0), (custo / qtd if qtd > 0 else 0)
 
 
-def safe_error_text(error, limit=180):
-    """Return a compact provider error without leaking URLs, credentials or tokens."""
-    text = str(error or '')
-    # Exception strings commonly embed full request URLs, including query-string keys.
-    text = re.sub(r'https?://[^\s\"\'<>]+', '[URL removida]', text, flags=re.IGNORECASE)
-    # Redact Bearer credentials first so an Authorization key/value replacement
-    # cannot consume only the word "Bearer" and leave the credential behind.
-    text = re.sub(r"(?i)\bBearer\s+[^\s,;\"'}]+", 'Bearer [REDACTED]', text)
-    text = re.sub(
-        r'''(?i)["']?(token|access[_-]?token|refresh[_-]?token|api[_-]?key|x-api-key|apiKey|client[_-]?secret|clientSecret|authorization|password|secret)["']?\s*[:=]\s*["']?([^\s,;&"'}]+)''',
-        lambda match: match.group(1) + '=[REDACTED]', text
-    )
-    text = re.sub(r'[\r\n\t]+', ' ', text)
-    return text[:max(0, int(limit))]
-
-
-def sale_breaks_future_position(ticker, proposed_operation=None, exclude_id=None):
-    """Validate only the chronological quantity ledger, never monetary returns."""
-    key = str(ticker or '').strip().upper()
-    if not key:
-        return True
-    snapshots = [dict(row) for row in db().execute(
-        'SELECT data_base,quantidade FROM saldos_importados WHERE upper(ticker)=? ORDER BY data_base',
-        (key,)
-    ).fetchall()]
-    operations = [dict(row) for row in db().execute(
-        "SELECT id,lado,quantidade,data,data_execucao,status FROM operacoes "
-        "WHERE upper(ticker)=? AND status IN ('executada','agendada')",
-        (key,)
-    ).fetchall()]
-    return quantity_ledger_breaks_position(
-        snapshots, operations, proposed_operation=proposed_operation, exclude_id=exclude_id
-    )
-
-
 def json_error(message, status=400):
     return jsonify(ok=False, erro=message), status
 
@@ -2570,6 +2338,11 @@ def valid_operation(data):
             existing_type=asset_type_for_ticker(ticker, dt)
             if not existing_type or existing_type!=tipo:
                 return None,'O ativo selecionado não pertence à categoria informada. Escolha o ativo dentro da categoria correta.'
+            available,_=posicao(ticker, as_of=dt)
+            reserved=0.0
+            if dt >= datetime.now(TZ).date().isoformat():
+                reserved=float(db().execute("SELECT COALESCE(SUM(quantidade),0) FROM operacoes WHERE ticker=? AND lado='venda' AND status='agendada'",(ticker,)).fetchone()[0])
+            if qtd>available-reserved+1e-8: return None,'A quantidade vendida é maior que a posição disponível na data da operação, considerando vendas já agendadas.'
         raw=str(data.get('data_hora') or (dt+'T10:00'))
         requested=datetime.fromisoformat(raw)
         if requested.tzinfo is None: requested=requested.replace(tzinfo=TZ)
@@ -2586,11 +2359,6 @@ def valid_operation(data):
         else:
             execution=next_b3_session(requested)
             status='executada' if execution<=now_minute else 'agendada'
-        if sale_breaks_future_position(ticker, {
-            'lado': lado, 'quantidade': qtd, 'data': execution.date().isoformat(),
-            'data_execucao': execution.isoformat(timespec='minutes'), 'status': status
-        }):
-            return None,'Esta operação deixaria a posição negativa em alguma data posterior. Revise as compras e vendas do ativo.'
         details=data.get('detalhes') or {}
         if isinstance(details,str): details=json.loads(details)
         return (ticker,tipo,lado,qtd,preco,execution.date().isoformat(),custos,status,now.isoformat(timespec='minutes'),execution.isoformat(timespec='minutes'),json.dumps(details,ensure_ascii=False)),None
@@ -2603,20 +2371,14 @@ def health():
     try:
         db().execute('SELECT 1').fetchone()
         token_db().execute('SELECT 1').fetchone()
-        return jsonify(ok=True, status='healthy', version=application_version()), 200
+        return jsonify(ok=True, status='healthy', version=(Path(__file__).resolve().parents[1] / 'VERSION').read_text(encoding='utf-8').strip()), 200
     except Exception:
         app.logger.exception('Healthcheck failed')
         return jsonify(ok=False, status='unhealthy'), 503
 
 
 @app.route('/')
-def index():
-    response = make_response(render_template('index.html', app_version=application_version()))
-    # O HTML precisa sempre refletir VERSION após rebuild/redeploy; os dados usam cache próprio.
-    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
-    response.headers['Pragma'] = 'no-cache'
-    response.headers['Expires'] = '0'
-    return response
+def index(): return render_template('index.html')
 
 
 @app.route('/api/operacoes/exportar', methods=['GET'])
@@ -2766,35 +2528,27 @@ def cleanup_pluggy_asset_refs(scope, tipo='', ticker='', operation_ids=None, inv
     return {'pluggy_investments': len(inv_ids), 'pluggy_transactions': int(deleted_tx), 'pluggy_events': int(deleted_events)}
 
 
-_PREDELETE_BACKUP_LOCK = threading.Lock()
-
-
-
 def create_predelete_backup():
     """Cria cópias SQLite consistentes antes de exclusões em massa."""
-    # Serializa a criação e a rotação para não remover uma pasta ainda em gravação.
-    with _PREDELETE_BACKUP_LOCK:
-        backup_root = Path(os.environ.get('BACKUP_DIR', '/data/backups'))
-        backup_root.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(TZ).strftime('%Y%m%d-%H%M%S-%f')
-        folder = backup_root / f'pre-exclusao-{stamp}'
-        folder.mkdir(mode=0o700)
-        try:
-            for source, connection in ((Path(DB_PATH), db()), (Path(TOKEN_DB_PATH), token_db())):
-                target = folder / source.name
-                dest = sqlite3.connect(str(target), timeout=30)
-                try:
-                    connection.backup(dest)
-                    if dest.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
-                        raise RuntimeError('Falha ao validar backup preventivo.')
-                finally:
-                    dest.close()
-            # Só inicia a rotação após a nova cópia passar pela validação de integridade.
-            rotate_predelete_backups(backup_root, keep=10, logger=app.logger)
-            return str(folder)
-        except Exception:
-            shutil.rmtree(folder, ignore_errors=True)
-            raise
+    backup_root = Path(os.environ.get('BACKUP_DIR', '/data/backups'))
+    backup_root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(TZ).strftime('%Y%m%d-%H%M%S-%f')
+    folder = backup_root / f'pre-exclusao-{stamp}'
+    folder.mkdir(mode=0o700)
+    try:
+        for source, connection in ((Path(DB_PATH), db()), (Path(TOKEN_DB_PATH), token_db())):
+            target = folder / source.name
+            dest = sqlite3.connect(str(target), timeout=30)
+            try:
+                connection.backup(dest)
+                if dest.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                    raise RuntimeError('Falha ao validar backup preventivo.')
+            finally:
+                dest.close()
+        return str(folder)
+    except Exception:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
 
 
 @app.route('/api/operacoes/gerenciar', methods=['DELETE'])
@@ -2869,8 +2623,6 @@ def delete_operacao(op_id):
     if is_pluggy_operation(current):
         return json_error('Lançamentos importados pela Pluggy são somente leitura e não podem ser editados ou excluídos.', 403)
     if request.method == 'DELETE':
-        if sale_breaks_future_position(current['ticker'], None, exclude_id=op_id):
-            return json_error('A exclusão deixaria a posição negativa em uma data posterior. Revise as vendas do ativo antes de excluir.', 409)
         cleanup_b3_operation_refs([op_id])
         db().execute('DELETE FROM operacoes WHERE id=?', (op_id,))
         clear_seed_snapshot_when_empty()
@@ -2894,6 +2646,14 @@ def delete_operacao(op_id):
             existing_type=asset_type_for_ticker(ticker, dt)
             if not existing_type or existing_type!=tipo:
                 return json_error('O ativo selecionado não pertence à categoria informada. Escolha o ativo dentro da categoria correta.')
+            available,_=posicao(ticker, as_of=dt)
+            if ticker==current['ticker'] and current['lado']=='venda' and current['status']!='agendada' and current['data']<=dt:
+                available+=float(current['quantidade'] or 0)
+            reserved=0.0
+            if dt >= datetime.now(TZ).date().isoformat():
+                reserved=float(db().execute("SELECT COALESCE(SUM(quantidade),0) FROM operacoes WHERE ticker=? AND lado='venda' AND status='agendada' AND id<>?",(ticker,op_id)).fetchone()[0])
+            if qtd>available-reserved+1e-8:
+                return json_error('A quantidade vendida é maior que a posição disponível na data da operação, considerando vendas já agendadas.')
         raw=str(j.get('data_hora') or (dt+'T10:00'))
         requested=datetime.fromisoformat(raw)
         if requested.tzinfo is None: requested=requested.replace(tzinfo=TZ)
@@ -2906,17 +2666,6 @@ def delete_operacao(op_id):
             execution=requested; status='executada'
         else:
             execution=next_b3_session(requested); status='executada' if execution<=now_minute else 'agendada'
-        proposed = {
-            'lado': lado, 'quantidade': qtd, 'data': execution.date().isoformat(),
-            'data_execucao': execution.isoformat(timespec='minutes'), 'status': status
-        }
-        if current['ticker'].strip().upper() != ticker:
-            if sale_breaks_future_position(current['ticker'], None, exclude_id=op_id):
-                return json_error('Esta edição deixaria a posição anterior negativa em uma data posterior. Revise as operações do ativo.', 409)
-            if sale_breaks_future_position(ticker, proposed):
-                return json_error('Esta edição deixaria a nova posição negativa em uma data posterior. Revise as compras e vendas do ativo.', 409)
-        elif sale_breaks_future_position(ticker, proposed, exclude_id=op_id):
-            return json_error('Esta edição deixaria a posição negativa em alguma data posterior. Revise as compras e vendas do ativo.', 409)
         details=j.get('detalhes',current['detalhes'] or '{}')
         if isinstance(details,dict): details=json.dumps(details,ensure_ascii=False)
         else:
@@ -3190,7 +2939,7 @@ def importar_b3():
             current_items = (carteira().json or {}).get('itens', [])
             dividend_sync = sync_brapi_proventos(force=False, quote_items=current_items, active_items=current_items)
         except Exception as dividend_exc:
-            dividend_sync = {'ok': False, 'mensagem': safe_error_text(dividend_exc, 140)}
+            dividend_sync = {'ok': False, 'mensagem': str(dividend_exc)[:180]}
         return jsonify(ok=True,importadas=inserted_ops+inserted_provs,operacoes=inserted_ops,proventos=inserted_provs,duplicados=duplicates,lote_id=lote_id, sincronizacao_proventos=dividend_sync)
     except Exception as exc:
         return json_error(str(exc) if isinstance(exc,ValueError) else 'Não foi possível ler a planilha B3. Confira o arquivo e tente novamente.')
@@ -3221,6 +2970,8 @@ def metas():
 def delete_meta(meta_id):
     db().execute('DELETE FROM metas WHERE id=?',(meta_id,)); db().commit(); return jsonify(ok=True)
 
+
+@app.route('/api/carteira')
 
 def _pluggy_total_return(ticker, current_value, dividends=0.0):
     """Retorno total desde a primeira compra usando o histórico importado da Pluggy."""
@@ -3283,7 +3034,6 @@ def _prefetch_quotes_parallel(tickers):
                 pass
 
 
-@app.route('/api/carteira')
 def carteira(use_cached_quotes=False, force_refresh_quotes=False):
     process_due_operations()
     base_date = snapshot_date_for()
@@ -3320,7 +3070,6 @@ def carteira(use_cached_quotes=False, force_refresh_quotes=False):
                         # cotacao() preserva a última cotação válida quando uma fonte falha.
                         pass
     itens=[]; invested=actual=received=0.0
-    paid_dividends_by_ticker = received_proventos_by_ticker()
     for ticker in sorted(tickers):
         qty, avg = posicao(ticker)
         pluggy_position = db().execute(
@@ -3349,7 +3098,7 @@ def carteira(use_cached_quotes=False, force_refresh_quotes=False):
         price=float(raw_price) if market_quote_available else (imported_price if has_imported_reference else avg)
         quote_available=market_quote_available or has_imported_reference
         quote_source=(('Última cotação salva · ' + str(quote.get('quoteProvider') or 'fonte anterior')) if quote.get('quoteIsStale') else (quote.get('quoteProvider') or 'brapi')) if market_quote_available else ('Posição importada' if has_imported_reference else 'Sem cotação')
-        dividends = float(paid_dividends_by_ticker.get(ticker, 0.0))
+        dividends = float(received_proventos_by_ticker().get(ticker, 0.0))
         divs = (quote.get('dividendsData') or {}).get('cashDividends',[])[:12]
         annual_div = sum(float(x.get('rate') or 0) for x in divs)
         ceiling = annual_div / .06 if annual_div else None
@@ -3373,26 +3122,14 @@ def carteira(use_cached_quotes=False, force_refresh_quotes=False):
         invested += cost; actual += value; received += (0.0 if kind == 'renda_fixa' else dividends)
         default_name = imported.get('nome') if imported else ticker
         daily_variation = quote.get('regularMarketChangePercent') if quote.get('regularMarketChangePercent') is not None else quote.get('changePercent')
-        # A métrica individual segue a regra da carteira: variação é preço atual
-        # menos preço médio; rentabilidade soma somente proventos já recebidos.
-        # O retorno histórico da Pluggy permanece disponível como metadado, mas
-        # não substitui o cálculo visível da posição.
-        if kind == 'renda_fixa':
-            variation_value = value - cost
-            variation_pct = round(variation_value / cost * 100, 2) if cost else None
-            total_return_value = variation_value
-            profitability_pct = round(total_return_value / cost * 100, 2) if cost else None
-        else:
-            metrics = calculate_position_performance(
-                qty, avg, price, dividends, quote_available=quote_available
-            )
-            variation_value = metrics['variation_value']
-            variation_pct = metrics['variation_pct']
-            total_return_value = metrics['profitability_value']
-            profitability_pct = metrics['profitability_pct']
-        item_profit = round(variation_value, 2) if variation_value is not None else None
-        item_return_value = round(total_return_value, 2) if total_return_value is not None else None
-        itens.append({'ticker':ticker,'tipo':kind,'quantidade':round(qty,6),'preco_medio':round(avg,2),'preco_atual':round(price,2) if quote_available else None,'cotacao_disponivel':quote_available,'cotacao_desatualizada':bool(quote.get('quoteIsStale')),'cotacao_ultima_atualizacao':quote.get('quoteLastUpdated'),'cotacao_origem':quote_source,'investido':round(cost,2),'valor_atual':round(value,2),'lucro':item_profit,'lucro_pct':profitability_pct,'rentabilidade_valor':item_return_value,'variacao_valor':item_profit,'variacao_pct':variation_pct,'pluggy_variacao_pct':pluggy_return['variation_pct'] if pluggy_return else None,'pluggy_variacao_valor':pluggy_return['variation_value'] if pluggy_return else None,'pluggy_retorno_pct':pluggy_return['total_pct'] if pluggy_return else None,'pluggy_retorno_valor':pluggy_return['total_value'] if pluggy_return else None,'pluggy_investido_historico':pluggy_return['invested'] if pluggy_return else None,'pluggy_primeira_compra':pluggy_return['first_buy'] if pluggy_return else None,'proventos':0.0 if kind=='renda_fixa' else round(dividends,2),'calculo_indexador':fixed_calc_ok if kind=='renda_fixa' else None,'aviso_calculo':fixed_calc_warning if kind=='renda_fixa' else None,'pl':quote.get('priceEarnings'),'pvp':quote.get('priceToBook') or quote.get('priceToBookRatio') or quote.get('priceToBookValue'),'avaliacao':_fundamental_rating(quote, kind),'preco_teto_bazin':round(ceiling,2) if ceiling else None,'abaixo_do_teto':bool(ceiling and price and price<=ceiling),'nome':quote.get('longName') or quote.get('shortName') or default_name or ticker,'logo':quote.get('logourl') or quote.get('logo') or ('/static/lonely-wallet-logo.png' if kind=='renda_fixa' else f'https://icons.brapi.dev/icons/{ticker}.svg'),'variacao_dia':round(float(daily_variation),2) if daily_variation is not None else None})
+        # Variação mede somente ganho/perda de preço; rentabilidade soma os proventos.
+        # Pluggy é a fonte preferencial (fluxos reais desde a primeira compra). Sem
+        # histórico Pluggy, usa custo médio e cotação atual, nunca a variação diária.
+        variation_value = pluggy_return['variation_value'] if pluggy_return else (value-cost)
+        variation_pct = pluggy_return['variation_pct'] if pluggy_return else (round(variation_value/cost*100,2) if cost else 0)
+        total_return_value = pluggy_return['total_value'] if pluggy_return else (variation_value + (0.0 if kind=='renda_fixa' else dividends))
+        profitability_pct = pluggy_return['total_pct'] if pluggy_return else (round(total_return_value/cost*100,2) if cost else 0)
+        itens.append({'ticker':ticker,'tipo':kind,'quantidade':round(qty,6),'preco_medio':round(avg,2),'preco_atual':round(price,2) if quote_available else None,'cotacao_disponivel':quote_available,'cotacao_desatualizada':bool(quote.get('quoteIsStale')),'cotacao_ultima_atualizacao':quote.get('quoteLastUpdated'),'cotacao_origem':quote_source,'investido':round(cost,2),'valor_atual':round(value,2),'lucro':round(variation_value,2),'lucro_pct':profitability_pct,'variacao_valor':round(variation_value,2),'variacao_pct':variation_pct,'pluggy_variacao_pct':pluggy_return['variation_pct'] if pluggy_return else None,'pluggy_variacao_valor':pluggy_return['variation_value'] if pluggy_return else None,'pluggy_retorno_pct':pluggy_return['total_pct'] if pluggy_return else None,'pluggy_retorno_valor':pluggy_return['total_value'] if pluggy_return else None,'pluggy_investido_historico':pluggy_return['invested'] if pluggy_return else None,'pluggy_primeira_compra':pluggy_return['first_buy'] if pluggy_return else None,'proventos':0.0 if kind=='renda_fixa' else round(dividends,2),'calculo_indexador':fixed_calc_ok if kind=='renda_fixa' else None,'aviso_calculo':fixed_calc_warning if kind=='renda_fixa' else None,'pl':quote.get('priceEarnings'),'pvp':quote.get('priceToBook') or quote.get('priceToBookRatio') or quote.get('priceToBookValue'),'avaliacao':_fundamental_rating(quote, kind),'preco_teto_bazin':round(ceiling,2) if ceiling else None,'abaixo_do_teto':bool(ceiling and price and price<=ceiling),'nome':quote.get('longName') or quote.get('shortName') or default_name or ticker,'logo':quote.get('logourl') or quote.get('logo') or ('/static/lonely-wallet-logo.png' if kind=='renda_fixa' else f'https://icons.brapi.dev/icons/{ticker}.svg'),'variacao_dia':variation_pct})
     allocation={}
     for item in itens: allocation[item['tipo']]=allocation.get(item['tipo'],0)+item['valor_atual']
     return jsonify(itens=itens,resumo={'investido':round(invested,2),'atual':round(actual,2),'lucro':round(actual-invested,2),'lucro_pct':round((actual/invested-1)*100,2) if invested else 0,'proventos':round(received,2),'ativos':len(itens)},alocacao=allocation)
@@ -3691,12 +3428,10 @@ def _is_income_event(event_type):
 
 
 def _received_proventos_records(active_tickers=None):
-    """Return confirmed paid income, enriching common rows with entitlement details.
+    """Retorna proventos da tabela comum com data não futura, deduplicando origens importadas.
 
-    Manual/Pluggy/B3 entries are stored in ``proventos``. Events synchronized
-    from brapi live in ``proventos_api``. Matching both stores avoids omitting
-    share counts while preventing the same payment from being counted twice.
-    Future or merely announced API events are never returned here.
+    Registros vinculados à Pluggy ou B3 mantêm a origem de importação. Registros
+    sem vínculo são lançamentos manuais e também entram na apuração de recebidos.
     """
     active_set = None if active_tickers is None else {str(t).upper() for t in active_tickers}
     if active_set is not None and not active_set:
@@ -3709,61 +3444,15 @@ def _received_proventos_records(active_tickers=None):
     b3_ids = {int(r['registro_id']) for r in db().execute(
         "SELECT registro_id FROM b3_importados WHERE lower(categoria)='provento' AND registro_id IS NOT NULL"
     ).fetchall()}
+
+    # Todos os lançamentos da tabela comum são considerados: os importados recebem
+    # sua origem; os demais são lançamentos manuais. Eventos futuros não entram.
     origin_by_id = {ident: 'Pluggy' for ident in pluggy_ids}
     for ident in b3_ids:
         origin_by_id.setdefault(ident, 'B3')
-
-    paid_api = []
-    api_rows = db().execute(
-        "SELECT event_key,ticker,tipo_ativo,tipo_evento,data_com,data_pagamento,"
-        "valor_por_ativo,quantidade,valor_total,status,remarks "
-        "FROM proventos_api WHERE status='Pago' ORDER BY data_pagamento,ticker,event_key"
-    ).fetchall()
-    for raw in api_rows:
-        row = dict(raw)
-        payment_date = _api_date(row.get('data_pagamento'))
-        ticker = str(row.get('ticker') or '').strip().upper()
-        amount = round(float(row.get('valor_total') or 0), 2)
-        if not ticker or (active_set is not None and ticker not in active_set):
-            continue
-        if not is_paid_provento(row.get('status'), payment_date, today):
-            continue
-        if not _is_income_event(row.get('tipo_evento')) or amount <= 0:
-            continue
-        quantity = max(0.0, float(row.get('quantidade') or 0))
-        rate = max(0.0, float(row.get('valor_por_ativo') or 0))
-        remarks = str(row.get('remarks') or '').strip()
-        record_date = _api_date(row.get('data_com'))
-        if quantity <= 1e-8 and record_date:
-            try:
-                quantity, quantity_method = position_quantity_on_date_details(ticker, record_date)
-            except Exception:
-                quantity, quantity_method = 0.0, 'quantidade indisponível'
-            if quantity > 1e-8:
-                if rate <= 0:
-                    rate = amount / quantity
-                remarks = ' '.join(part for part in (
-                    remarks,
-                    f'Quantidade recuperada pela posição histórica na data-com ({quantity_method}).'
-                    if quantity_method else ''
-                ) if part)
-        if rate <= 0 and quantity > 1e-8:
-            rate = amount / quantity
-        paid_api.append({
-            'event_key': str(row.get('event_key') or ''), 'ticker': ticker,
-            'tipo': str(row.get('tipo_evento') or 'Provento'),
-            'tipo_ativo': str(row.get('tipo_ativo') or typesafe_asset_type(ticker)),
-            'status': 'Pago', 'data_com': record_date or None,
-            'data_pagamento': payment_date, 'quantidade': quantity if quantity > 1e-8 else None,
-            'valor_por_ativo': rate if rate > 0 else None, 'valor_total': amount,
-            'origem': 'brapi', 'tipo_evento': str(row.get('tipo_evento') or 'PROVENTO'),
-            'remarks': remarks,
-        })
-
     rows = db().execute('SELECT id,ticker,valor_total,data FROM proventos ORDER BY data,id').fetchall()
     records = []
     seen = set()
-    used_api_keys = set()
     for raw in rows:
         row = dict(raw)
         payment_date = _api_date(row.get('data'))
@@ -3786,46 +3475,14 @@ def _received_proventos_records(active_tickers=None):
             continue
         if origin != 'Manual':
             seen.add(key)
-        record = {
+        records.append({
             'ticker': ticker, 'tipo': 'Provento',
             'tipo_ativo': typesafe_asset_type(ticker),
             'status': 'Pago', 'data_com': None,
             'data_pagamento': payment_date, 'quantidade': None,
             'valor_por_ativo': None, 'valor_total': amount,
-            'origem': origin, 'tipo_evento': 'PROVENTO', 'remarks': ''
-        }
-        # Reuse the corresponding API event to restore quantity and rate for
-        # common-table records imported from Pluggy, B3 or entered manually.
-        candidates = [item for item in paid_api if item['event_key'] not in used_api_keys
-                      and item['ticker'] == ticker
-                      and abs((date.fromisoformat(item['data_pagamento']) - date.fromisoformat(payment_date)).days) <= 3]
-        if candidates:
-            candidate = min(candidates, key=lambda item: (
-                abs(float(item['valor_total']) - amount),
-                abs((date.fromisoformat(item['data_pagamento']) - date.fromisoformat(payment_date)).days)
-            ))
-            tolerance = max(0.05, max(amount, float(candidate['valor_total'])) * 0.01)
-            if abs(float(candidate['valor_total']) - amount) <= tolerance:
-                record.update({
-                    'tipo': candidate['tipo'], 'tipo_ativo': candidate['tipo_ativo'],
-                    'data_com': candidate['data_com'], 'quantidade': candidate['quantidade'],
-                    'valor_por_ativo': candidate['valor_por_ativo'],
-                    'tipo_evento': candidate['tipo_evento'],
-                    'remarks': candidate['remarks']
-                })
-                used_api_keys.add(candidate['event_key'])
-        records.append(record)
-
-    # API-only paid events also contribute to the received total. Pending events
-    # are intentionally excluded, even when already announced by the source.
-    for item in paid_api:
-        if item['event_key'] in used_api_keys:
-            continue
-        key = (item['ticker'], item['data_pagamento'], round(float(item['valor_total']), 2))
-        if key in seen:
-            continue
-        seen.add(key)
-        records.append({key: value for key, value in item.items() if key != 'event_key'})
+            'origem': origin, 'tipo_evento': 'PROVENTO'
+        })
     return records
 
 
@@ -3846,16 +3503,6 @@ def received_proventos_by_ticker():
             ticker = str(row['ticker']).upper()
             if ticker not in active and posicao(ticker)[0] > 1e-8:
                 active.append(ticker)
-    # Pluggy pode fornecer a posição sem que exista operação correspondente
-    # importada na tabela local; esses ativos também devem receber seus pagos.
-    for row in db().execute(
-        "SELECT DISTINCT s.ticker FROM pluggy_position_snapshots s "
-        "JOIN pluggy_items i ON i.item_id=s.item_id "
-        "WHERE i.active=1 AND s.quantity>0"
-    ).fetchall():
-        ticker = str(row['ticker']).upper()
-        if ticker and ticker not in active:
-            active.append(ticker)
     totals = {}
     for row in _received_proventos_records(active):
         if not _is_income_event(row.get('tipo_evento')):
@@ -5494,9 +5141,6 @@ def darf_item(darf_id):
 
 @app.route('/api/ativo/<ticker>')
 def ativo(ticker): return jsonify(cotacao(ticker.upper()))
-
-
-threading.Thread(target=pluggy_scheduler_loop, daemon=True, name='pluggy-server-scheduler').start()
 
 
 if __name__ == '__main__': app.run(host='0.0.0.0',port=8080)

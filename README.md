@@ -1,66 +1,40 @@
-# Lonely Wallet v4.2.20
+# Lonely Wallet
 
-## Histórico de versões
+## v4.2.15
+- Rentabilidade dos cards por categoria passou a ser a média aritmética simples das rentabilidades individuais dos ativos, sem ponderação pelo capital investido.
 
-### v4.2.11
-- Ajustes visuais e melhorias no painel de gerenciamento Pluggy.
+## v4.2.14
+- Removido o cursor de ajuda/interação da coluna Rentabilidade. O tooltip monetário continua aparecendo ao passar o mouse ou navegar por teclado, mas o cursor permanece como seta normal.
 
-### v4.2.12
-- Melhorias nas tentativas de carregamento inicial e no comportamento do painel Pluggy.
+## v4.2.13
+- Adicionado tooltip à coluna Rentabilidade, mostrando o valor monetário correspondente ao retorno percentual acumulado da posição. O cálculo prioriza o retorno consolidado da Pluggy e, sem esse dado, soma ganho/perda de preço e proventos recebidos. O tooltip de Variação diária permanece separado.
 
-### v4.2.13
-- Tooltip informativo na coluna Rentabilidade, com valor monetário correspondente ao retorno da posição.
-- Prioridade ao retorno monetário consolidado da Pluggy, com alternativa baseada em preço e proventos recebidos quando não houver histórico monetário.
-- Tooltips de Rentabilidade e Variação independentes, preservando o comportamento original da variação diária.
+## v4.2.12
+- O carregamento inicial da carteira repete automaticamente as tentativas quando o servidor ou uma fonte demora a responder, sem exibir a mensagem de falha nem exigir clique manual. O intervalo entre tentativas aumenta progressivamente até 30 segundos.
+- O botão Gerenciar API Pluggy alterna entre abrir e fechar; o painel começa fechado após F5 e é fechado ao navegar para outra página.
 
-### v4.2.14
-- Ajustes de tooltip e compatibilidade na coluna Rentabilidade.
+## v4.2.11
+- Tema claro refinado com contraste ampliado em tabelas, menus, formulários, grupos de lançamentos, segurança e gráficos.
+- Painel Gerenciar API Pluggy passou a ser expandido em linha, imediatamente abaixo dos controles MeuPluggy na página APIs, sem ser movido para o final de cada página.
+- Botão Gerenciar API com laranja convencional e Limpar dados importados com vermelho convencional.
+- Removido o tooltip de título ao passar o mouse sobre as legendas da Distribuição de aportes.
 
-### v4.2.15
-- Versão intermediária. Este README não contém um resumo técnico confiável das alterações dessa versão.
+## v4.2.10
+- Modal Gerenciar API Pluggy expandido para a largura útil do navegador, com layout horizontal e margens simétricas.
+- Preferência de sincronização Pluggy salva com transação SQLite, confirmação de leitura e restauração após F5.
+- Twelve Data e Alpha Vantage removidas do catálogo, das rotas de teste e do motor de cotações/histórico; credenciais antigas dessas integrações são removidas na inicialização.
+- Botões Gerenciar API (laranja claro) e Limpar dados importados (vermelho claro).
+- Correções no tema claro, incluindo fundo da raiz, campos, menus, cards e modal Pluggy.
+- Privacidade de valores desativada por padrão; quando ativada permanece até novo clique e cobre também conteúdo dinâmico.
+- Legendas da distribuição de aportes usam nomes localizados e acentuação correta (Ação, FIIs, Renda fixa, Tesouro Direto, ETFs, BDRs e demais classes).
 
-### v4.2.16
-- Migração SQLite por API de backup, validação de integridade e melhorias no entrypoint.
-
-### v4.2.17
-- Correções iniciais de segurança dos argumentos JavaScript, CSP e carregamento local do Chart.js durante a construção da imagem.
-- Sincronização automática Pluggy movida para o servidor, com frequência persistida.
-- Introdução da validação cronológica de quantidades, rotação de backups preventivos e sanitização de erros externos.
-- Migração SQLite publicada por arquivo temporário após validação de integridade.
-
-### v4.2.18
-- Versão informada como base desta atualização. O ZIP recebido com esse nome continha `VERSION=4.2.16` e era idêntico ao pacote 4.2.16; não havia um histórico técnico separado para as alterações da 4.2.18.
-
-
-
-### v4.2.19
-- Ampliada a validação cronológica das quantidades para criação, edição e exclusão de lançamentos, sem alterar cálculos financeiros.
-- Sincronização automática Pluggy executada no servidor, sem depender do navegador, com lock entre processos e registro persistente de tentativas e falhas.
-- Corrigidos argumentos dinâmicos em atributos JavaScript; CSP restringida e Chart.js carregado localmente na imagem Docker.
-- Implementada rotação dos 10 backups preventivos mais recentes e sanitização de mensagens de erro externas.
-- Migração SQLite validada em arquivo temporário, com substituição atômica; recupera destino parcial inválido quando o banco legado está íntegro.
-- Atualizados testes e documentação, mantendo intactas as fórmulas financeiras.
-- Adicionado cache local do último dashboard completo via IndexedDB para exibição imediata no F5.
-- Atualizações demoradas passam a ocorrer em segundo plano; a tela de carregamento não volta a cobrir dados já exibidos.
-- Rodapé, favicon e metadados do Compose passam a usar a versão 4.2.19; a página principal desativa cache HTTP para refletir a versão após o rebuild.
-
-### v4.2.20
-- Corrigido o cálculo da variação individual para usar a diferença entre cotação atual e preço médio, sem utilizar a oscilação diária ou o retorno histórico da Pluggy como substitutos.
-- Rentabilidade individual calculada pela variação de preço somada exclusivamente aos proventos efetivamente pagos.
-- Proventos pagos sincronizados pela brapi passam a integrar o histórico recebido; eventos futuros ou com status "A receber" permanecem fora da rentabilidade.
-- Registros de proventos comuns são enriquecidos com quantidade, data-com e valor por ativo quando existe evento pago correspondente na API, evitando duplicidade.
-- Tooltip de Rentabilidade simplificado para mostrar somente "Quanto uma rentabilidade de X% representa?" e o valor monetário correspondente.
-- Tooltip de Variação usa o mesmo padrão compacto e exibe o valor monetário da diferença entre preço médio e cotação atual.
-- Médias aritméticas simples por categoria preservadas, agora utilizando a mesma variação percentual exibida em cada ativo.
-- Adicionados testes unitários para variação, rentabilidade, cotação indisponível e exclusão de proventos a receber.
-
-## Manual do aplicativo
+# Lonely Wallet v4.2.15
 
 **Carteira pessoal de investimentos | Aplicação web self-hosted | Docker / ZimaOS**
 
 > Guia do usuário, instalação, atualização, segurança, backup, solução de problemas e perguntas frequentes.
 
-- **Versão:** 4.2.20
+- **Versão:** 4.2.15
 - **Idioma da interface:** Português (Brasil)
 - **Backend:** Python 3.12 + Flask + Gunicorn
 - **Persistência:** SQLite e arquivo JSON de última cotação válida
@@ -69,24 +43,14 @@
 
 ---
 
-## Histórico técnico de versões antigas
-
-### Atualização 4.2.7
+## Atualização 4.2.7
 
 - Os indicadores e valores financeiros ficam ocultos enquanto as cotações e os indexadores atuais são confirmados.
 - A confirmação dos valores atuais é separada da sincronização complementar de proventos e do histórico de rentabilidade, que continuam em segundo plano.
 - A lista de oportunidades de compra exige preço atual abaixo do preço médio e participação atual abaixo da participação ideal.
-- O rodapé e os metadados do Compose identificam a versão correspondente.
+- O rodapé e os metadados do Compose identificam a versão 4.2.7.
 
-### Atualização 4.2.8
-
-- O último dashboard totalmente processado é salvo em `/data/dashboard_cache.json` e reaproveitado no F5 quando bancos, credenciais e arquivo de cotações não mudaram.
-- Na primeira abertura sem cache válido, os valores permanecem ocultos até terminar a geração completa de cotações, indexadores, proventos e histórico.
-- O bloqueio de carregamento cobre toda a janela e impede rolagem enquanto não houver valores confirmados.
-- Cada conexão MeuPluggy recebeu um botão individual de sincronização, além do botão de sincronização geral.
-- O timeout das requisições de sincronização Pluggy foi ampliado no navegador e no servidor.
-
-### Atualização 4.2.9
+## Atualização 4.2.9
 
 - Reorganização do modal **Gerenciar API Pluggy** em duas áreas horizontais: frequência de sincronização e exclusão de dados importados.
 - Modal ampliado para aproveitar a largura disponível, mantendo adaptação para telas menores.
@@ -94,6 +58,22 @@
 - Requisição de salvamento isolada da atualização geral do dashboard para evitar que a interface seja recriada durante a alteração.
 - Configuração carregada do servidor na inicialização e ao abrir o modal, com cache HTTP desativado para essa preferência.
 - O seletor retorna à última frequência salva quando ocorre erro no salvamento.
+
+## Atualização 4.2.8
+
+- O último dashboard totalmente processado é salvo em `/data/dashboard_cache.json` e reaproveitado no F5 quando bancos, credenciais e arquivo de cotações não mudaram.
+- Na primeira abertura sem cache válido, os valores permanecem ocultos até terminar a geração completa de cotações, indexadores, proventos e histórico.
+- O bloqueio de carregamento cobre toda a janela e impede rolagem enquanto não houver valores confirmados.
+- Cada conexão MeuPluggy recebeu um botão individual de sincronização, além do botão de sincronização geral.
+- O timeout das requisições de sincronização Pluggy foi ampliado e o Gunicorn passou a aceitar solicitações longas.
+
+## Atualização 4.2.8
+
+- O último dashboard totalmente processado é salvo em `/data/dashboard_cache.json` e reaproveitado no F5 quando bancos, credenciais e arquivo de cotações não mudaram.
+- Na primeira abertura sem cache válido, os valores permanecem ocultos até terminar a geração completa de cotações, indexadores, proventos e histórico.
+- O bloqueio de carregamento cobre toda a janela e impede rolagem enquanto não houver valores confirmados.
+- Cada conexão MeuPluggy recebeu um botão individual de sincronização, além do botão de sincronização geral.
+- O tempo limite de sincronização Pluggy foi ampliado no navegador e no servidor.
 
 ## 1. O que é o Lonely Wallet
 
@@ -118,7 +98,6 @@ Quando os provedores não retornam um preço válido, o sistema pode usar a últ
 ## 3. Requisitos
 
 - Servidor Linux compatível com Docker e Docker Compose (ZimaOS é suportado pelo Compose incluído).
-- Acesso HTTPS ao jsDelivr durante o build da imagem para obter o Chart.js 4.4.4; após o build, a biblioteca é servida localmente pelo container.
 - Arquitetura `amd64` conforme metadados do pacote.
 - Porta TCP `8085` disponível no host.
 - Espaço em disco para bancos, cache e backups.
@@ -144,12 +123,12 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve indicar `ok: true` e `version: 4.2.20`.
+O retorno deve indicar `ok: true` e `version: 4.2.15`.
 
 ### Atualização de uma versão anterior
 
 1. Faça um backup antes de substituir os arquivos.
-2. Extraia o pacote 4.2.20 em uma pasta de projeto.
+2. Extraia o pacote 4.2.15 em uma pasta de projeto.
 3. **Mantenha exatamente o volume de dados existente**. O Compose padrão utiliza:
 
 ```yaml
@@ -178,15 +157,6 @@ Os arquivos podem variar conforme o histórico de instalação e migrações. Os
 | `backups/` | Backups preventivos gerados antes de exclusões em massa |
 
 **Não edite esses arquivos manualmente com a aplicação em execução.** Faça cópias consistentes e mantenha as chaves protegidas.
-
-### Cache rápido no navegador
-
-A aplicação mantém uma cópia do último dashboard completo no IndexedDB do navegador. Isso permite mostrar os dados imediatamente ao reabrir a página ou pressionar F5, enquanto as cotações e o histórico são atualizados em segundo plano. O cache do navegador não substitui os bancos em `/data` e não é usado para restaurar dados do servidor.
-
-- Na primeira abertura após habilitar esse recurso, ou depois de limpar os dados do navegador, a aplicação precisa concluir uma atualização completa uma vez para criar o snapshot. Nas próximas visitas e ao pressionar F5, esse snapshot é exibido imediatamente.
-- O cache usa uma versão própria de esquema e só precisa ser invalidado quando o formato dos dados armazenados mudar. A versão do aplicativo fica registrada como metadado, sem apagar o cache a cada atualização.
-- Limpar os dados do site/navegador apaga somente essa cópia local. Os bancos e arquivos persistentes do container permanecem intactos.
-- Como o cache contém dados da carteira, utilize somente perfis de navegador e dispositivos confiáveis. O cache não armazena tokens nem credenciais de API.
 
 ## 6. Backup manual
 
@@ -315,7 +285,7 @@ Compare cada linha da prévia com a planilha original e com as operações já r
 
 ### Os gráficos não carregam
 
-O Chart.js é copiado para `app/static/vendor/chart.umd.min.js` durante a construção da imagem Docker pelo script `scripts/vendor_chartjs.py`. Se o arquivo não existir, verifique os logs de build e reconstrua a imagem. O navegador não precisa acessar um CDN para carregar os gráficos.
+A interface atual pode depender de biblioteca Chart.js carregada por CDN. Verifique conectividade do navegador com o CDN e o console de desenvolvedor. A indisponibilidade do CDN pode afetar gráficos sem significar perda dos dados armazenados.
 
 ## 13. Perguntas frequentes
 
@@ -358,7 +328,7 @@ Execute `docker compose logs --tail=200 lonely-wallet` na pasta do Compose.
 ## 14. Limitações conhecidas
 
 - O container ainda executa como root para manter compatibilidade com bind mounts existentes do ZimaOS.
-- O Chart.js é servido localmente pelo Flask após ser obtido no build da imagem; a construção exige acesso HTTPS ao jsDelivr. A execução normal do container não depende do CDN.
+- Chart.js permanece dependente de CDN; sem conectividade, gráficos podem não carregar.
 - Não há CSP estrita nesta versão porque o frontend ainda utiliza handlers inline.
 - A cobertura de cotações depende dos provedores, tickers, planos e limites de API.
 - Rentabilidade, benchmarks e reconciliação completa de snapshots exigem validação com dados reais representativos.
