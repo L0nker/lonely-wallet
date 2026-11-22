@@ -32,7 +32,7 @@ class DashboardBrowserCacheTests(unittest.TestCase):
         self.assertIn("response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'", MAIN)
         self.assertIn('Lonely Wallet v{{ app_version }}', TEMPLATE)
         self.assertIn("version=application_version()", MAIN)
-        self.assertEqual(VERSION, '4.2.19')
+        self.assertEqual(VERSION, '4.2.20')
 
 
 if __name__ == '__main__':

@@ -11,6 +11,7 @@ from flask import Flask, g, jsonify, render_template, request, send_file, sessio
 from scripts.backup_rotation import rotate_predelete_backups
 from scripts.database_migration import migrate_legacy_database
 from scripts.quantity_ledger import quantity_ledger_breaks_position
+from scripts.portfolio_metrics import calculate_position_performance, is_paid_provento
 
 app = Flask(__name__)
 VERSION_FILE = Path(__file__).resolve().parents[1] / 'VERSION'
@@ -3319,6 +3320,7 @@ def carteira(use_cached_quotes=False, force_refresh_quotes=False):
                         # cotacao() preserva a última cotação válida quando uma fonte falha.
                         pass
     itens=[]; invested=actual=received=0.0
+    paid_dividends_by_ticker = received_proventos_by_ticker()
     for ticker in sorted(tickers):
         qty, avg = posicao(ticker)
         pluggy_position = db().execute(
@@ -3347,7 +3349,7 @@ def carteira(use_cached_quotes=False, force_refresh_quotes=False):
         price=float(raw_price) if market_quote_available else (imported_price if has_imported_reference else avg)
         quote_available=market_quote_available or has_imported_reference
         quote_source=(('Última cotação salva · ' + str(quote.get('quoteProvider') or 'fonte anterior')) if quote.get('quoteIsStale') else (quote.get('quoteProvider') or 'brapi')) if market_quote_available else ('Posição importada' if has_imported_reference else 'Sem cotação')
-        dividends = float(received_proventos_by_ticker().get(ticker, 0.0))
+        dividends = float(paid_dividends_by_ticker.get(ticker, 0.0))
         divs = (quote.get('dividendsData') or {}).get('cashDividends',[])[:12]
         annual_div = sum(float(x.get('rate') or 0) for x in divs)
         ceiling = annual_div / .06 if annual_div else None
@@ -3371,14 +3373,26 @@ def carteira(use_cached_quotes=False, force_refresh_quotes=False):
         invested += cost; actual += value; received += (0.0 if kind == 'renda_fixa' else dividends)
         default_name = imported.get('nome') if imported else ticker
         daily_variation = quote.get('regularMarketChangePercent') if quote.get('regularMarketChangePercent') is not None else quote.get('changePercent')
-        # Variação mede somente ganho/perda de preço; rentabilidade soma os proventos.
-        # Pluggy é a fonte preferencial (fluxos reais desde a primeira compra). Sem
-        # histórico Pluggy, usa custo médio e cotação atual, nunca a variação diária.
-        variation_value = pluggy_return['variation_value'] if pluggy_return else (value-cost)
-        variation_pct = pluggy_return['variation_pct'] if pluggy_return else (round(variation_value/cost*100,2) if cost else 0)
-        total_return_value = pluggy_return['total_value'] if pluggy_return else (variation_value + (0.0 if kind=='renda_fixa' else dividends))
-        profitability_pct = pluggy_return['total_pct'] if pluggy_return else (round(total_return_value/cost*100,2) if cost else 0)
-        itens.append({'ticker':ticker,'tipo':kind,'quantidade':round(qty,6),'preco_medio':round(avg,2),'preco_atual':round(price,2) if quote_available else None,'cotacao_disponivel':quote_available,'cotacao_desatualizada':bool(quote.get('quoteIsStale')),'cotacao_ultima_atualizacao':quote.get('quoteLastUpdated'),'cotacao_origem':quote_source,'investido':round(cost,2),'valor_atual':round(value,2),'lucro':round(variation_value,2),'lucro_pct':profitability_pct,'variacao_valor':round(variation_value,2),'variacao_pct':variation_pct,'pluggy_variacao_pct':pluggy_return['variation_pct'] if pluggy_return else None,'pluggy_variacao_valor':pluggy_return['variation_value'] if pluggy_return else None,'pluggy_retorno_pct':pluggy_return['total_pct'] if pluggy_return else None,'pluggy_retorno_valor':pluggy_return['total_value'] if pluggy_return else None,'pluggy_investido_historico':pluggy_return['invested'] if pluggy_return else None,'pluggy_primeira_compra':pluggy_return['first_buy'] if pluggy_return else None,'proventos':0.0 if kind=='renda_fixa' else round(dividends,2),'calculo_indexador':fixed_calc_ok if kind=='renda_fixa' else None,'aviso_calculo':fixed_calc_warning if kind=='renda_fixa' else None,'pl':quote.get('priceEarnings'),'pvp':quote.get('priceToBook') or quote.get('priceToBookRatio') or quote.get('priceToBookValue'),'avaliacao':_fundamental_rating(quote, kind),'preco_teto_bazin':round(ceiling,2) if ceiling else None,'abaixo_do_teto':bool(ceiling and price and price<=ceiling),'nome':quote.get('longName') or quote.get('shortName') or default_name or ticker,'logo':quote.get('logourl') or quote.get('logo') or ('/static/lonely-wallet-logo.png' if kind=='renda_fixa' else f'https://icons.brapi.dev/icons/{ticker}.svg'),'variacao_dia':round(float(daily_variation),2) if daily_variation is not None else None})
+        # A métrica individual segue a regra da carteira: variação é preço atual
+        # menos preço médio; rentabilidade soma somente proventos já recebidos.
+        # O retorno histórico da Pluggy permanece disponível como metadado, mas
+        # não substitui o cálculo visível da posição.
+        if kind == 'renda_fixa':
+            variation_value = value - cost
+            variation_pct = round(variation_value / cost * 100, 2) if cost else None
+            total_return_value = variation_value
+            profitability_pct = round(total_return_value / cost * 100, 2) if cost else None
+        else:
+            metrics = calculate_position_performance(
+                qty, avg, price, dividends, quote_available=quote_available
+            )
+            variation_value = metrics['variation_value']
+            variation_pct = metrics['variation_pct']
+            total_return_value = metrics['profitability_value']
+            profitability_pct = metrics['profitability_pct']
+        item_profit = round(variation_value, 2) if variation_value is not None else None
+        item_return_value = round(total_return_value, 2) if total_return_value is not None else None
+        itens.append({'ticker':ticker,'tipo':kind,'quantidade':round(qty,6),'preco_medio':round(avg,2),'preco_atual':round(price,2) if quote_available else None,'cotacao_disponivel':quote_available,'cotacao_desatualizada':bool(quote.get('quoteIsStale')),'cotacao_ultima_atualizacao':quote.get('quoteLastUpdated'),'cotacao_origem':quote_source,'investido':round(cost,2),'valor_atual':round(value,2),'lucro':item_profit,'lucro_pct':profitability_pct,'rentabilidade_valor':item_return_value,'variacao_valor':item_profit,'variacao_pct':variation_pct,'pluggy_variacao_pct':pluggy_return['variation_pct'] if pluggy_return else None,'pluggy_variacao_valor':pluggy_return['variation_value'] if pluggy_return else None,'pluggy_retorno_pct':pluggy_return['total_pct'] if pluggy_return else None,'pluggy_retorno_valor':pluggy_return['total_value'] if pluggy_return else None,'pluggy_investido_historico':pluggy_return['invested'] if pluggy_return else None,'pluggy_primeira_compra':pluggy_return['first_buy'] if pluggy_return else None,'proventos':0.0 if kind=='renda_fixa' else round(dividends,2),'calculo_indexador':fixed_calc_ok if kind=='renda_fixa' else None,'aviso_calculo':fixed_calc_warning if kind=='renda_fixa' else None,'pl':quote.get('priceEarnings'),'pvp':quote.get('priceToBook') or quote.get('priceToBookRatio') or quote.get('priceToBookValue'),'avaliacao':_fundamental_rating(quote, kind),'preco_teto_bazin':round(ceiling,2) if ceiling else None,'abaixo_do_teto':bool(ceiling and price and price<=ceiling),'nome':quote.get('longName') or quote.get('shortName') or default_name or ticker,'logo':quote.get('logourl') or quote.get('logo') or ('/static/lonely-wallet-logo.png' if kind=='renda_fixa' else f'https://icons.brapi.dev/icons/{ticker}.svg'),'variacao_dia':round(float(daily_variation),2) if daily_variation is not None else None})
     allocation={}
     for item in itens: allocation[item['tipo']]=allocation.get(item['tipo'],0)+item['valor_atual']
     return jsonify(itens=itens,resumo={'investido':round(invested,2),'atual':round(actual,2),'lucro':round(actual-invested,2),'lucro_pct':round((actual/invested-1)*100,2) if invested else 0,'proventos':round(received,2),'ativos':len(itens)},alocacao=allocation)
@@ -3677,10 +3691,12 @@ def _is_income_event(event_type):
 
 
 def _received_proventos_records(active_tickers=None):
-    """Retorna proventos da tabela comum com data não futura, deduplicando origens importadas.
+    """Return confirmed paid income, enriching common rows with entitlement details.
 
-    Registros vinculados à Pluggy ou B3 mantêm a origem de importação. Registros
-    sem vínculo são lançamentos manuais e também entram na apuração de recebidos.
+    Manual/Pluggy/B3 entries are stored in ``proventos``. Events synchronized
+    from brapi live in ``proventos_api``. Matching both stores avoids omitting
+    share counts while preventing the same payment from being counted twice.
+    Future or merely announced API events are never returned here.
     """
     active_set = None if active_tickers is None else {str(t).upper() for t in active_tickers}
     if active_set is not None and not active_set:
@@ -3693,15 +3709,61 @@ def _received_proventos_records(active_tickers=None):
     b3_ids = {int(r['registro_id']) for r in db().execute(
         "SELECT registro_id FROM b3_importados WHERE lower(categoria)='provento' AND registro_id IS NOT NULL"
     ).fetchall()}
-
-    # Todos os lançamentos da tabela comum são considerados: os importados recebem
-    # sua origem; os demais são lançamentos manuais. Eventos futuros não entram.
     origin_by_id = {ident: 'Pluggy' for ident in pluggy_ids}
     for ident in b3_ids:
         origin_by_id.setdefault(ident, 'B3')
+
+    paid_api = []
+    api_rows = db().execute(
+        "SELECT event_key,ticker,tipo_ativo,tipo_evento,data_com,data_pagamento,"
+        "valor_por_ativo,quantidade,valor_total,status,remarks "
+        "FROM proventos_api WHERE status='Pago' ORDER BY data_pagamento,ticker,event_key"
+    ).fetchall()
+    for raw in api_rows:
+        row = dict(raw)
+        payment_date = _api_date(row.get('data_pagamento'))
+        ticker = str(row.get('ticker') or '').strip().upper()
+        amount = round(float(row.get('valor_total') or 0), 2)
+        if not ticker or (active_set is not None and ticker not in active_set):
+            continue
+        if not is_paid_provento(row.get('status'), payment_date, today):
+            continue
+        if not _is_income_event(row.get('tipo_evento')) or amount <= 0:
+            continue
+        quantity = max(0.0, float(row.get('quantidade') or 0))
+        rate = max(0.0, float(row.get('valor_por_ativo') or 0))
+        remarks = str(row.get('remarks') or '').strip()
+        record_date = _api_date(row.get('data_com'))
+        if quantity <= 1e-8 and record_date:
+            try:
+                quantity, quantity_method = position_quantity_on_date_details(ticker, record_date)
+            except Exception:
+                quantity, quantity_method = 0.0, 'quantidade indisponível'
+            if quantity > 1e-8:
+                if rate <= 0:
+                    rate = amount / quantity
+                remarks = ' '.join(part for part in (
+                    remarks,
+                    f'Quantidade recuperada pela posição histórica na data-com ({quantity_method}).'
+                    if quantity_method else ''
+                ) if part)
+        if rate <= 0 and quantity > 1e-8:
+            rate = amount / quantity
+        paid_api.append({
+            'event_key': str(row.get('event_key') or ''), 'ticker': ticker,
+            'tipo': str(row.get('tipo_evento') or 'Provento'),
+            'tipo_ativo': str(row.get('tipo_ativo') or typesafe_asset_type(ticker)),
+            'status': 'Pago', 'data_com': record_date or None,
+            'data_pagamento': payment_date, 'quantidade': quantity if quantity > 1e-8 else None,
+            'valor_por_ativo': rate if rate > 0 else None, 'valor_total': amount,
+            'origem': 'brapi', 'tipo_evento': str(row.get('tipo_evento') or 'PROVENTO'),
+            'remarks': remarks,
+        })
+
     rows = db().execute('SELECT id,ticker,valor_total,data FROM proventos ORDER BY data,id').fetchall()
     records = []
     seen = set()
+    used_api_keys = set()
     for raw in rows:
         row = dict(raw)
         payment_date = _api_date(row.get('data'))
@@ -3724,14 +3786,46 @@ def _received_proventos_records(active_tickers=None):
             continue
         if origin != 'Manual':
             seen.add(key)
-        records.append({
+        record = {
             'ticker': ticker, 'tipo': 'Provento',
             'tipo_ativo': typesafe_asset_type(ticker),
             'status': 'Pago', 'data_com': None,
             'data_pagamento': payment_date, 'quantidade': None,
             'valor_por_ativo': None, 'valor_total': amount,
-            'origem': origin, 'tipo_evento': 'PROVENTO'
-        })
+            'origem': origin, 'tipo_evento': 'PROVENTO', 'remarks': ''
+        }
+        # Reuse the corresponding API event to restore quantity and rate for
+        # common-table records imported from Pluggy, B3 or entered manually.
+        candidates = [item for item in paid_api if item['event_key'] not in used_api_keys
+                      and item['ticker'] == ticker
+                      and abs((date.fromisoformat(item['data_pagamento']) - date.fromisoformat(payment_date)).days) <= 3]
+        if candidates:
+            candidate = min(candidates, key=lambda item: (
+                abs(float(item['valor_total']) - amount),
+                abs((date.fromisoformat(item['data_pagamento']) - date.fromisoformat(payment_date)).days)
+            ))
+            tolerance = max(0.05, max(amount, float(candidate['valor_total'])) * 0.01)
+            if abs(float(candidate['valor_total']) - amount) <= tolerance:
+                record.update({
+                    'tipo': candidate['tipo'], 'tipo_ativo': candidate['tipo_ativo'],
+                    'data_com': candidate['data_com'], 'quantidade': candidate['quantidade'],
+                    'valor_por_ativo': candidate['valor_por_ativo'],
+                    'tipo_evento': candidate['tipo_evento'],
+                    'remarks': candidate['remarks']
+                })
+                used_api_keys.add(candidate['event_key'])
+        records.append(record)
+
+    # API-only paid events also contribute to the received total. Pending events
+    # are intentionally excluded, even when already announced by the source.
+    for item in paid_api:
+        if item['event_key'] in used_api_keys:
+            continue
+        key = (item['ticker'], item['data_pagamento'], round(float(item['valor_total']), 2))
+        if key in seen:
+            continue
+        seen.add(key)
+        records.append({key: value for key, value in item.items() if key != 'event_key'})
     return records
 
 
@@ -3752,6 +3846,16 @@ def received_proventos_by_ticker():
             ticker = str(row['ticker']).upper()
             if ticker not in active and posicao(ticker)[0] > 1e-8:
                 active.append(ticker)
+    # Pluggy pode fornecer a posição sem que exista operação correspondente
+    # importada na tabela local; esses ativos também devem receber seus pagos.
+    for row in db().execute(
+        "SELECT DISTINCT s.ticker FROM pluggy_position_snapshots s "
+        "JOIN pluggy_items i ON i.item_id=s.item_id "
+        "WHERE i.active=1 AND s.quantity>0"
+    ).fetchall():
+        ticker = str(row['ticker']).upper()
+        if ticker and ticker not in active:
+            active.append(ticker)
     totals = {}
     for row in _received_proventos_records(active):
         if not _is_income_event(row.get('tipo_evento')):

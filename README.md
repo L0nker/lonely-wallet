@@ -1,4 +1,4 @@
-# Lonely Wallet v4.2.19
+# Lonely Wallet v4.2.20
 
 ## Histórico de versões
 
@@ -31,6 +31,8 @@
 ### v4.2.18
 - Versão informada como base desta atualização. O ZIP recebido com esse nome continha `VERSION=4.2.16` e era idêntico ao pacote 4.2.16; não havia um histórico técnico separado para as alterações da 4.2.18.
 
+
+
 ### v4.2.19
 - Ampliada a validação cronológica das quantidades para criação, edição e exclusão de lançamentos, sem alterar cálculos financeiros.
 - Sincronização automática Pluggy executada no servidor, sem depender do navegador, com lock entre processos e registro persistente de tentativas e falhas.
@@ -42,13 +44,23 @@
 - Atualizações demoradas passam a ocorrer em segundo plano; a tela de carregamento não volta a cobrir dados já exibidos.
 - Rodapé, favicon e metadados do Compose passam a usar a versão 4.2.19; a página principal desativa cache HTTP para refletir a versão após o rebuild.
 
+### v4.2.20
+- Corrigido o cálculo da variação individual para usar a diferença entre cotação atual e preço médio, sem utilizar a oscilação diária ou o retorno histórico da Pluggy como substitutos.
+- Rentabilidade individual calculada pela variação de preço somada exclusivamente aos proventos efetivamente pagos.
+- Proventos pagos sincronizados pela brapi passam a integrar o histórico recebido; eventos futuros ou com status "A receber" permanecem fora da rentabilidade.
+- Registros de proventos comuns são enriquecidos com quantidade, data-com e valor por ativo quando existe evento pago correspondente na API, evitando duplicidade.
+- Tooltip de Rentabilidade simplificado para mostrar somente "Quanto uma rentabilidade de X% representa?" e o valor monetário correspondente.
+- Tooltip de Variação usa o mesmo padrão compacto e exibe o valor monetário da diferença entre preço médio e cotação atual.
+- Médias aritméticas simples por categoria preservadas, agora utilizando a mesma variação percentual exibida em cada ativo.
+- Adicionados testes unitários para variação, rentabilidade, cotação indisponível e exclusão de proventos a receber.
+
 ## Manual do aplicativo
 
 **Carteira pessoal de investimentos | Aplicação web self-hosted | Docker / ZimaOS**
 
 > Guia do usuário, instalação, atualização, segurança, backup, solução de problemas e perguntas frequentes.
 
-- **Versão:** 4.2.19
+- **Versão:** 4.2.20
 - **Idioma da interface:** Português (Brasil)
 - **Backend:** Python 3.12 + Flask + Gunicorn
 - **Persistência:** SQLite e arquivo JSON de última cotação válida
@@ -132,12 +144,12 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve indicar `ok: true` e `version: 4.2.19`.
+O retorno deve indicar `ok: true` e `version: 4.2.20`.
 
 ### Atualização de uma versão anterior
 
 1. Faça um backup antes de substituir os arquivos.
-2. Extraia o pacote 4.2.19 em uma pasta de projeto.
+2. Extraia o pacote 4.2.20 em uma pasta de projeto.
 3. **Mantenha exatamente o volume de dados existente**. O Compose padrão utiliza:
 
 ```yaml
