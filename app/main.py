@@ -344,8 +344,7 @@ def init_db():
     );
     CREATE TABLE IF NOT EXISTS proventos (
       id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT NOT NULL,
-      valor_total REAL NOT NULL, data TEXT NOT NULL,
-      tipo_evento TEXT NOT NULL DEFAULT 'PROVENTO'
+      valor_total REAL NOT NULL, data TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS metas (
       id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT NOT NULL,
@@ -630,19 +629,7 @@ def init_db():
     b3cols = {row[1] for row in con.execute('PRAGMA table_info(b3_importados)').fetchall()}
     if 'lote_id' not in b3cols: con.execute('ALTER TABLE b3_importados ADD COLUMN lote_id TEXT')
     if 'registro_id' not in b3cols: con.execute('ALTER TABLE b3_importados ADD COLUMN registro_id INTEGER')
-    provento_cols = {row[1] for row in con.execute('PRAGMA table_info(proventos)').fetchall()}
-    if 'tipo_evento' not in provento_cols:
-        con.execute("ALTER TABLE proventos ADD COLUMN tipo_evento TEXT NOT NULL DEFAULT 'PROVENTO'")
-    con.execute("UPDATE proventos SET tipo_evento='PROVENTO' WHERE tipo_evento IS NULL OR trim(tipo_evento)=''")
-    # Reprocessa uma única vez os eventos Pluggy que versões anteriores haviam
-    # marcado como duplicados, agora que a deduplicação diferencia o tipo do evento.
-    # O marcador evita repetir a migração em todo reinício do container.
-    recheck_marker = 'migration_pluggy_provento_type_recheck_v433'
-    already_rechecked = con.execute('SELECT 1 FROM integracao_estado WHERE chave=?', (recheck_marker,)).fetchone()
-    if not already_rechecked:
-        con.execute("UPDATE pluggy_investment_transactions SET import_state='imported_only' WHERE import_state='provento_duplicado_ignorado'")
-        con.execute('INSERT INTO integracao_estado(chave,valor) VALUES(?,?)', (recheck_marker, datetime.now(TZ).isoformat(timespec='seconds')))
-    con.execute('DELETE FROM api_response_cache WHERE expires_at < ?', (time.time() - 7 * 86400,))
+    con.execute('DELETE FROM api_response_cache WHERE expires_at < ?', (time.time() - 30 * 86400,))
     con.commit(); con.close()
 
 
@@ -1060,7 +1047,7 @@ def _brapi_cache_write(cache_key, payload, ttl):
                 'ON CONFLICT(cache_key) DO UPDATE SET payload_json=excluded.payload_json,cached_at=excluded.cached_at,expires_at=excluded.expires_at',
                 (cache_key, 'brapi', encoded, now, now + ttl)
             )
-            con.execute('DELETE FROM api_response_cache WHERE expires_at < ?', (now - 7 * 86400,))
+            con.execute('DELETE FROM api_response_cache WHERE expires_at < ?', (now - 30 * 86400,))
             con.commit()
         finally:
             con.close()
@@ -1211,7 +1198,8 @@ def _brapi_get_json(url, params=None, headers=None, timeout=12, cache_ttl=0,
             if response.status_code >= 400:
                 _brapi_usage_record('errors', error=True)
             if response.status_code in (400, 401, 403, 404):
-                _brapi_cache_write(cache_key, {'_lw_http_error': response.status_code}, 6 * 3600)
+                _brapi_cache_write(cache_key, {'_lw_http_error': response.status_code},
+                    300 if response.status_code in (401, 403) else (3600 if response.status_code == 404 else 600))
             if response.status_code == 429 or response.status_code >= 500:
                 failure_count = int(control.get('failure_count') or 0) + 1
                 retry_after = response.headers.get('Retry-After', '')
@@ -1245,20 +1233,6 @@ def _brapi_get_json(url, params=None, headers=None, timeout=12, cache_ttl=0,
                 if isinstance(payload, dict): payload = {**payload, '_lw_stale': True}
                 return payload
             raise
-
-
-def _normalize_income_event_type(value, asset_type=''):
-    text = unicodedata.normalize('NFKD', str(value or '').upper())
-    text = ''.join(ch for ch in text if not unicodedata.combining(ch))
-    kind = str(asset_type or '').strip().lower()
-    if any(marker in text for marker in ('JUROS SOBRE CAPITAL', 'JCP', 'INTEREST_ON_EQUITY')):
-        return 'JCP'
-    if 'DIVIDEND' in text or 'DIVIDENDO' in text:
-        return 'DIVIDENDO'
-    if 'RENDIMENTO' in text or 'REND' in text or kind in ('fii', 'fiis', 'fundo_imobiliario', 'fundos_imobiliarios'):
-        return 'RENDIMENTO'
-    return 'PROVENTO'
-
 
 def _get_pluggy_credentials():
     raw = _get_api_token('pluggy')
@@ -1470,160 +1444,104 @@ def _pluggy_average_purchase_price(ticker):
 
 
 def _pluggy_fixed_income_snapshot_rows(item_id, investments, snapshot_date, now_text):
-    """Atualiza snapshots sem apagar aplicações quando a resposta vem incompleta.
+    """Converte posições sincronizadas em lançamentos por classe.
 
-    Uma posição de renda fixa só é substituída quando chega com saldo, principal,
-    indexador e taxa válidos. Quando faltam dados, a última posição confiável é
-    preservada. Itens ausentes em uma resposta parcial também são preservados.
-    Encerramentos explícitos continuam podendo zerar posições de mercado.
+    Renda fixa só entra quando a Pluggy fornece os dados contratuais mínimos.
+    Posições incompletas são ignoradas para não criar um ativo sem indexador/taxa.
     """
     if not snapshot_date:
         return 0, 0, 0
     fixed_count = market_count = skipped_fixed = 0
     origin_tag = 'PluggySnapshot:' + item_id
+    # Recria somente os lançamentos-snapshot desta conexão, sem tocar nos manuais.
     previous_snapshots = [dict(row) for row in db().execute(
         'SELECT * FROM pluggy_position_snapshots WHERE item_id=?', (item_id,)
     ).fetchall()]
-    previous_fixed_rows = []
-    previous_fixed_by_id = {}
-    for old_row in db().execute("SELECT * FROM operacoes WHERE detalhes LIKE ? ORDER BY id", ('%' + origin_tag + '%',)).fetchall():
-        old = dict(old_row)
-        try:
-            metadata = json.loads(old.get('detalhes') or '{}')
-        except (TypeError, ValueError):
-            metadata = {}
-        if metadata.get('pluggy_snapshot') == origin_tag and metadata.get('investment_id'):
-            previous_fixed_by_id[str(metadata['investment_id'])] = old
-            previous_fixed_rows.append(old)
-    current_investment_ids = {str(row.get('id') or '').strip() for row in investments if str(row.get('id') or '').strip()}
+    current_investment_ids = {str(row.get('id') or '') for row in investments}
     db().execute("DELETE FROM operacoes WHERE detalhes LIKE ?", ('%' + origin_tag + '%',))
     db().execute('DELETE FROM pluggy_position_snapshots WHERE item_id=?', (item_id,))
-    preserved_ids = set()
-
-    def preserve_previous(investment_id):
-        old = previous_fixed_by_id.get(str(investment_id or ''))
-        if not old or str(investment_id) in preserved_ids:
-            return False
-        db().execute(
-            """INSERT INTO operacoes(id,ticker,tipo,lado,quantidade,preco,data,custos,status,
-               data_registro,data_execucao,detalhes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (old['id'], old['ticker'], old['tipo'], old['lado'], old['quantidade'], old['preco'], old['data'],
-             old.get('custos') or 0, old.get('status') or 'executada', old.get('data_registro') or old['data'],
-             old.get('data_execucao') or '', old.get('detalhes') or '{}')
-        )
-        preserved_ids.add(str(investment_id))
-        return True
-
     for investment in investments:
         asset_type = _refine_pluggy_asset_type(investment)
         investment_id = str(investment.get('id') or '').strip()
         if not investment_id:
             continue
+        balance = float(investment.get('balance') or investment.get('amount') or investment.get('value') or 0)
+        principal = float(investment.get('amountOriginal') or investment.get('amountInvested') or balance)
         details = investment.get('details') if isinstance(investment.get('details'), dict) else {}
-        status = str(investment.get('status') or '').strip().upper()
-        explicitly_closed = status in ('RETIRADA_TOTAL', 'TOTAL_WITHDRAWAL', 'CLOSED', 'INACTIVE', 'CANCELLED', 'CANCELED', 'MATURED')
-        balance_raw = investment.get('balance')
-        if balance_raw in (None, ''):
-            balance_raw = investment.get('amount') if investment.get('amount') not in (None, '') else investment.get('value')
-        principal_raw = investment.get('amountOriginal')
-        if principal_raw in (None, ''):
-            principal_raw = investment.get('amountInvested')
-        try:
-            balance = float(balance_raw) if balance_raw not in (None, '') else None
-            principal = float(principal_raw) if principal_raw not in (None, '') else balance
-        except (TypeError, ValueError):
-            balance = principal = None
-
-        if asset_type != 'renda_fixa' and investment_id in previous_fixed_by_id:
-            previous = previous_fixed_by_id[investment_id]
-            if str(previous.get('tipo') or '').lower() == 'renda_fixa' and asset_type == 'outros' and not explicitly_closed:
-                skipped_fixed += 1
-                if preserve_previous(investment_id):
-                    fixed_count += 1
-                continue
-
         if asset_type == 'renda_fixa':
+            if balance <= 0 or principal <= 0:
+                continue
             indexer = str(investment.get('indexer') or investment.get('indexerName') or details.get('indexer') or details.get('indexerName') or '').strip().upper()
             rate = investment.get('rate') or investment.get('percentage') or details.get('rate') or details.get('percentage')
-            try:
-                rate = float(str(rate).replace(',', '.')) if rate not in (None, '') else None
-            except (TypeError, ValueError):
-                rate = None
-            valid_financial_values = balance is not None and principal is not None and balance > 0 and principal > 0
-            if explicitly_closed:
-                skipped_fixed += 1
-                continue
-            if not valid_financial_values or not indexer or rate is None or not math.isfinite(rate) or rate <= 0:
-                skipped_fixed += 1
-                if preserve_previous(investment_id):
-                    fixed_count += 1
-                continue
-
             maturity = _pluggy_date(investment.get('maturityDate') or investment.get('dueDate') or details.get('maturityDate') or details.get('dueDate'))
+            # Sem indexador e taxa não há cálculo confiável de evolução do título.
+            if not indexer or rate in (None, ''):
+                skipped_fixed += 1
+                continue
+            try:
+                rate = float(str(rate).replace(',', '.'))
+            except (TypeError, ValueError):
+                skipped_fixed += 1
+                continue
             symbol = 'RF' + re.sub(r'[^A-Z0-9]', '', investment_id.upper())[:18]
             quantity, price = 1.0, principal
             name = str(investment.get('name') or investment.get('subtype') or 'Renda fixa')
             application_date = _pluggy_date(
-                investment.get('applicationDate') or investment.get('investmentDate') or investment.get('startDate') or
-                investment.get('appliedAt') or details.get('applicationDate') or details.get('investmentDate') or
+                investment.get('applicationDate') or investment.get('investmentDate') or
+                investment.get('startDate') or investment.get('appliedAt') or
+                details.get('applicationDate') or details.get('investmentDate') or
                 details.get('startDate') or details.get('appliedAt')
             )
-            issuer = str(investment.get('issuerName') or investment.get('issuer') or details.get('issuerName') or details.get('issuer') or '').strip()
+            issuer = str(investment.get('issuerName') or investment.get('issuer') or
+                         details.get('issuerName') or details.get('issuer') or '').strip()
             contract = {'origem': 'Pluggy', 'pluggy_snapshot': origin_tag, 'investment_id': investment_id,
                         'nome': name, 'emissor': issuer, 'titulo': str(investment.get('subtype') or details.get('subtype') or ''),
                         'data_aplicacao': application_date, 'indexador': indexer, 'taxa': rate, 'vencimento': maturity,
                         'saldo_atual': balance, 'subtipo': investment.get('subtype') or ''}
-            db().execute(
-                """INSERT INTO operacoes(ticker,tipo,lado,quantidade,preco,data,custos,status,
-                   data_registro,data_execucao,detalhes) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                (symbol, asset_type, 'compra', quantity, price, snapshot_date, 0.0, 'executada',
-                 snapshot_date, snapshot_date + 'T10:00:00-03:00', json.dumps(contract, ensure_ascii=False))
-            )
             fixed_count += 1
-            continue
-
-        if asset_type in ('acao', 'fii', 'etf', 'bdr', 'fundo', 'stocks', 'internacional', 'cripto', 'reit'):
+        elif asset_type in ('acao', 'fii', 'etf', 'bdr', 'fundo', 'stocks', 'internacional', 'cripto', 'reit'):
+            # Snapshot autoritativo inclusive com quantidade zero para posições encerradas.
             symbol = _pluggy_ticker(investment)
+            quantity = max(0.0, float(investment.get('quantity') or 0))
+            status = str(investment.get('status') or '').upper()
+            if status in ('RETIRADA_TOTAL', 'TOTAL_WITHDRAWAL', 'CLOSED', 'INACTIVE'):
+                quantity = 0.0
             if symbol:
-                quantity = max(0.0, float(investment.get('quantity') or 0))
-                if explicitly_closed:
-                    quantity = 0.0
                 db().execute(
                     "INSERT OR REPLACE INTO pluggy_position_snapshots "
                     "(item_id,investment_id,ticker,asset_type,quantity,amount_original,balance,snapshot_at) "
                     "VALUES(?,?,?,?,?,?,?,?)",
-                    (item_id, investment_id, symbol, asset_type, quantity, max(0.0, principal or 0), max(0.0, balance or 0), now_text)
+                    (item_id, investment_id, symbol, asset_type, quantity, principal, balance, now_text)
                 )
                 market_count += 1
             continue
-
-        symbol = _pluggy_ticker(investment)
-        if explicitly_closed and symbol:
-            db().execute(
-                "INSERT OR REPLACE INTO pluggy_position_snapshots "
-                "(item_id,investment_id,ticker,asset_type,quantity,amount_original,balance,snapshot_at) "
-                "VALUES(?,?,?,?,?,?,?,?)",
-                (item_id, investment_id, symbol, asset_type, 0.0, 0.0, 0.0, now_text)
-            )
-            market_count += 1
-
-    # Missing fixed-income items are not considered closed unless Pluggy provides
-    # an explicit closure status. Preserve the last trustworthy operation.
-    for investment_id in previous_fixed_by_id:
-        if investment_id not in current_investment_ids:
-            skipped_fixed += 1
-            if preserve_previous(investment_id):
-                fixed_count += 1
-    # Existing market snapshots missing from a response are deliberately not
-    # recreated at zero: absence alone is not proof of liquidation.
+        else:
+            status = str(investment.get('status') or '').upper()
+            symbol = _pluggy_ticker(investment)
+            if status in ('RETIRADA_TOTAL', 'TOTAL_WITHDRAWAL', 'CLOSED', 'INACTIVE') and symbol:
+                db().execute(
+                    "INSERT OR REPLACE INTO pluggy_position_snapshots "
+                    "(item_id,investment_id,ticker,asset_type,quantity,amount_original,balance,snapshot_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (item_id, investment_id, symbol, asset_type, 0.0, 0.0, 0.0, now_text)
+                )
+                market_count += 1
+            continue
+        db().execute(
+            """INSERT INTO operacoes(ticker,tipo,lado,quantidade,preco,data,custos,status,
+               data_registro,data_execucao,detalhes) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (symbol, asset_type, 'compra', quantity, price, snapshot_date, 0.0, 'executada',
+             snapshot_date, snapshot_date + 'T10:00:00-03:00', json.dumps(contract, ensure_ascii=False))
+        )
+    # Se uma posição deixou de constar na lista atual da corretora, ela não pode
+    # reaparecer por compras antigas: grava uma posição encerrada para aquele id.
     for old in previous_snapshots:
         if old['investment_id'] not in current_investment_ids:
             db().execute(
                 "INSERT OR REPLACE INTO pluggy_position_snapshots "
                 "(item_id,investment_id,ticker,asset_type,quantity,amount_original,balance,snapshot_at) "
                 "VALUES(?,?,?,?,?,?,?,?)",
-                (item_id, old['investment_id'], old['ticker'], old['asset_type'], old['quantity'],
-                 old['amount_original'], old['balance'], old['snapshot_at'])
+                (item_id, old['investment_id'], old['ticker'], old['asset_type'], 0.0, 0.0, 0.0, now_text)
             )
     return fixed_count, market_count, skipped_fixed
 
@@ -1742,30 +1660,27 @@ def _pluggy_import_investment_transaction(item_id, investment, movement, now_tex
         marker in text_for_income for marker in income_markers
     )
     if (is_income_movement or is_income_description) and ticker and trade_date and amount > 0:
-        income_type = _normalize_income_event_type(text_for_income, _refine_pluggy_asset_type(investment))
         already_imported = db().execute(
             'SELECT external_id FROM pluggy_imported_events WHERE external_id=?', (external_id,)
         ).fetchone()
         duplicate = db().execute(
             """SELECT id FROM proventos WHERE UPPER(ticker)=?
-               AND UPPER(COALESCE(tipo_evento,'PROVENTO'))=?
                AND date(data) BETWEEN date(?,'-3 day') AND date(?,'+3 day')
                AND ABS(valor_total-?)<=MAX(0.05,?*0.01) LIMIT 1""",
-            (ticker, income_type, trade_date, trade_date, amount, amount)
+            (ticker, trade_date, trade_date, amount, amount)
         ).fetchone()
         api_duplicate = db().execute(
             """SELECT event_key FROM proventos_api WHERE UPPER(ticker)=?
-               AND UPPER(COALESCE(tipo_evento,'PROVENTO'))=?
                AND date(data_pagamento) BETWEEN date(?,'-3 day') AND date(?,'+3 day')
                AND ABS(valor_total-?)<=MAX(0.05,?*0.01) LIMIT 1""",
-            (ticker, income_type, trade_date, trade_date, amount, amount)
+            (ticker, trade_date, trade_date, amount, amount)
         ).fetchone()
         if already_imported or duplicate or api_duplicate:
             state = 'provento_duplicado_ignorado'
         else:
             cursor = db().execute(
-                'INSERT INTO proventos(ticker,valor_total,data,tipo_evento) VALUES(?,?,?,?)',
-                (ticker, amount, trade_date, income_type)
+                'INSERT INTO proventos(ticker,valor_total,data) VALUES(?,?,?)',
+                (ticker, amount, trade_date)
             )
             db().execute(
                 """INSERT OR IGNORE INTO pluggy_imported_events
@@ -1802,7 +1717,7 @@ def _pluggy_sync_interval():
     try:
         value = int(row['value']) if row else 240
     except (TypeError, ValueError):
-        value = 30
+        value = 240
     return value if value in (0, 15, 30, 60, 240, 720, 1440) else 240
 
 
@@ -2169,15 +2084,6 @@ if not any(t.name == 'pluggy-server-scheduler' and t.is_alive() for t in threadi
     threading.Thread(target=pluggy_server_scheduler_loop, daemon=True, name='pluggy-server-scheduler').start()
 
 
-@app.route('/api/integracoes/brapi/uso', methods=['GET'])
-def brapi_local_usage():
-    response = jsonify(**_brapi_usage_snapshot(), control=_brapi_control_state(),
-                       max_tickers_per_request=BRAPI_MAX_TICKERS_PER_REQUEST,
-                       cache_market_seconds=BRAPI_MARKET_CACHE_SECONDS)
-    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
-    return response
-
-
 @app.route('/api/integracoes', methods=['GET'])
 def api_integrations_list():
     rows = {row['provider']: row for row in token_db().execute('SELECT provider,token_encrypted,enabled,updated_at FROM api_credentials').fetchall()}
@@ -2197,6 +2103,16 @@ def api_integrations_list():
             except Exception: pluggy_credentials = {}
         providers.append({'id':key, **meta, 'connected':key in ('brapi','hgbrasil','bcb','dadosb3'), 'configured':configured, 'enabled':bool(row['enabled']) if row else bool(token or pluggy_credentials), 'masked':('••••••••' + token[-4:]) if token else '', 'client_id_masked':(('••••••••' + pluggy_credentials.get('client_id','')[-4:]) if pluggy_credentials.get('client_id') else ''), 'updated_at':row['updated_at'] if row else None})
     return jsonify({'providers':providers})
+
+
+@app.route('/api/integracoes/brapi/uso', methods=['GET'])
+def api_brapi_usage():
+    response = jsonify(_brapi_usage_snapshot() | {'control': _brapi_control_state(),
+        'max_tickers_per_request': BRAPI_MAX_TICKERS_PER_REQUEST,
+        'cache_market_seconds': BRAPI_MARKET_CACHE_SECONDS,
+        'cache_off_market_seconds': BRAPI_OFF_MARKET_CACHE_SECONDS})
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    return response
 
 
 @app.route('/api/integracoes/<provider>', methods=['POST','DELETE'])
@@ -2268,17 +2184,16 @@ def api_integrations_test(provider):
         return jsonify({'ok':False,'message':'Cadastre um token antes de testar.'}), 400
     try:
         if provider == 'brapi':
-            payload = _brapi_get_json('https://brapi.dev/api/v2/user/usage', headers={'Authorization':f'Bearer {token}'}, timeout=15, cache_ttl=300, stale_if_error=1800)
-            response = None
-        elif provider == 'hgbrasil':
-            response = requests.get('https://api.hgbrasil.com/finance', params={'key':token}, timeout=15)
-        elif provider == 'fred':
-            response = requests.get('https://api.stlouisfed.org/fred/series', params={'series_id':'GDP','api_key':token,'file_type':'json'}, timeout=15)
-        elif provider == 'dadosb3':
-            response = requests.get('https://dadosb3.com/indices/IFIX/precos', headers={'X-API-Key':token}, timeout=15)
-        if provider == 'brapi':
-            data = payload
+            data = _brapi_get_json('https://brapi.dev/api/v2/user/usage',
+                headers={'Authorization':f'Bearer {token}'}, timeout=15,
+                cache_ttl=300, stale_if_error=1800)
         else:
+            if provider == 'hgbrasil':
+                response = requests.get('https://api.hgbrasil.com/finance', params={'key':token}, timeout=15)
+            elif provider == 'fred':
+                response = requests.get('https://api.stlouisfed.org/fred/series', params={'series_id':'GDP','api_key':token,'file_type':'json'}, timeout=15)
+            elif provider == 'dadosb3':
+                response = requests.get('https://dadosb3.com/indices/IFIX/precos', headers={'X-API-Key':token}, timeout=15)
             response.raise_for_status()
             data = response.json()
         if provider == 'hgbrasil' and data.get('valid_key') is False: raise ValueError('A chave foi recusada pela HG Brasil.')
@@ -2522,19 +2437,17 @@ def cotacao(ticker, force_refresh=False):
     if _brapi_token():
         params['token'] = _brapi_token()
 
-    # Primeira tentativa: cota individual. Cache persistente respeita a janela
-    # mínima do plano gratuito e evita consumir chamadas após reiniciar o Docker.
+    # Primeira tentativa: endpoint de cotação individual.
     try:
         payload = _brapi_get_json(
-            f'https://brapi.dev/api/quote/{ticker}', params=params, headers=headers,
-            timeout=8, cache_ttl=_brapi_quote_cache_ttl(), stale_if_error=7 * 86400,
+            f'https://brapi.dev/api/quote/{ticker}',
+            params=params, headers=headers, timeout=8,
+            cache_ttl=_brapi_quote_cache_ttl(), stale_if_error=7 * 86400,
             bypass_cache=False
         )
         results = payload.get('results') or []
         if results and isinstance(results[0], dict):
             data = {**results[0], 'quoteProvider': 'brapi'}
-            if payload.get('_lw_stale'):
-                data['quoteIsStale'] = True
     except Exception:
         data = {}
 
@@ -2551,10 +2464,10 @@ def cotacao(ticker, force_refresh=False):
             except requests.HTTPError as error:
                 if getattr(error.response, 'status_code', None) not in (401, 403) or not headers:
                     raise
-                # Token expirado: consulta a lista pública uma única vez, ainda sob o limitador.
+                # Uma única consulta pública sem token, ainda sob o limitador local.
                 list_payload = _brapi_get_json(list_url, params=list_params,
-                    headers={'User-Agent': USER_AGENT}, timeout=8, cache_ttl=3600, stale_if_error=7 * 86400,
-                    bypass_cache=False)
+                    headers={'User-Agent': USER_AGENT}, timeout=8, cache_ttl=3600,
+                    stale_if_error=7 * 86400, bypass_cache=False)
             stocks = list_payload.get('stocks') or []
             def matches_symbol(item):
                 candidate = str(item.get('stock') or item.get('symbol') or '').upper()
@@ -2592,8 +2505,6 @@ def cotacao(ticker, force_refresh=False):
                     dated_fallback[key] = value
             data = dated_fallback
 
-    if data.pop('_lw_stale', False):
-        data['quoteIsStale'] = True
     has_valid_price = _first_positive_price(data.get('regularMarketPrice'), data.get('close'), data.get('price')) > 0
     if has_valid_price:
         data['quoteLastUpdated'] = _quote_updated_at(data) or data.get('quoteLastUpdated')
@@ -3593,12 +3504,10 @@ def exportar_operacoes_b3():
         price = float(op['preco'] or 0)
         ws.append(['Débito' if side == 'venda' else 'Crédito', date.fromisoformat(str(op['data'])[:10]),
                    'Compra / Venda', product, 'Lonely Wallet', op['ticker'], qty, price, qty * price])
-    dividends = con.execute("SELECT ticker,valor_total,data,tipo_evento FROM proventos ORDER BY date(data)").fetchall()
-    event_labels = {'DIVIDENDO':'Dividendo', 'JCP':'Juros sobre Capital Próprio', 'RENDIMENTO':'Rendimento'}
+    dividends = con.execute("SELECT ticker,valor_total,data FROM proventos ORDER BY date(data)").fetchall()
     for item in dividends:
-        event_type = _normalize_income_event_type(item['tipo_evento'])
-        ws.append(['Crédito', date.fromisoformat(str(item['data'])[:10]), event_labels.get(event_type, 'Provento'),
-                   f"{item['ticker']} - {event_labels.get(event_type, 'provento').lower()}", 'Lonely Wallet', item['ticker'], 0, 0,
+        ws.append(['Crédito', date.fromisoformat(str(item['data'])[:10]), 'Rendimento',
+                   f"{item['ticker']} - provento", 'Lonely Wallet', item['ticker'], 0, 0,
                    float(item['valor_total'] or 0)])
     for col,width in {'A':16,'B':14,'C':22,'D':38,'E':22,'F':22,'G':16,'H':18,'I':20}.items():
         ws.column_dimensions[col].width=width
@@ -3936,8 +3845,7 @@ def proventos():
         ticker = str(j['ticker']).strip().upper(); valor = float(j['valor_total']); dt = str(j['data']); date.fromisoformat(dt)
         if not ticker or not math.isfinite(valor) or valor <= 0: raise ValueError()
     except Exception: return json_error('Confira ticker, valor e data.')
-    event_type = _normalize_income_event_type(j.get('tipo_evento'))
-    db().execute('INSERT INTO proventos(ticker,valor_total,data,tipo_evento) VALUES(?,?,?,?)', (ticker,valor,dt,event_type)); db().commit()
+    db().execute('INSERT INTO proventos(ticker,valor_total,data) VALUES(?,?,?)', (ticker,valor,dt)); db().commit()
     return jsonify(ok=True)
 
 
@@ -4188,11 +4096,10 @@ def _b3_semantic_duplicate(item):
              rec['data'],float(rec['quantidade']),float(rec['preco']))
         ).fetchone()
         return row['id'] if row else None
-    income_type = _normalize_income_event_type(rec.get('tipo_evento'))
     row=db().execute(
-        """SELECT id FROM proventos WHERE upper(ticker)=? AND upper(COALESCE(tipo_evento,'PROVENTO'))=?
-           AND date(data)=date(?) AND ABS(valor_total-?)<=0.00000001 LIMIT 1""",
-        (str(rec['ticker']).upper(),income_type,rec['data'],float(rec['valor_total']))
+        """SELECT id FROM proventos WHERE upper(ticker)=? AND date(data)=date(?)
+           AND ABS(valor_total-?)<=0.00000001 LIMIT 1""",
+        (str(rec['ticker']).upper(),rec['data'],float(rec['valor_total']))
     ).fetchone()
     return row['id'] if row else None
 @app.route('/api/importar-b3', methods=['POST'])
@@ -4234,7 +4141,7 @@ def importar_b3():
                 cur=con.execute("INSERT INTO operacoes(ticker,tipo,lado,quantidade,preco,data,custos,status,data_registro,data_execucao,detalhes) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (rec['ticker'],rec['tipo'],rec['lado'],rec['quantidade'],rec['preco'],rec['data'],0.0,'executada',rec['data'],rec['data']+'T10:00:00-03:00',json.dumps(rec['detalhes'],ensure_ascii=False)))
                 record_id=cur.lastrowid; inserted_ops+=1
             else:
-                cur=con.execute('INSERT INTO proventos(ticker,valor_total,data,tipo_evento) VALUES(?,?,?,?)',(rec['ticker'],rec['valor_total'],rec['data'],_normalize_income_event_type(rec.get('tipo_evento'))))
+                cur=con.execute('INSERT INTO proventos(ticker,valor_total,data) VALUES(?,?,?)',(rec['ticker'],rec['valor_total'],rec['data']))
                 record_id=cur.lastrowid; inserted_provs+=1
             con.execute('INSERT INTO b3_importados(fingerprint,categoria,importado_em,lote_id,registro_id) VALUES(?,?,?,?,?)',
                         (item['fingerprint'],item['categoria'],imported_at,lote_id,record_id))
@@ -4329,15 +4236,19 @@ def _pluggy_total_return(ticker, current_value, dividends=0.0):
 
 
 def _prefetch_quotes_parallel(tickers):
-    """Prefetch em fila única: a cota gratuita da brapi permite 1 chamada simultânea."""
+    """Consulta cotações simultaneamente para reduzir o tempo de abertura."""
     symbols = sorted({str(t or '').strip().upper() for t in tickers if str(t or '').strip()})
     now = time.time()
-    pending = [symbol for symbol in symbols if symbol not in CACHE or now - CACHE[symbol][0] >= CACHE_TTL]
-    for symbol in pending:
-        try:
-            cotacao(symbol)
-        except Exception:
-            pass
+    pending = [s for s in symbols if s not in CACHE or now - CACHE[s][0] >= CACHE_TTL]
+    if not pending:
+        return
+    with ThreadPoolExecutor(max_workers=min(8, len(pending))) as pool:
+        futures = [pool.submit(cotacao, symbol) for symbol in pending]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception:
+                pass
 
 
 @app.route('/api/carteira')
@@ -4368,12 +4279,14 @@ def carteira(use_cached_quotes=False, force_refresh_quotes=False):
             quote_types[str(row['ticker']).upper()] = str(row['asset_type'] or '').strip().lower()
         market_tickers = [ticker for ticker in sorted(tickers) if quote_types.get(ticker) != 'renda_fixa']
         if market_tickers:
-            for ticker in market_tickers:
-                try:
-                    cotacao(ticker, True)
-                except Exception:
-                    # cotacao() preserva a última cotação válida quando uma fonte falha.
-                    pass
+            with ThreadPoolExecutor(max_workers=4) as quote_pool:
+                quote_jobs = [quote_pool.submit(cotacao, ticker, True) for ticker in market_tickers]
+                for quote_job in as_completed(quote_jobs):
+                    try:
+                        quote_job.result()
+                    except Exception:
+                        # cotacao() preserva a última cotação válida quando uma fonte falha.
+                        pass
     itens=[]; invested=actual=received=0.0
     receipt_totals = received_proventos_by_ticker(tickers)
     for ticker in sorted(tickers):
@@ -4581,8 +4494,8 @@ def _asset_type_map():
     return types
 
 
-def _fetch_brapi_dividend_events(asset_type, symbols, start_date, force=False):
-    """Consulta eventos por ticker para respeitar o limite do plano gratuito da brapi."""
+def _fetch_brapi_dividend_events(asset_type, symbols, start_date):
+    """Busca eventos por ticker com cache persistente e controle da cota gratuita."""
     if not symbols:
         return [], [], set()
     headers = {'Authorization': f'Bearer {_brapi_token()}'} if _brapi_token() else {}
@@ -4599,19 +4512,18 @@ def _fetch_brapi_dividend_events(asset_type, symbols, start_date, force=False):
         params = {'symbols': ','.join(batch), 'sortBy': 'paymentDate', 'sortOrder': 'asc'}
         if start_date:
             params['startDate'] = start_date
-        horizon = datetime.now(TZ).date() + timedelta(days=365)
-        month_after_horizon = (horizon.replace(day=1) + timedelta(days=32)).replace(day=1)
-        params['endDate'] = (month_after_horizon - timedelta(days=1)).isoformat()
+        params['endDate'] = (datetime.now(TZ).date() + timedelta(days=365)).isoformat()
         if asset_type != 'fii' and _brapi_token():
             params['includeRaw'] = 'true'
         try:
             try:
-                payload = _brapi_get_json(url, params=params, headers=headers, timeout=18,
+                payload = _brapi_get_json(url, params=params, headers=headers, timeout=12,
                     cache_ttl=12 * 3600, stale_if_error=7 * 86400, bypass_cache=False)
             except requests.HTTPError as exc:
-                if asset_type == 'fii' or params.pop('includeRaw', None) is None or getattr(exc.response, 'status_code', None) != 400:
+                # Repetir sem includeRaw somente em erro de parâmetro HTTP 400.
+                if params.pop('includeRaw', None) is None or getattr(exc.response, 'status_code', None) != 400:
                     raise
-                payload = _brapi_get_json(url, params=params, headers=headers, timeout=18,
+                payload = _brapi_get_json(url, params=params, headers=headers, timeout=12,
                     cache_ttl=12 * 3600, stale_if_error=7 * 86400, bypass_cache=False)
             if asset_type == 'fii':
                 events.extend(payload.get(response_key) or [])
@@ -4621,12 +4533,9 @@ def _fetch_brapi_dividend_events(asset_type, symbols, start_date, force=False):
                     data = result.get('data') or {}
                     for event in data.get('cashDividends') or []:
                         events.append({**event, 'symbol': event.get('symbol') or symbol})
-            # O endpoint respondeu para o ticker, mesmo quando não há evento.
         except requests.RequestException as exc:
             code = getattr(getattr(exc, 'response', None), 'status_code', None)
-            # 401/403 normalmente indicam autenticação/plano: não consuma uma
-            # segunda chamada de cotação como fallback para o mesmo ticker.
-            if code not in (401, 403, 429):
+            if code not in (401, 403, 429) and not isinstance(exc, BrapiQuotaProtected):
                 failed_symbols.update(batch)
             errors.append(f'{asset_type}: HTTP {code or "falha de conexão"} ao consultar {", ".join(batch)}')
         except (ValueError, TypeError):
@@ -4648,7 +4557,7 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
              for item in (active_items or []) if str(item.get('ticker') or '').strip()}
     signature = tuple(sorted(types.items()))
     token_fingerprint = hashlib.sha256((_brapi_token() or 'public').encode('utf-8')).hexdigest()[:16]
-    persistent_signature = hashlib.sha256(json.dumps([signature, token_fingerprint], ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+    persistent_signature = hashlib.sha256(json.dumps([signature, token_fingerprint], ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest()
     persistent_key = 'brapi_proventos_sync_signature'
     persistent_time_key = 'brapi_proventos_sync_at'
     saved_signature = db().execute('SELECT valor FROM integracao_estado WHERE chave=?', (persistent_key,)).fetchone()
@@ -4692,21 +4601,25 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
         stock_symbols = [symbol for symbol in stock_symbols if symbol in {'PETR4', 'MGLU3', 'VALE3', 'ITUB4'}]
 
     fetched, errors = [], []
-    stock_events, stock_errors, failed_stock_symbols = _fetch_brapi_dividend_events('acao', stock_symbols, start_date, force=force)
-    fii_events, fii_errors, failed_fii_symbols = _fetch_brapi_dividend_events('fii', fii_symbols, start_date, force=force)
+    stock_events, stock_errors, failed_stock_symbols = _fetch_brapi_dividend_events('acao', stock_symbols, start_date)
+    fii_events, fii_errors, failed_fii_symbols = _fetch_brapi_dividend_events('fii', fii_symbols, start_date)
     fetched.extend((event, 'fii') for event in fii_events)
     fetched.extend((event, 'acao') for event in stock_events)
     errors.extend(stock_errors + fii_errors)
 
-    # Compatibilidade com o endpoint v1 somente quando o endpoint dedicado falhou.
-    # Não consulta toda a carteira por ticker: isso duplicava chamadas e consumia cota.
+    # Fallback compatível com a cotação v1 usada pela versão estável: ela ainda
+    # pode trazer eventos em dividendsData.cashDividends quando o endpoint v2
+    # não está habilitado/coberto para determinado ticker. A data-com continua
+    # obrigatória; não se presume elegibilidade usando exDate ou data atual.
     if quote_items is None:
         try:
             quote_items = carteira().json.get('itens', [])
         except Exception:
             quote_items = []
+    # Fallback v1 apenas para tickers em que o endpoint dedicado falhou.
+    # Resposta válida sem eventos não dispara nova consulta redundante.
     failed_symbols = failed_stock_symbols | failed_fii_symbols
-    for ticker in sorted(failed_symbols):
+    for ticker in sorted(symbol for symbol in failed_symbols if symbol):
         kind = types.get(ticker, 'outros')
         if kind not in stock_types and kind not in {'fii', 'fiis', 'fundo_imobiliario', 'fundos_imobiliarios'}:
             continue
@@ -4839,8 +4752,7 @@ def _received_proventos_records(active_tickers=None):
         amount = round(float(row.get('valor_total') or 0), 2)
         if not math.isfinite(amount) or amount <= 0:
             continue
-        event_type = _normalize_income_event_type(row.get('tipo_evento'))
-        key = (ticker, payment_date[:10], amount, event_type)
+        key = (ticker, payment_date[:10], amount)
         origin = origin_by_id.get(int(row['id']), 'Manual')
         # Exact same payment imported from multiple origins is counted once.
         if key in seen_fingerprints:
@@ -4850,7 +4762,7 @@ def _received_proventos_records(active_tickers=None):
             'ticker': ticker, 'tipo': 'Provento', 'tipo_ativo': typesafe_asset_type(ticker),
             'status': 'Pago', 'data_com': None, 'data_pagamento': payment_date[:10],
             'quantidade': None, 'valor_por_ativo': None, 'valor_total': amount,
-            'origem': origin, 'tipo_evento': event_type
+            'origem': origin, 'tipo_evento': 'PROVENTO'
         })
 
     api_rows = db().execute(
@@ -4873,7 +4785,7 @@ def _received_proventos_records(active_tickers=None):
         amount = round(float(row.get('valor_total') or 0), 2)
         if not math.isfinite(amount) or amount <= 0 or not _is_income_event(row.get('tipo_evento')):
             continue
-        fingerprint = (ticker, payment_date[:10], amount, _normalize_income_event_type(row.get('tipo_evento')))
+        fingerprint = (ticker, payment_date[:10], amount)
         if fingerprint in seen_fingerprints:
             continue
         seen_fingerprints.add(fingerprint)
@@ -5070,12 +4982,13 @@ def _request_historical_batch(url, symbols, params, response_key='results', head
     if not symbols:
         return {}
     try:
-        batch_size = BRAPI_MAX_TICKERS_PER_REQUEST
         merged = {}
+        batch_size = BRAPI_MAX_TICKERS_PER_REQUEST
         for offset in range(0, len(symbols), batch_size):
             batch = symbols[offset:offset + batch_size]
             payload = _brapi_get_json(url, params={**params, 'symbols': ','.join(batch)},
-                headers=headers or {}, timeout=timeout, cache_ttl=24 * 3600, stale_if_error=30 * 86400)
+                headers=headers or {}, timeout=timeout, cache_ttl=24 * 3600,
+                stale_if_error=30 * 86400)
             merged.update(_parse_historical_payload(payload, response_key=response_key))
         return merged
     except (requests.RequestException, ValueError, TypeError):
@@ -5087,8 +5000,10 @@ def _request_legacy_history(symbol, headers):
     for history_range in ('max', '1y'):
         try:
             payload = _brapi_get_json(
-                f'https://brapi.dev/api/quote/{symbol}', params={'range': history_range, 'interval': '1d'},
-                headers=headers, timeout=12, cache_ttl=24 * 3600, stale_if_error=30 * 86400
+                f'https://brapi.dev/api/quote/{symbol}',
+                params={'range': history_range, 'interval': '1d'},
+                headers=headers, timeout=12, cache_ttl=24 * 3600,
+                stale_if_error=30 * 86400
             )
             result = next(iter(payload.get('results') or []), None)
             if not result:
@@ -5172,8 +5087,7 @@ def fetch_portfolio_price_history(operations, extra_positions=None):
     if fii_symbols:
         start_date = min(first_dates).isoformat() if first_dates else (datetime.now(TZ).date() - timedelta(days=365)).isoformat()
         fii_url = 'https://brapi.dev/api/v2/fii/historical'
-        month_after_today = (datetime.now(TZ).date().replace(day=1) + timedelta(days=32)).replace(day=1)
-        fii_params = {'startDate': start_date, 'endDate': (month_after_today - timedelta(days=1)).isoformat(), 'sortOrder': 'asc'}
+        fii_params = {'startDate': start_date, 'endDate': datetime.now(TZ).date().isoformat(), 'sortOrder': 'asc'}
         for offset in range(0, len(fii_symbols), 20):
             batch = fii_symbols[offset:offset + 20]
             fii_found = _request_historical_batch(
@@ -6326,7 +6240,8 @@ def busca_ativos():
     headers = {'Authorization': f'Bearer {_brapi_token()}'} if _brapi_token() else {}
     try:
         payload = _brapi_get_json('https://brapi.dev/api/quote/list',
-            params=params, headers=headers, timeout=8, cache_ttl=6 * 3600, stale_if_error=7 * 86400)
+            params=params, headers=headers, timeout=8, cache_ttl=6 * 3600,
+            stale_if_error=7 * 86400)
         itens = []
         for item in payload.get('stocks', []):
             ticker = str(item.get('stock') or item.get('symbol') or '').upper()

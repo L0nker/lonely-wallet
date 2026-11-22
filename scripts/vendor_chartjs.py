@@ -17,7 +17,7 @@ from pathlib import Path
 import requests
 
 VERSION = '4.6.1'
-APP_VERSION = '4.2.32'
+APP_VERSION = '4.2.34'
 URL = f'https://registry.npmjs.org/chart.js/-/chart.js-{VERSION}.tgz'
 # Matches npm's dist.integrity metadata for chart.js@4.6.1.
 EXPECTED_SRI = 'sha512-hJyniucsFmq//EvXYvJ6c6mahPoI3kaxdjVH8awTaJ/fDNWeSqqqArixMJWkWNN6fcYvPU3HneSANFNYtRi61g=='

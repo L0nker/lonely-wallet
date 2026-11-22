@@ -4654,6 +4654,7 @@ function renderAPIProviders(){
  host.innerHTML=credentialed.map(card).join('');if(pluggyHost)pluggyHost.innerHTML=pluggy.map(card).join('')||'<div class="panel empty">Pluggy indisponível.</div>'; 
 }
 
+
 async function loadBrapiUsage(){
  const host=document.getElementById('brapiUsagePanel');if(!host)return;
  try{
@@ -4663,7 +4664,7 @@ async function loadBrapiUsage(){
   const remaining=hasBudget?Math.max(0,Number(usage.remaining)||0):null;
   const percent=hasBudget?Math.min(100,Math.max(0,Number(usage.usage_percent)||0)):0;
   const warning=usage.control&&Number(usage.control.blocked_until||0)>Date.now()/1000;
-  host.innerHTML=`<strong>Consumo local da brapi · últimos 30 dias</strong><div style="margin-top:5px">${calls.toLocaleString('pt-BR')} chamadas externas${hasBudget?` de ${Number(usage.budget).toLocaleString('pt-BR')} reservadas · ${remaining.toLocaleString('pt-BR')} restantes`:''}</div>${hasBudget?`<div style="height:6px;background:var(--surface-2);border-radius:20px;overflow:hidden;margin:8px 0"><div style="height:100%;width:${percent}%;background:${percent>=90?'var(--red)':percent>=70?'var(--orange)':'var(--green)'}"></div></div>`:''}<div>Cache reutilizado: ${Number(usage.cache_hits||0).toLocaleString('pt-BR')} · Falhas: ${Number(usage.errors||0).toLocaleString('pt-BR')}</div>${warning?'<div style="color:var(--orange);margin-top:4px">Consultas temporariamente pausadas após limite/erro do provedor.</div>':''}<div style="margin-top:5px;opacity:.75">${escapeHTML(usage.counter_scope||'Contador local da instalação.') } A brapi também conta chamadas feitas por outros aplicativos que compartilhem o mesmo token.</div>`;
+  host.innerHTML=`<strong>Consumo local da brapi · últimos 30 dias</strong><div style="margin-top:5px">${calls.toLocaleString('pt-BR')} chamadas externas${hasBudget?` de ${Number(usage.budget).toLocaleString('pt-BR')} reservadas · ${remaining.toLocaleString('pt-BR')} restantes`:''}</div>${hasBudget?`<div style="height:6px;background:var(--surface-2);border-radius:20px;overflow:hidden;margin:8px 0"><div style="height:100%;width:${percent}%;background:${percent>=90?'var(--red)':percent>=70?'var(--orange)':'var(--green)'}"></div></div>`:''}<div>Cache reutilizado: ${Number(usage.cache_hits||0).toLocaleString('pt-BR')} · Falhas: ${Number(usage.errors||0).toLocaleString('pt-BR')}</div>${warning?'<div style="color:var(--orange);margin-top:4px">Consultas temporariamente pausadas após limite/erro do provedor.</div>':''}<div style="margin-top:5px;opacity:.75">${escapeHTML(usage.counter_scope||'Contador local da instalação.')} A brapi também conta chamadas feitas por outros aplicativos que compartilhem o mesmo token.</div>`;
  }catch(error){host.textContent='Não foi possível consultar o consumo local da brapi.';}
 }
 
@@ -5434,15 +5435,13 @@ async function exportOperations(){
  }catch(error){toast(error.message||'Falha ao exportar lançamentos.')}
 }
 async function autoSyncPluggyOnPageLoad(){
- // Usa o intervalo persistido no servidor. Em instalação nova, o padrão é 4 horas.
+ // Evita consultar a Pluggy em todo F5. Cada conexão é atualizada no máximo
+ // uma vez a cada 30 minutos; o servidor também aplica o mesmo bloqueio.
+ const intervalMs=30*60*1000;
  try{
-  await loadPluggyAutoSyncSettings();
-  const intervalMinutes=Number(pluggyAutoSyncIntervalMinutes||0);
-  if(!intervalMinutes)return;
   const stateData=await api('/api/pluggy/state',{skipAutoRefresh:true});
   const items=stateData.items||[];
   if(!items.length)return;
-  const intervalMs=intervalMinutes*60*1000;
   const now=Date.now();
   const hasDueItem=items.some(item=>{
    if(!item.last_synced_at)return true;

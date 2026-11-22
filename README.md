@@ -1,4 +1,4 @@
-# Lonely Wallet v4.2.33
+# Lonely Wallet v4.2.32
 
 **Gerenciador pessoal de investimentos | Docker / ZimaOS | Português (Brasil)**
 
@@ -8,7 +8,7 @@ Esta atualização corrige o carregamento do renderer offline de gráficos, adic
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.33 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.32 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
 - **Persistência:** SQLite, com bancos separados para ativos e tokens
 - **Porta:** `8085` no host e `8080` no container
@@ -38,7 +38,7 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve apresentar `ok: true` e `version: 4.2.33`.
+O retorno deve apresentar `ok: true` e `version: 4.2.32`.
 
 **Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
 
@@ -234,30 +234,34 @@ Consulte o estado da integração e os logs do container. A falta de cotação n
 Consulte as notas históricas preservadas nos pacotes anteriores. Este README prioriza o histórico confirmado a partir da v4.2.25 e as orientações atuais de instalação, segurança e manutenção.
 
 
-## v4.2.33 · Integridade financeira e economia de cotas de API
+## Lonely Wallet v4.2.34
 
-- Preserva a última posição confiável de renda fixa quando a Pluggy retorna dados incompletos ou omite um investimento em uma resposta parcial.
-- Registra o tipo do provento (`DIVIDENDO`, `JCP`, `RENDIMENTO` ou `PROVENTO`) na tabela principal e preserva o tipo durante importações B3, Pluggy e lançamentos manuais.
-- Deduplica proventos considerando o tipo do evento, permitindo eventos diferentes do mesmo ativo na mesma data e com o mesmo valor.
-- Adiciona cache persistente SQLite para respostas da brapi, limitador de concorrência de uma chamada por vez, intervalo mínimo entre requisições, backoff após HTTP 429/5xx e falhas de conexão, e limite de segurança local de 13.500 tentativas em 30 dias por instalação.
-- Atualizações completas do dashboard e sincronizações manuais de proventos respeitam o cache HTTP persistente; a ação manual ignora apenas a trava de sincronização de 12 horas, não força novas chamadas quando a resposta em cache ainda está válida.
-- Usa cache de cotações de 30 minutos no pregão e 6 horas fora do pregão; histórico de preços por até 24 horas; eventos de proventos por até 12 horas e classificação de ativos por até 7 dias.
-- O contador registra a tentativa antes da conexão para incluir timeouts de forma conservadora; falhas de autenticação/plano (HTTP 401/403) não disparam uma segunda consulta redundante de fallback.
-- Consulta eventos de proventos ticker a ticker no padrão gratuito (configurável por `BRAPI_MAX_TICKERS_PER_REQUEST`) e remove a consulta redundante de cotações para toda a carteira quando o endpoint dedicado respondeu com sucesso.
-- Exibe na tela de APIs o consumo local estimado, cache hits, erros e orçamento interno. O contador não inclui outros aplicativos que usem o mesmo token.
-- Para instalações novas, define sincronização automática Pluggy em 4 horas; frequências já salvas pelo usuário são preservadas.
-- Atualiza a sincronização automática do navegador para respeitar a frequência salva e não sincronizar quando estiver desativada.
-- Atualizações completas do dashboard e sincronizações manuais de proventos respeitam o cache HTTP persistente; a ação manual ignora apenas a trava de sincronização de 12 horas, não força novas chamadas quando a resposta em cache ainda está válida.
-- O contador registra tentativas antes da conexão, incluindo timeouts; falhas de autenticação/plano (HTTP 401/403) não disparam uma segunda consulta redundante.
-- A reavaliação de eventos Pluggy anteriormente marcados como duplicados é executada uma única vez na migração, sem reprocessamento em todo reinício.
+### Otimização de consumo das APIs gratuitas
 
-### Configuração de cota
+- Cache persistente em SQLite para respostas brapi, identificadas por endpoint, parâmetros e impressão digital da credencial; o token original não é armazenado no cache.
+- Orçamento interno de segurança de 13.500 chamadas por período de 30 dias, com contador local de requisições, cache hits e falhas. O contador não enxerga outros aplicativos que compartilhem a mesma credencial.
+- Concorrência local limitada a uma chamada brapi, com intervalo mínimo configurável para reduzir respostas HTTP 429.
+- Backoff progressivo para HTTP 429, respostas 5xx e falhas de conexão; respostas antigas em cache podem ser reutilizadas por até 30 dias durante indisponibilidade, conforme a validade de cada tipo de dado.
+- Cache de cotações (30 minutos no pregão e 6 horas fora do pregão), busca/classificação de ativos (6 horas/7 dias), proventos (12 horas) e histórico (24 horas).
+- Sincronização de proventos com assinatura persistente por carteira e credencial, evitando consultas repetidas após reinicialização do Docker. A sincronização manual respeita o cache HTTP recente.
+- Fallback legado de proventos consultado somente para tickers em que o endpoint dedicado falhou; uma resposta válida sem eventos não provoca uma chamada adicional.
+- Limite padrão de um ticker por requisição, ajustável por `BRAPI_MAX_TICKERS_PER_REQUEST`.
+- Painel de consumo local na página de APIs, sem exposição de tokens.
+- Novas instalações usam sincronização automática Pluggy a cada 4 horas; frequências já configuradas são preservadas.
 
-- `BRAPI_ROLLING_30D_BUDGET=13500`: orçamento interno conservador para manter margem abaixo da cota gratuita nominal. Defina `0` para desativar o teto local (não recomendado no plano gratuito).
-- `BRAPI_MAX_TICKERS_PER_REQUEST=1`: padrão para o plano gratuito. Só aumente se o plano contratado permitir múltiplos tickers por chamada.
-- `BRAPI_MARKET_CACHE_SECONDS=1800`: cache persistente de cotações durante o pregão.
-- `BRAPI_OFF_MARKET_CACHE_SECONDS=21600`: intervalo para cotação fora do pregão.
-- O contador de consumo é local à instalação e não representa o consumo total do token em outros aplicativos ou serviços.
-- O teto local de 13.500 chamadas preserva margem frente à cota nominal gratuita, mas não consegue contabilizar outros aplicativos que compartilhem a mesma credencial.
-- Pluggy continua buscando todas as páginas de transações de investimento disponibilizadas por cada item; a API não oferece filtro por data nesse endpoint, então a principal economia é reduzir a frequência de sincronização. Para instalações novas, o padrão é 4 horas; uma frequência já configurada pelo usuário é preservada.
-- A reavaliação de eventos Pluggy anteriormente marcados como duplicados é executada uma única vez na migração, evitando reprocessamento em todo reinício.
+### Configurações padrão
+
+- `BRAPI_ROLLING_30D_BUDGET=13500`
+- `BRAPI_MAX_TICKERS_PER_REQUEST=1`
+- `BRAPI_MARKET_CACHE_SECONDS=1800`
+- `BRAPI_OFF_MARKET_CACHE_SECONDS=21600`
+- `BRAPI_REQUEST_GAP_SECONDS=0.35`
+
+O contador é local a esta instalação. A plataforma do provedor continua sendo a fonte definitiva para o consumo total da credencial.
+
+### Atualização
+
+- Versão desenvolvida a partir da base **4.2.32**.
+- Inclui somente melhorias de cache, controle de chamadas e frequência das APIs. Não incorpora as alterações financeiras da versão 4.2.33.
+- Manter os volumes `/DATA/AppData/lonely-wallet/data:/data`, bancos SQLite, tokens, chaves de criptografia e configurações existentes.
+- Reconstruir a imagem Docker para aplicar as alterações.
