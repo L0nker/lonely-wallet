@@ -37,6 +37,25 @@ class LegacyMigrationAtomicTests(unittest.TestCase):
             self.assertFalse(destination.exists())
             self.assertEqual(list(root.glob('.lonely-wallet-migration-*')), [])
 
+    def test_corrupt_existing_destination_is_replaced_only_after_valid_legacy_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            legacy = root / 'legacy.db'
+            destination = root / 'assets.db'
+            legacy_con = sqlite3.connect(legacy)
+            legacy_con.execute('CREATE TABLE sample(value TEXT)')
+            legacy_con.execute('INSERT INTO sample VALUES(?)', ('source-valid',))
+            legacy_con.commit(); legacy_con.close()
+            destination.write_bytes(b'partial-corrupt-database')
+            migrate_legacy_database(legacy, destination)
+            copied = sqlite3.connect(destination)
+            try:
+                self.assertEqual(copied.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
+                self.assertEqual(copied.execute('SELECT value FROM sample').fetchone()[0], 'source-valid')
+            finally:
+                copied.close()
+            self.assertEqual(list(root.glob('.lonely-wallet-migration-*')), [])
+
 
 if __name__ == '__main__':
     unittest.main()

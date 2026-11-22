@@ -30,7 +30,8 @@ services:
     volumes:
       - /DATA/AppData/lonely-wallet/data:/data
     labels:
-      icon: "/static/lonely-wallet-logo.png?v=4.2.14"
+      org.opencontainers.image.version: "4.2.19"
+      icon: "/static/lonely-wallet-logo.png?v=4.2.19"
     deploy:
       resources:
         limits:
@@ -50,7 +51,7 @@ x-casaos:
     pt_BR: Carteira pessoal para acompanhar investimentos, posições e proventos.
     en_US: Personal investment portfolio dashboard.
   developer: Lonely Wallet
-  icon: "/static/lonely-wallet-logo.png?v=4.2.14"
+  icon: "/static/lonely-wallet-logo.png?v=4.2.19"
   index: /
   is_uncontrolled: false
   main: lonely-wallet

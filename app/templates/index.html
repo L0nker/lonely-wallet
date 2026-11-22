@@ -1,7 +1,7 @@
 <!doctype html>
-<html lang="pt-br" class="dashboard-wait-lock"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#14161d"><style>html,body{background:#14161d;color-scheme:dark}html.light-theme,html.light-theme body{background:#f3f5f8!important;color-scheme:light!important}</style><script>try{if(localStorage.getItem('lonelyWalletLightTheme')==='1')document.documentElement.classList.add('light-theme');}catch(e){}</script><title>Lonely Wallet | Investimentos</title><link rel="icon" type="image/png" href="/static/lonely-wallet-favicon.png"><link rel="apple-touch-icon" href="/static/lonely-wallet-favicon.png">
+<html lang="pt-br" class="dashboard-wait-lock"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#14161d"><style>html,body{background:#14161d;color-scheme:dark}html.light-theme,html.light-theme body{background:#f3f5f8!important;color-scheme:light!important}</style><script>try{if(localStorage.getItem('lonelyWalletLightTheme')==='1')document.documentElement.classList.add('light-theme');}catch(e){}</script><title>Lonely Wallet | Investimentos</title><link rel="icon" type="image/png" href="/static/lonely-wallet-favicon.png?v={{ app_version }}"><link rel="apple-touch-icon" href="/static/lonely-wallet-favicon.png?v={{ app_version }}">
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="{{ url_for('static', filename='vendor/chart.umd.min.js', v=app_version) }}"></script>
 <style>
 :root{--bg:#14161d;--panel:#20232c;--panel2:#171a22;--line:#303541;--text:#f3f5f8;--muted:#929baa;--green:#20bd82;--red:#ef6680;--blue:#78b7f5;--gold:#d5a85e;--table-hover:#262b36}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px Inter,system-ui,-apple-system,Segoe UI,sans-serif}button,input,select{font:inherit}button{cursor:pointer}.top{height:62px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 4.5%;position:sticky;top:0;background:#151820;z-index:5}.brand{font-size:18px;font-weight:750;letter-spacing:-.5px}.brand span{color:var(--gold)}.topright{display:flex;gap:10px;align-items:center;color:var(--muted)}.pillbtn,.primary,.ghost{border:1px solid var(--line);border-radius:8px;padding:9px 13px;background:#222631;color:var(--text)}.primary{background:#2478d4;border-color:#2478d4}.nav{display:flex;gap:4px;padding:0 4.5%;border-bottom:1px solid var(--line);overflow:auto;background:#171a22}.nav button{white-space:nowrap;background:none;color:#aeb7c5;border:0;padding:15px 12px;border-bottom:2px solid transparent}.nav button.active{color:white;border-color:var(--blue)}
 .dashboard-data-wait{position:fixed;inset:0;z-index:99999;background:var(--bg);display:none;align-items:center;justify-content:center;padding:24px;text-align:center;width:100vw;height:100vh;height:100dvh;overscroll-behavior:contain;touch-action:none}
@@ -2132,7 +2132,7 @@ body.light-theme .lw-select-option:hover,body.light-theme .lw-select-option.acti
 
 
 
-<div class="footer">Lonely Wallet v4.2.15 · Controle pessoal de investimentos<br>Dados de cotação podem sofrer atrasos ou indisponibilidade. Este sistema é apenas informativo.</div>
+<div class="footer">Lonely Wallet v{{ app_version }} · Controle pessoal de investimentos<br>Dados de cotação podem sofrer atrasos ou indisponibilidade. Este sistema é apenas informativo.</div>
 </main>
 <div class="modalback" id="launchDistributionBack" onclick="if(event.target===this)closeLaunchDistribution()"><div class="modal" style="width:min(900px,100%)"><div class="modalhead"><div><h2 id="launchDistributionTitle">Distribuição de aportes</h2><div class="sub" id="launchDistributionSubtitle">Operações do período selecionado.</div></div><button class="close" type="button" onclick="closeLaunchDistribution()">×</button></div><div class="launch-distribution-switch segmented"><button type="button" id="launchDistAssetTab" class="active" onclick="setLaunchDistributionMode('ativo')">◉ Por Ativo</button><button type="button" id="launchDistTypeTab" onclick="setLaunchDistributionMode('tipo')">◉ Por Tipo</button><span class="launch-dist-switch-spacer"></span><button type="button" id="launchDistBuyTab" class="active" onclick="setLaunchDistributionSide('compra')">Compra</button><button type="button" id="launchDistSellTab" onclick="setLaunchDistributionSide('venda')">Venda</button></div><div class="launch-distribution-layout"><div class="launch-distribution-chart"><canvas id="launchDistributionChart"></canvas></div><div class="launch-distribution-legend"><div class="launch-distribution-total"><b>Total</b><strong id="launchDistributionTotal"></strong></div><div id="launchDistributionRows"></div></div></div><div class="modalactions"><button class="ghost" type="button" onclick="closeLaunchDistribution()">Fechar</button></div></div></div>
 <div class="modalback" id="b3ImportsManagerBack" onclick="if(event.target===this)closeB3ImportsManager()"><div class="modal" style="width:min(860px,100%)"><div class="modalhead"><div><h2>Importações da B3</h2><div class="sub">Histórico das planilhas importadas. Você pode excluir uma importação recente e os registros criados exclusivamente por ela.</div></div><button class="close" onclick="closeB3ImportsManager()">×</button></div><div id="b3ImportsList" class="section mini">Carregando importações…</div><div class="modalactions"><button class="ghost" type="button" onclick="closeB3ImportsManager()">Fechar</button></div></div></div><div class="modalback utility-modal-back" id="operationManagerBack" onclick="if(event.target===this)closeOperationManager()"><div class="modal utility-modal" style="width:min(1100px,100%)"><div class="modalhead"><div><h2>Gerenciar lançamentos de ativos</h2><div class="sub">Filtre por classe e ativo para revisar ou excluir operações. A exclusão em massa é permanente.</div></div><button class="close" onclick="closeOperationManager()">×</button></div><div class="formgrid operation-manager-filters"><div class="field"><label for="operationManagerType">Classe do ativo</label><select id="operationManagerType" onchange="onOperationManagerTypeChange()"><option value="">Todas as classes</option></select></div><div class="field"><label for="operationManagerTicker">Ativo</label><select id="operationManagerTicker" onchange="renderOperationManagerRows()"><option value="">Todos os ativos</option></select></div></div><div id="operationManagerSummary" class="mini" style="margin:12px 0">Carregando lançamentos…</div><div id="operationManagerRows" class="tablewrap"></div><div class="modalactions" style="justify-content:space-between;flex-wrap:wrap"><div class="toolbar"><button class="danger" type="button" onclick="confirmDeleteManaged('ativo')">Excluir todos deste ativo</button><button class="danger" type="button" onclick="confirmDeleteManaged('todas')">Excluir todos os lançamentos</button></div><button class="ghost" type="button" onclick="closeOperationManager()">Fechar</button></div></div></div>
@@ -2220,6 +2220,94 @@ let summaryExpandedAssetGroups={};
 let summaryDraggedCategory="";
 let distributionItems=[];const distributionColors=['#4b91f5','#7df0b2','#ffdc65','#ff7181','#54d5ef','#bd9af4','#e8a56b','#6fc4a8','#b9c3d3'];
 let refreshInFlight=null,mutationRefreshTimer=null,refreshAgain=false;
+let dashboardHasVisibleState=false;
+const DASHBOARD_BROWSER_CACHE_DB='LonelyWalletDashboard';
+const DASHBOARD_BROWSER_CACHE_STORE='snapshots';
+const DASHBOARD_BROWSER_CACHE_KEY='dashboard';
+const DASHBOARD_BROWSER_CACHE_SCHEMA='dashboard-v1';
+const DASHBOARD_BROWSER_APP_VERSION='{{ app_version }}';
+let dashboardBrowserCacheDbPromise=null;
+function openDashboardBrowserCache(){
+ if(!('indexedDB' in window))return Promise.resolve(null);
+ if(!dashboardBrowserCacheDbPromise){
+  dashboardBrowserCacheDbPromise=new Promise(resolve=>{
+   try{
+    const request=window.indexedDB.open(DASHBOARD_BROWSER_CACHE_DB,1);
+    request.onupgradeneeded=()=>{
+     const database=request.result;
+     if(!database.objectStoreNames.contains(DASHBOARD_BROWSER_CACHE_STORE))database.createObjectStore(DASHBOARD_BROWSER_CACHE_STORE,{keyPath:'key'});
+    };
+    request.onsuccess=()=>resolve(request.result);
+    request.onerror=()=>resolve(null);
+    request.onblocked=()=>resolve(null);
+   }catch(error){resolve(null);}
+  });
+ }
+ return dashboardBrowserCacheDbPromise;
+}
+async function readDashboardBrowserCache(){
+ const database=await openDashboardBrowserCache();
+ if(!database)return null;
+ return new Promise(resolve=>{
+  try{
+   const transaction=database.transaction(DASHBOARD_BROWSER_CACHE_STORE,'readonly');
+   const request=transaction.objectStore(DASHBOARD_BROWSER_CACHE_STORE).get(DASHBOARD_BROWSER_CACHE_KEY);
+   request.onsuccess=()=>{
+    const record=request.result;
+    const payload=record&&record.payload;
+    const valid=record&&record.schema===DASHBOARD_BROWSER_CACHE_SCHEMA&&payload&&Array.isArray(payload.itens)&&payload.resumo&&typeof payload.resumo==='object';
+    resolve(valid?record:null);
+   };
+   request.onerror=()=>resolve(null);
+  }catch(error){resolve(null);}
+ });
+}
+async function writeDashboardBrowserCache(payload){
+ if(!payload||!Array.isArray(payload.itens)||!payload.resumo)return false;
+ const database=await openDashboardBrowserCache();
+ if(!database)return false;
+ return new Promise(resolve=>{
+  try{
+   const transaction=database.transaction(DASHBOARD_BROWSER_CACHE_STORE,'readwrite');
+   transaction.objectStore(DASHBOARD_BROWSER_CACHE_STORE).put({
+    key:DASHBOARD_BROWSER_CACHE_KEY,
+    schema:DASHBOARD_BROWSER_CACHE_SCHEMA,
+    appVersion:DASHBOARD_BROWSER_APP_VERSION,
+    savedAt:new Date().toISOString(),
+    payload
+   });
+   transaction.oncomplete=()=>resolve(true);
+   transaction.onerror=()=>resolve(false);
+   transaction.onabort=()=>resolve(false);
+  }catch(error){resolve(false);}
+ });
+}
+async function restoreDashboardBrowserCache(){
+ const record=await readDashboardBrowserCache();
+ if(!record)return false;
+ try{
+  state=record.payload;
+  dashboardHasVisibleState=true;
+  render();
+  applyPositionColumnPrefs();
+  hideDashboardDataWait();
+  // A barra superior acompanha apenas a primeira renderização, não o trabalho em segundo plano.
+  const loader=document.getElementById('loadingScreen');
+  if(loader)loader.classList.add('done');
+  const updated=document.getElementById('updated');
+  if(updated){
+   const saved=record.savedAt?new Date(record.savedAt):null;
+   updated.textContent=saved&&!Number.isNaN(saved.getTime())
+    ?'Cache local · atualizado '+saved.toLocaleString('pt-BR')
+    :'Cache local · dados salvos neste navegador';
+  }
+  return true;
+ }catch(error){
+  console.warn('Não foi possível restaurar o cache local da carteira:',error);
+  dashboardHasVisibleState=false;
+  return false;
+ }
+}
 function scheduleMutationRefresh(){
  if(mutationRefreshTimer)clearTimeout(mutationRefreshTimer);
  mutationRefreshTimer=setTimeout(()=>{
@@ -2229,6 +2317,8 @@ function scheduleMutationRefresh(){
 }
 let dashboardDataRevision=0;
 let dashboardFullRefreshInFlight=false;
+let dashboardFullRefreshRevision=-1;
+let dashboardRefreshRevision=-1;
 let dashboardFullRefreshQueued=false;
 let dashboardEnrichmentInFlight=false;
 let dashboardEnrichmentQueued=false;
@@ -2262,6 +2352,7 @@ function dashboardRetryDelay(attempt){
  return Math.min(30000,Math.round(1500*Math.pow(2,Math.max(0,attempt-1))));
 }
 function setDashboardDataWait(message){
+ if(dashboardHasVisibleState)return;
  const overlay=document.getElementById('dashboardDataWait');
  if(!overlay)return;
  document.documentElement.classList.add('dashboard-wait-lock');
@@ -2297,7 +2388,7 @@ function scheduleDashboardInitialRetry(){
 function scheduleDashboardFullRetry(showWait=true){
  if(dashboardFullRetryTimer)return;
  dashboardFullRetryAttempt++;
- if(showWait)setDashboardDataWait('Estamos concluindo a atualização. Uma nova tentativa será feita automaticamente.');
+ if(showWait&&!dashboardHasVisibleState)setDashboardDataWait('Estamos concluindo a atualização. Uma nova tentativa será feita automaticamente.');
  else{
   const updated=document.getElementById('updated');
   if(updated)updated.textContent='Atualização pendente · nova tentativa automática';
@@ -2309,9 +2400,13 @@ function scheduleDashboardFullRetry(showWait=true){
  },delay);
 }
 async function refreshDashboardInBackground(showWait=true){
- if(dashboardFullRefreshInFlight){dashboardFullRefreshQueued=true;return;}
+ if(dashboardFullRefreshInFlight){
+  if(dashboardDataRevision!==dashboardFullRefreshRevision)dashboardFullRefreshQueued=true;
+  return;
+ }
  dashboardFullRefreshInFlight=true;
- if(showWait)setDashboardDataWait('Estamos preparando cotações, indexadores, proventos e histórico. Os valores serão exibidos após a atualização completa.');
+ dashboardFullRefreshRevision=dashboardDataRevision;
+ if(showWait&&!dashboardHasVisibleState)setDashboardDataWait('Estamos preparando cotações, indexadores, proventos e histórico. Os valores serão exibidos após a atualização completa.');
  else{
   const updated=document.getElementById('updated');
   if(updated)updated.textContent='Atualizando dados em segundo plano…';
@@ -2320,11 +2415,13 @@ async function refreshDashboardInBackground(showWait=true){
  try{
   // Em instalação nova gera o primeiro snapshot completo. Nas próximas visitas,
   // os dados confirmados do cache são exibidos imediatamente enquanto ele é renovado.
-  const complete=await api('/api/dashboard?full=1',{timeoutMs:600000});
+  const complete=await api('/api/dashboard?full=1',{timeoutMs:600000,cache:'no-store'});
   if(revisionAtStart===dashboardDataRevision){
    state=complete;
+   dashboardHasVisibleState=true;
    render();
    applyPositionColumnPrefs();
+   await writeDashboardBrowserCache(state);
    const updated=document.getElementById('updated');
    if(updated)updated.textContent='Atualizado '+new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
    hideDashboardDataWait();
@@ -2333,12 +2430,12 @@ async function refreshDashboardInBackground(showWait=true){
   }
  }catch(error){
   console.warn('A atualização completa da carteira não terminou; uma nova tentativa será realizada automaticamente:',error);
-  scheduleDashboardFullRetry(showWait);
+  scheduleDashboardFullRetry(showWait&&!dashboardHasVisibleState);
  }finally{
   dashboardFullRefreshInFlight=false;
   if(dashboardFullRefreshQueued){
    dashboardFullRefreshQueued=false;
-   if(!dashboardFullRetryTimer)setTimeout(()=>refreshDashboardInBackground(true),900);
+   if(!dashboardFullRetryTimer)setTimeout(()=>refreshDashboardInBackground(!dashboardHasVisibleState),900);
   }
  }
 }
@@ -2346,32 +2443,47 @@ function chart(id,type,data,options={}){if(!document.getElementById(id))return;i
 function stat(label,value,sub='',color=''){return `<div class="card stat"><div class="statlabel">${label}</div><div class="statvalue ${color}">${value}</div><div class="mini">${sub}</div></div>`}
 function rowEmpty(cols,msg='Nenhum registro encontrado.'){return `<tr><td colspan="${cols}" class="empty">${msg}</td></tr>`}
 async function refresh(){
- setDashboardDataWait('Confirmando cotações e saldos antes de exibir os valores.');
+ if(!dashboardHasVisibleState)setDashboardDataWait('Confirmando cotações e saldos antes de exibir os valores.');
+ else{
+  const updated=document.getElementById('updated');
+  if(updated)updated.textContent='Atualizando dados em segundo plano…';
+ }
  if(mutationRefreshTimer){clearTimeout(mutationRefreshTimer);mutationRefreshTimer=null;}
- if(refreshInFlight){refreshAgain=true;return refreshInFlight;}
+ if(refreshInFlight){
+  if(dashboardDataRevision!==dashboardRefreshRevision)refreshAgain=true;
+  return refreshInFlight;
+ }
+ dashboardRefreshRevision=dashboardDataRevision;
  refreshInFlight=(async()=>{
   try{
-   const dashboardAttempts=4;let dashboardError=null;
+   const dashboardAttempts=4;let dashboardError=null;let responsePayload=null;
    for(let attempt=0;attempt<dashboardAttempts;attempt++){
-    try{state=await api('/api/dashboard',{timeoutMs:90000,cache:'no-store'});dashboardError=null;break;}
+    try{responsePayload=await api('/api/dashboard',{timeoutMs:90000,cache:'no-store'});dashboardError=null;break;}
     catch(error){dashboardError=error;if(attempt<dashboardAttempts-1){await new Promise(resolve=>setTimeout(resolve,650*Math.pow(2,attempt)));}}
    }
    if(dashboardError)throw dashboardError;
    if(dashboardInitialRetryTimer){clearTimeout(dashboardInitialRetryTimer);dashboardInitialRetryTimer=null;}
    dashboardInitialRetryAttempt=0;
-   const hasCompleteCache=Boolean(state&&state.cache_info&&state.cache_info.cached);
+   const hasCompleteCache=Boolean(responsePayload&&responsePayload.cache_info&&responsePayload.cache_info.cached);
    if(hasCompleteCache){
+    state=responsePayload;
+    dashboardHasVisibleState=true;
     render();
     applyPositionColumnPrefs();
     hideDashboardDataWait();
+    await writeDashboardBrowserCache(state);
     const updated=document.getElementById('updated');
     const cacheDate=state.cache_info.saved_at?new Date(state.cache_info.saved_at).toLocaleString('pt-BR'):'';
     if(updated)updated.textContent=cacheDate?'Dados confirmados em '+cacheDate:'Dados confirmados · cache local';
-    refreshDashboardInBackground(false);
-   }else{
-    // Sem snapshot completo, a resposta rápida fica por trás do bloqueio.
-    // A primeira exibição aguarda a geração completa do cache no servidor.
+    // Cotações/histórico podem demorar. Atualize o snapshot sem cobrir a carteira.
+    if(!dashboardFullRefreshInFlight)refreshDashboardInBackground(false);
+   }else if(!dashboardHasVisibleState){
+    // Primeira abertura sem cache: mantém o bloqueio até o primeiro snapshot completo.
+    state=responsePayload;
     refreshDashboardInBackground(true);
+   }else{
+    // Já há um snapshot local confirmado. Não o troque por uma resposta parcial.
+    if(!dashboardFullRefreshInFlight)refreshDashboardInBackground(false);
    }
    const irpfPage=document.getElementById('page-irpf');
    const darfPage=document.getElementById('page-darfs');
@@ -2394,7 +2506,6 @@ async function refresh(){
   if(refreshAgain){refreshAgain=false;Promise.resolve().then(()=>refresh());}
  }
 }
-
 
 
 function categoryKeyFromName(name){
@@ -2703,8 +2814,8 @@ function summaryCategoryPagination(category,totalPages,currentPage){
  if(totalPages<=1)return '';
  const buttons=[...new Set([1,currentPage-1,currentPage,currentPage+1,totalPages].filter(n=>n>=1&&n<=totalPages))].sort((a,b)=>a-b);
  let previous=0;
- const pageButtons=buttons.map(n=>{const gap=previous&&n-previous>1?'<span>…</span>':'';previous=n;return gap+`<button type="button" class="${n===currentPage?'active':''}" ${n===currentPage?'aria-current="page"':''} onclick="changeSummaryAssetsPage('${category}',${n})">${n}</button>`;}).join('');
- return `<nav class="summary-assets-pagination" role="navigation" aria-label="Paginação de ${escapeHTML(labels[category]||category)}"><button type="button" ${currentPage===1?'disabled':''} onclick="changeSummaryAssetsPage('${category}',${currentPage-1})">Anterior</button>${pageButtons}<button type="button" ${currentPage===totalPages?'disabled':''} onclick="changeSummaryAssetsPage('${category}',${currentPage+1})">Próximo</button><span>Página ${currentPage} de ${totalPages}</span></nav>`;
+ const pageButtons=buttons.map(n=>{const gap=previous&&n-previous>1?'<span>…</span>':'';previous=n;return gap+`<button type="button" class="${n===currentPage?'active':''}" ${n===currentPage?'aria-current="page"':''} onclick="changeSummaryAssetsPage(${jsAttrArg(category)},${n})">${n}</button>`;}).join('');
+ return `<nav class="summary-assets-pagination" role="navigation" aria-label="Paginação de ${escapeHTML(labels[category]||category)}"><button type="button" ${currentPage===1?'disabled':''} onclick="changeSummaryAssetsPage(${jsAttrArg(category)},${currentPage-1})">Anterior</button>${pageButtons}<button type="button" ${currentPage===totalPages?'disabled':''} onclick="changeSummaryAssetsPage(${jsAttrArg(category)},${currentPage+1})">Próximo</button><span>Página ${currentPage} de ${totalPages}</span></nav>`;
 }
 function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
  const categories=[
@@ -2761,12 +2872,11 @@ function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
  host.innerHTML=visibleCategories.map((cat,categoryIndex)=>{
   const categoryRows=rows.filter(item=>item.tipo===cat.key),total=categoryRows.reduce((sum,item)=>sum+Number(item.valor_atual||0),0),allCategoryItems=sortCategoryItems(categoryRows,cat.key,totalPortfolio),categoryPages=Math.max(1,Math.ceil(allCategoryItems.length/SUMMARY_ASSETS_PAGE_SIZE)),categoryPage=summaryMode?Math.min(Math.max(1,Number(summaryCategoryPages[cat.key]||1)),categoryPages):1,items=summaryMode?allCategoryItems.slice((categoryPage-1)*SUMMARY_ASSETS_PAGE_SIZE,categoryPage*SUMMARY_ASSETS_PAGE_SIZE):allCategoryItems,invested=allCategoryItems.reduce((sum,item)=>sum+Number(item.investido||0),0);
   if(summaryMode)summaryCategoryPages[cat.key]=categoryPage;
-  const variation=allCategoryItems.length?allCategoryItems.reduce((sum,item)=>sum+Number(item.pluggy_variacao_pct??item.variacao_dia??0),0)/allCategoryItems.length:0;
-  // Rentabilidade da classe: média aritmética simples das rentabilidades
-  // individuais. Cada ativo tem peso igual, independentemente do capital alocado.
-  const profitability=allCategoryItems.length
-   ? allCategoryItems.reduce((sum,item)=>sum+Number(item.lucro_pct||0),0)/allCategoryItems.length
-   : 0;
+  const variationValues=allCategoryItems.map(item=>item.variacao_dia).filter(value=>value!==null&&value!==undefined&&Number.isFinite(Number(value))).map(Number);
+  const variation=variationValues.length?variationValues.reduce((sum,value)=>sum+value,0)/variationValues.length:0;
+  // Rentabilidade da categoria: média aritmética simples dos ativos com dado válido.
+  const profitabilityValues=allCategoryItems.map(item=>item.lucro_pct).filter(value=>value!==null&&value!==undefined&&Number.isFinite(Number(value))).map(Number);
+  const profitability=profitabilityValues.length?profitabilityValues.reduce((sum,value)=>sum+value,0)/profitabilityValues.length:0;
   const target=distributionItems.find(x=>categoryKeyFromName(x.nome)===cat.key),ideal=Number(target?.percentual||0),portfolioPct=totalPortfolio?total/totalPortfolio*100:0;
   const expanded=summaryMode
    ? summaryExpandedAssetGroups[cat.key]===true
@@ -2777,12 +2887,12 @@ function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
   const widthKeys=[...shown.map(([key])=>key),'opcoes'];
   const widthTotal=widthKeys.reduce((sum,key)=>sum+(columnWeights[key]||.9),0);
   const proportionalCols=`<colgroup>${widthKeys.map(key=>`<col style="width:${((columnWeights[key]||.9)/widthTotal*100).toFixed(3)}%">`).join('')}</colgroup>`;
-  const body=items.length?`<div class="tablewrap"><table class="data proportional-assets-table" data-position-table ${summaryMode&&cat.key==='renda_fixa'?'data-fixed-income-summary="true"':''}>${proportionalCols}<thead><tr>${shown.map(([key,label])=>{const sort=positionSortState[cat.key]||{key:'valor_atual',direction:'desc'};const active=sort.key===key;const arrow=active?(sort.direction==='desc'?'▼':'▲'):'';return `<th data-col="${key}" class="position-sort-th"><button type="button" class="position-sort-button ${active?'is-sorted':''}" onclick="sortPositionAssets('${cat.key}','${key}')" title="Ordenar por ${escapeHTML(label)}">${label}<span class="position-sort-indicator" aria-hidden="true">${arrow}</span></button></th>`;}).join('')}<th data-col="opcoes">Opções</th></tr></thead><tbody>${items.map(i=>`<tr>${shown.map(([,label,renderCell])=>renderCell(i)).join('')}<td data-col="opcoes" class="asset-options-cell"><button type="button" class="asset-options-trigger" aria-label="Opções de ${escapeHTML(i.ticker)}" onclick='openAssetMenu(event,${jsArg(i.ticker)})'>•••</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${summaryMode&&allCategoryItems.length?"Os ativos desta classe estão em outra página.":"Nenhum ativo cadastrado nesta categoria."}</div>`;
+  const body=items.length?`<div class="tablewrap"><table class="data proportional-assets-table" data-position-table ${summaryMode&&cat.key==='renda_fixa'?'data-fixed-income-summary="true"':''}>${proportionalCols}<thead><tr>${shown.map(([key,label])=>{const sort=positionSortState[cat.key]||{key:'valor_atual',direction:'desc'};const active=sort.key===key;const arrow=active?(sort.direction==='desc'?'▼':'▲'):'';return `<th data-col="${key}" class="position-sort-th"><button type="button" class="position-sort-button ${active?'is-sorted':''}" onclick="sortPositionAssets(${jsAttrArg(cat.key)},${jsAttrArg(key)})" title="Ordenar por ${escapeHTML(label)}">${label}<span class="position-sort-indicator" aria-hidden="true">${arrow}</span></button></th>`;}).join('')}<th data-col="opcoes">Opções</th></tr></thead><tbody>${items.map(i=>`<tr>${shown.map(([,label,renderCell])=>renderCell(i)).join('')}<td data-col="opcoes" class="asset-options-cell"><button type="button" class="asset-options-trigger" aria-label="Opções de ${escapeHTML(i.ticker)}" onclick='openAssetMenu(event,${jsArg(i.ticker)})'>•••</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">${summaryMode&&allCategoryItems.length?"Os ativos desta classe estão em outra página.":"Nenhum ativo cadastrado nesta categoria."}</div>`;
   const categoryMetrics=`<span class="asset-category-title"><span class="asset-category-icon">${cat.icon}</span>${cat.name}</span><span class="asset-category-metric">Ativos<b>${allCategoryItems.length}</b></span><span class="asset-category-metric">Valor total<b>${brl(total)}</b></span>${cat.key==='renda_fixa'?'<span class="asset-category-metric category-metric-placeholder" aria-hidden="true"><span>Variação</span><b>—</b></span>':`<span class="asset-category-metric">Variação<b class="${allCategoryItems.length?'metric-change '+(variation>=0?'green':'red'):'category-empty-value'}">${allCategoryItems.length?`${variation>=0?'▲':'▼'} ${pct(variation)}`:'-'}</b></span>`}<span class="asset-category-metric">Rentabilidade<b>${allCategoryItems.length?`<span class="variation-pill ${profitability>=0?'positive':'negative'}">${profitability>=0?'↗':'↘'} ${pct(profitability)}</span>`:'<span class="category-empty-pill">-</span>'}</b></span><span class="asset-category-metric">% na carteira<b>${Math.round(portfolioPct)}% / ${Math.round(ideal)}%</b></span><span class="asset-category-chevron">⌄</span>`;
-  const moveControls=`<div class="position-category-move">${categoryIndex>0?`<button type="button" class="position-category-arrow" title="Mover ${cat.name} para cima" aria-label="Mover ${cat.name} para cima" onclick="event.stopPropagation();${summaryMode?'moveSummaryCategory':'movePositionCategory'}('${cat.key}',-1)">↑</button>`:''}${categoryIndex<visibleCategories.length-1?`<button type="button" class="position-category-arrow" title="Mover ${cat.name} para baixo" aria-label="Mover ${cat.name} para baixo" onclick="event.stopPropagation();${summaryMode?'moveSummaryCategory':'movePositionCategory'}('${cat.key}',1)">↓</button>`:''}</div>`;
+  const moveControls=`<div class="position-category-move">${categoryIndex>0?`<button type="button" class="position-category-arrow" title="Mover ${cat.name} para cima" aria-label="Mover ${cat.name} para cima" onclick="event.stopPropagation();${summaryMode?'moveSummaryCategory':'movePositionCategory'}(${jsAttrArg(cat.key)},-1)">↑</button>`:''}${categoryIndex<visibleCategories.length-1?`<button type="button" class="position-category-arrow" title="Mover ${cat.name} para baixo" aria-label="Mover ${cat.name} para baixo" onclick="event.stopPropagation();${summaryMode?'moveSummaryCategory':'movePositionCategory'}(${jsAttrArg(cat.key)},1)">↓</button>`:''}</div>`;
   const header=summaryMode
-   ? `<div class="summary-category-head">${moveControls}<button type="button" class="asset-category-head summary-category-toggle" onclick="toggleSummaryAssetGroup('${cat.key}')" aria-expanded="${expanded}">${categoryMetrics}</button></div>`
-   : `<div class="position-category-head">${moveControls}<button type="button" class="asset-category-head position-group-toggle" onclick="toggleAssetGroup('${cat.key}')" aria-expanded="${expanded}">${categoryMetrics}</button></div>`;
+   ? `<div class="summary-category-head">${moveControls}<button type="button" class="asset-category-head summary-category-toggle" onclick="toggleSummaryAssetGroup(${jsAttrArg(cat.key)})" aria-expanded="${expanded}">${categoryMetrics}</button></div>`
+   : `<div class="position-category-head">${moveControls}<button type="button" class="asset-category-head position-group-toggle" onclick="toggleAssetGroup(${jsAttrArg(cat.key)})" aria-expanded="${expanded}">${categoryMetrics}</button></div>`;
   return `<section class="asset-category ${expanded?'':'collapsed'} ${summaryMode?'summary-draggable-category':''}" ${summaryMode?`data-category-key="${cat.key}"`:!summaryMode?`data-category-key="${cat.key}"`:``}>${header}<div class="asset-category-body">${body}${summaryMode?summaryCategoryPagination(cat.key,categoryPages,categoryPage):''}</div></section>`;
  }).join('');
  applyPositionColumnPrefs();
@@ -2870,7 +2980,7 @@ function profitabilityMoneyHint(item,profitability){
   amount=0;
  }
  if(!Number.isFinite(amount))amount=Number(item?.investido||0)*Number(profitability||0)/100;
- return `Quanto uma rentabilidade de ${pct(profitability)} representa?\n${brl(amount)}`;
+ return `Resultado financeiro consolidado da posição (inclui proventos quando disponíveis):\n${brl(amount)}\nO percentual exibido na coluna é calculado separadamente e não corresponde necessariamente a este total.`;
 }
  
 window.hideVariationMoneyTooltip=function hideVariationMoneyTooltip(){
@@ -3192,7 +3302,7 @@ function openFixedIncomeSalePicker(){
  const body=document.getElementById('fixedIncomeSaleRows');
  body.innerHTML=holdings.length?holdings.map((item,index)=>`
   <tr class="fixed-sale-row" data-ticker="${escapeHTML(item.ticker)}" onclick='selectFixedIncomeSale(${jsArg(item.ticker)})'>
-   <td><label class="fixed-sale-choice"><input type="radio" name="fixedIncomeSaleChoice" value="${escapeHTML(item.ticker)}" onchange="selectFixedIncomeSale('${escapeHTML(item.ticker)}')"><span>${escapeHTML(item.nome||item.ticker)}</span></label></td>
+   <td><label class="fixed-sale-choice"><input type="radio" name="fixedIncomeSaleChoice" value="${escapeHTML(item.ticker)}" onchange="selectFixedIncomeSale(${jsAttrArg(item.ticker)})"><span>${escapeHTML(item.nome||item.ticker)}</span></label></td>
    <td>${brl(item.valor_atual??(Number(item.quantidade)*Number(item.preco_medio)))}</td><td class="muted">›</td>
   </tr>`).join(''):rowEmpty(3,'Nenhum investimento de renda fixa disponível para venda.');
  document.getElementById('fixedIncomeSaleConfirm').disabled=!holdings.length;
@@ -3311,7 +3421,7 @@ function renderProvChartPeriodMenu(availableYears){
  const yearValue=provChartRange.startsWith('ano:')?provChartRange.slice(4):'';
  const selectedLabel=quick.find(x=>x[0]===provChartRange)?.[1]||(yearValue?yearValue:'Últimos 12 meses');
  if(label)label.textContent=selectedLabel;
- const option=(value,text)=>`<label class="period-option ${provChartRange===value?'active':''}"><input type="radio" name="provChartPeriodChoice" ${provChartRange===value?'checked':''} onchange="setProvChartRange('${value}')"><span>${text}</span></label>`;
+ const option=(value,text)=>`<label class="period-option ${provChartRange===value?'active':''}"><input type="radio" name="provChartPeriodChoice" ${provChartRange===value?'checked':''} onchange="setProvChartRange(${jsAttrArg(value)})"><span>${text}</span></label>`;
  menu.innerHTML=`<div class="period-title">Período</div><div class="period-section"><div class="period-title">Filtros rápidos</div>${quick.map(([value,text])=>option(value,escapeHTML(text))).join('')}</div><div class="period-divider"></div><div class="period-section"><div class="period-title">Filtro anual</div>${years.map(year=>option('ano:'+year,String(year))).join('')||'<span class="mini">Nenhum ano disponível.</span>'}</div>`;
 }
 function setProvMode(mode){
@@ -3357,7 +3467,7 @@ function renderProvHistoryFilters(rows,eventType){
  const statusMenu=document.getElementById('provHistoryStatusMenu');
  if(statusMenu){
   const choices=[['todos','Recebidos e Futuros'],['Pago','Recebidos'],['A receber','Futuros']];
-  statusMenu.innerHTML=choices.map(([value,label])=>`<button type="button" role="option" aria-selected="${provHistoryStatus===value}" class="native-dropdown-option ${provHistoryStatus===value?'active':''}" onclick="setProvHistoryStatus('${value}')">${label}</button>`).join('');
+  statusMenu.innerHTML=choices.map(([value,label])=>`<button type="button" role="option" aria-selected="${provHistoryStatus===value}" class="native-dropdown-option ${provHistoryStatus===value?'active':''}" onclick="setProvHistoryStatus(${jsAttrArg(value)})">${label}</button>`).join('');
  }
  const typeMenu=document.getElementById('provHistoryTypeMenu');
  const typeValues=[...new Set([...((state.itens||[]).map(x=>x.tipo).filter(Boolean)),...rows.map(eventType).filter(Boolean)])].sort((a,b)=>(labels[a]||a).localeCompare(labels[b]||b,'pt-BR'));
@@ -3365,7 +3475,7 @@ function renderProvHistoryFilters(rows,eventType){
  if(typeMenu){
   const selected=provHistoryTypes[0]||'todos';
   typeMenu.innerHTML=[['todos','Todos os tipos'],...typeValues.map(value=>[value,labels[value]||value])]
-   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selected===value}" class="native-dropdown-option ${selected===value?'active':''}" onclick="setProvHistoryType('${escapeHTML(value)}')">${escapeHTML(text)}</button>`).join('');
+   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selected===value}" class="native-dropdown-option ${selected===value?'active':''}" onclick="setProvHistoryType(${jsAttrArg(value)})">${escapeHTML(text)}</button>`).join('');
   const trigger=document.querySelector('#provHistoryTypeWrap .prov-history-trigger span:first-child');
   if(trigger)trigger.textContent=selected==='todos'?'Tipo de ativo':(labels[selected]||selected);
  }
@@ -3375,7 +3485,7 @@ function renderProvHistoryFilters(rows,eventType){
  if(assetMenu){
   const selected=provHistoryAssets[0]||'todos';
   assetMenu.innerHTML=[['todos','Todos os ativos'],...assetValues.map(value=>[value,value])]
-   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selected===value}" class="native-dropdown-option ${selected===value?'active':''}" onclick="setProvHistoryAsset('${escapeHTML(value)}')">${escapeHTML(text)}</button>`).join('');
+   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selected===value}" class="native-dropdown-option ${selected===value?'active':''}" onclick="setProvHistoryAsset(${jsAttrArg(value)})">${escapeHTML(text)}</button>`).join('');
   const trigger=document.querySelector('#provHistoryAssetWrap .prov-history-trigger span:first-child');
   if(trigger)trigger.textContent=selected==='todos'?'Ativos':selected;
  }
@@ -3587,14 +3697,14 @@ function renderMyProvFilters(rows,eventType){
  const monthNames=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
  const quickLabel=quick.find(x=>x[0]===myProvPeriod)?.[1];
  if(label)label.textContent=quickLabel||(myProvPeriod.startsWith('mes:')?`${monthNames[Number(myProvPeriod.split(':')[2])-1]}/${myProvPeriod.split(':')[1]}`:'Ano atual');
- const option=(value,text)=>`<label class="period-option ${myProvPeriod===value?'active':''}"><input type="radio" name="myProvPeriodChoice" ${myProvPeriod===value?'checked':''} onchange="setMyProvPeriod('${value}')"><span>${text}</span></label>`;
+ const option=(value,text)=>`<label class="period-option ${myProvPeriod===value?'active':''}"><input type="radio" name="myProvPeriodChoice" ${myProvPeriod===value?'checked':''} onchange="setMyProvPeriod(${jsAttrArg(value)})"><span>${text}</span></label>`;
  if(menu)menu.innerHTML=`<div class="period-title">Período</div><div class="period-section"><div class="period-title">Filtros rápidos</div>${quick.map(([v,t])=>option(v,escapeHTML(t))).join('')}</div><div class="period-divider"></div><div class="period-section"><div class="period-title">Filtro mensal</div><div class="my-prov-month-nav"><button type="button" aria-label="Ano anterior" onclick="setMyProvMonthYear(-1)">‹</button><span>${myProvMonthYear}</span><button type="button" aria-label="Próximo ano" onclick="setMyProvMonthYear(1)">›</button></div><div class="period-months">${monthNames.map((m,i)=>option(`mes:${myProvMonthYear}:${String(i+1).padStart(2,'0')}`,m)).reverse().join('')}</div></div>`;
  const typeMenu=document.getElementById('myProvTypeMenu'),typeValues=[...new Set([...((state.itens||[]).map(x=>x.tipo).filter(Boolean)),...rows.map(eventType).filter(Boolean)])].sort((a,b)=>(labels[a]||a).localeCompare(labels[b]||b,'pt-BR'));
  myProvTypes=myProvTypes.filter(x=>typeValues.includes(x));
  const selectedType=myProvTypes[0]||'todos';
  if(typeMenu){
   typeMenu.innerHTML=[['todos','Todos os tipos'],...typeValues.map(v=>[v,labels[v]||v])]
-   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selectedType===value}" class="native-dropdown-option ${selectedType===value?'active':''}" onclick="setMyProvType('${escapeHTML(value)}')">${escapeHTML(text)}</button>`).join('');
+   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selectedType===value}" class="native-dropdown-option ${selectedType===value?'active':''}" onclick="setMyProvType(${jsAttrArg(value)})">${escapeHTML(text)}</button>`).join('');
   const trigger=document.querySelector('#myProvTypeWrap .prov-history-trigger span:first-child');
   if(trigger)trigger.textContent=selectedType==='todos'?'Tipo de ativo':(labels[selectedType]||selectedType);
  }
@@ -3603,7 +3713,7 @@ function renderMyProvFilters(rows,eventType){
  const selectedAsset=myProvAssets[0]||'todos';
  if(assetMenu){
   assetMenu.innerHTML=[['todos','Todos os ativos'],...assetValues.map(v=>[v,v])]
-   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selectedAsset===value}" class="native-dropdown-option ${selectedAsset===value?'active':''}" onclick="setMyProvAsset('${escapeHTML(value)}')">${escapeHTML(text)}</button>`).join('');
+   .map(([value,text])=>`<button type="button" role="option" aria-selected="${selectedAsset===value}" class="native-dropdown-option ${selectedAsset===value?'active':''}" onclick="setMyProvAsset(${jsAttrArg(value)})">${escapeHTML(text)}</button>`).join('');
   const trigger=document.querySelector('#myProvAssetWrap .prov-history-trigger span:first-child');
   if(trigger)trigger.textContent=selectedAsset==='todos'?'Ativos':selectedAsset;
  }
@@ -4024,7 +4134,7 @@ let returnBenchmarkRequestKey = '';
 
 function returnBenchmarkSelectHTML(cardKey){
  const saved=(()=>{try{const v=localStorage.getItem('lonelyWalletReturnBenchmark_'+cardKey)||'';return v==='CDI'?'':v}catch(e){return ''}})();
- return `<div class="return-benchmark-row"><label for="returnBenchmark_${cardKey}">Comparar com</label><select id="returnBenchmark_${cardKey}" class="return-benchmark-select" onchange="setReturnCardBenchmark('${cardKey}',this.value)"><option value="">Não comparar</option>${RETURN_BENCHMARKS.map(code=>`<option value="${code}" ${saved===code?'selected':''}>${code}</option>`).join('')}</select><small class="return-card-comparison" id="returnBenchmarkStatus_${cardKey}">Selecione um índice para comparar.</small></div>`;
+ return `<div class="return-benchmark-row"><label for="returnBenchmark_${cardKey}">Comparar com</label><select id="returnBenchmark_${cardKey}" class="return-benchmark-select" onchange="setReturnCardBenchmark(${jsAttrArg(cardKey)},this.value)"><option value="">Não comparar</option>${RETURN_BENCHMARKS.map(code=>`<option value="${code}" ${saved===code?'selected':''}>${code}</option>`).join('')}</select><small class="return-card-comparison" id="returnBenchmarkStatus_${cardKey}">Selecione um índice para comparar.</small></div>`;
 }
 function setReturnCardBenchmark(cardKey,value){
  if(!['total','12m','month'].includes(cardKey)||!(value===''||RETURN_BENCHMARKS.includes(value)))return;
@@ -4331,9 +4441,9 @@ function operationGroupPagination(key,totalPages,currentPage){
  const ordered=[...pages].sort((a,b)=>a-b);let previous=0;
  const pageButtons=ordered.map(n=>{
   const gap=previous&&n-previous>1?'<span class="page-info">…</span>':'';previous=n;
-  return gap+`<button type="button" class="${n===currentPage?'active':''}" ${n===currentPage?'aria-current="page"':''} onclick="setOperationGroupPage('${encoded}',${n})">${n}</button>`;
+  return gap+`<button type="button" class="${n===currentPage?'active':''}" ${n===currentPage?'aria-current="page"':''} onclick="setOperationGroupPage(${jsAttrArg(encoded)},${n})">${n}</button>`;
  }).join('');
- return `<nav class="operation-group-pagination" aria-label="Paginação dos lançamentos de ${escapeHTML(labels[key]||key)}"><button type="button" ${currentPage===1?'disabled':''} onclick="setOperationGroupPage('${encoded}',${currentPage-1})">Anterior</button>${pageButtons}<button type="button" ${currentPage===totalPages?'disabled':''} onclick="setOperationGroupPage('${encoded}',${currentPage+1})">Próximo</button><span class="page-info">${rowsCountLabel(totalPages,currentPage)}</span></nav>`;
+ return `<nav class="operation-group-pagination" aria-label="Paginação dos lançamentos de ${escapeHTML(labels[key]||key)}"><button type="button" ${currentPage===1?'disabled':''} onclick="setOperationGroupPage(${jsAttrArg(encoded)},${currentPage-1})">Anterior</button>${pageButtons}<button type="button" ${currentPage===totalPages?'disabled':''} onclick="setOperationGroupPage(${jsAttrArg(encoded)},${currentPage+1})">Próximo</button><span class="page-info">${rowsCountLabel(totalPages,currentPage)}</span></nav>`;
 }
 function rowsCountLabel(totalPages,currentPage){return `Página ${currentPage} de ${totalPages}`;}
 function renderOperationsByType(allOps){
@@ -4480,7 +4590,7 @@ function renderAPIProviders(){
     <div class="pluggy-manager-header"><div><h3 id="pluggyManagerTitle">Gerenciar API Pluggy</h3><div class="mini">Sincronização automática e exclusão de dados importados</div></div><button class="ghost" type="button" onclick="closePluggyManager()" aria-label="Fechar">✕</button></div>
     <div class="pluggy-manager-content">
      <section class="pluggy-manager-section pluggy-sync-section">
-      <label class="mini pluggy-auto-sync-control" for="pluggyAutoSyncInterval"><span>Sincronizar automaticamente</span><select id="pluggyAutoSyncInterval" aria-label="Intervalo de sincronização automática" onchange="savePluggyAutoSyncInterval(this)"><option value="0">Desativado</option><option value="15">A cada 15 minutos</option><option value="30" selected>A cada 30 minutos</option><option value="60">A cada hora</option><option value="240">A cada 4 horas</option><option value="720">A cada 12 horas</option><option value="1440">Uma vez ao dia</option></select></label>
+      <label class="mini pluggy-auto-sync-control" for="pluggyAutoSyncInterval"><span>Sincronizar automaticamente (mesmo com o navegador fechado)</span><select id="pluggyAutoSyncInterval" aria-label="Intervalo de sincronização automática" onchange="savePluggyAutoSyncInterval(this)"><option value="0">Desativado</option><option value="15">A cada 15 minutos</option><option value="30" selected>A cada 30 minutos</option><option value="60">A cada hora</option><option value="240">A cada 4 horas</option><option value="720">A cada 12 horas</option><option value="1440">Uma vez ao dia</option></select></label>
      </section>
      <section class="pluggy-manager-section pluggy-clear-section">
       <div class="pluggy-clear-copy"><h4>Excluir dados importados</h4><div class="mini">Escolha uma conexão específica ou todas as conexões para remover os dados importados.</div></div>
@@ -4491,7 +4601,7 @@ function renderAPIProviders(){
   </div>
   <div id="pluggyState" class="pluggy-state mini">Carregando conexões…</div><div id="pluggyInvestments" class="pluggy-investments"></div>
 `:
-  p.auth?`<div class="mini">${p.connected?'Conectada ao motor atual de dados':'Fonte complementar; cobertura depende do provedor e do plano.'}</div><label class="mini" for="apiToken_${p.id}">Token de integração</label><input type="password" id="apiToken_${p.id}" autocomplete="new-password" placeholder="${p.masked?'Cadastrado: '+p.masked:'Cole seu token aqui'}"/><div class="api-provider-actions"><button class="primary" type="button" onclick="saveAPIProvider('${p.id}')">Salvar token</button><button class="ghost" type="button" onclick="testAPIProvider('${p.id}')">Testar conexão</button>${p.configured?`<button class="ghost" type="button" onclick="toggleAPIProvider('${p.id}',${!p.enabled})">${p.enabled?'Desativar':'Ativar'}</button><button class="ghost" type="button" onclick="deleteAPIProvider('${p.id}')">Remover</button>`:''}</div>`:
+  p.auth?`<div class="mini">${p.connected?'Conectada ao motor atual de dados':'Fonte complementar; cobertura depende do provedor e do plano.'}</div><label class="mini" for="apiToken_${p.id}">Token de integração</label><input type="password" id="apiToken_${p.id}" autocomplete="new-password" placeholder="${p.masked?'Cadastrado: '+p.masked:'Cole seu token aqui'}"/><div class="api-provider-actions"><button class="primary" type="button" onclick="saveAPIProvider(${jsAttrArg(p.id)})">Salvar token</button><button class="ghost" type="button" onclick="testAPIProvider(${jsAttrArg(p.id)})">Testar conexão</button>${p.configured?`<button class="ghost" type="button" onclick="toggleAPIProvider(${jsAttrArg(p.id)},${!p.enabled})">${p.enabled?'Desativar':'Ativar'}</button><button class="ghost" type="button" onclick="deleteAPIProvider(${jsAttrArg(p.id)})">Remover</button>`:''}</div>`:
   `<div class="api-provider-actions"><span class="mini">${p.id==='b3'?'Acesso mediante contrato e licença.':'Não é necessário cadastrar token.'}</span></div>`}
   <div class="api-status" id="apiStatus_${p.id}">${p.auth&&p.updated_at?'Última alteração: '+new Date(p.updated_at).toLocaleString('pt-BR'):''}</div>
 
@@ -4554,37 +4664,19 @@ function closePluggyManager(){
  if(panel)panel.style.display='none';
  document.getElementById('pluggyManageToggle')?.setAttribute('aria-expanded','false');
 }
-let pluggyAutoSyncTimer=null;
-let pluggyAutoSyncRunning=false;
 let pluggyAutoSyncIntervalMinutes=30;
-const PLUGGY_SYNC_INTERVAL_KEY='lonelyWalletPluggySyncInterval';
-let pluggyAutoSyncSettingsLoaded=false;
 async function loadPluggyAutoSyncSettings(){
- // Exibe imediatamente o último valor confirmado, mas sempre reconcilia com o SQLite.
- try{const cachedRaw=localStorage.getItem(PLUGGY_SYNC_INTERVAL_KEY);if(cachedRaw!==null){const cached=Number(cachedRaw);if([0,15,30,60,240,720,1440].includes(cached))pluggyAutoSyncIntervalMinutes=cached;}}catch(e){}
  const select=document.getElementById('pluggyAutoSyncInterval');
- if(select)select.value=String(pluggyAutoSyncIntervalMinutes);
  try{
   const settings=await api('/api/pluggy/settings',{skipAutoRefresh:true,cache:'no-store'});
   const interval=Number(settings.interval_minutes);
-  if([0,15,30,60,240,720,1440].includes(interval)){
-   pluggyAutoSyncIntervalMinutes=interval;
-   try{localStorage.setItem(PLUGGY_SYNC_INTERVAL_KEY,String(interval));}catch(e){}
-  }
-  pluggyAutoSyncSettingsLoaded=true;
+  if([0,15,30,60,240,720,1440].includes(interval))pluggyAutoSyncIntervalMinutes=interval;
+  if(select)select.value=String(pluggyAutoSyncIntervalMinutes);
  }catch(error){
   console.warn('Não foi possível carregar a frequência salva da Pluggy:',error);
+  if(select)select.value=String(pluggyAutoSyncIntervalMinutes);
  }
- if(select)select.value=String(pluggyAutoSyncIntervalMinutes);
- configurePluggyAutoSyncTimer();
  return pluggyAutoSyncIntervalMinutes;
-}
-function configurePluggyAutoSyncTimer(){
- if(pluggyAutoSyncTimer){clearInterval(pluggyAutoSyncTimer);pluggyAutoSyncTimer=null;}
- if(pluggyAutoSyncIntervalMinutes>0){
-  runPluggyAutoSync();
-  pluggyAutoSyncTimer=setInterval(runPluggyAutoSync,60000);
- }
 }
 async function savePluggyAutoSyncInterval(selectOrValue){
  const select=selectOrValue&&typeof selectOrValue==='object'?selectOrValue:document.getElementById('pluggyAutoSyncInterval');
@@ -4600,38 +4692,14 @@ async function savePluggyAutoSyncInterval(selectOrValue){
   const saved=await api('/api/pluggy/settings',{method:'POST',body:JSON.stringify({interval_minutes:interval}),skipAutoRefresh:true});
   if(!saved||saved.ok!==true||Number(saved.interval_minutes)!==interval)throw new Error('O servidor não confirmou a frequência selecionada.');
   pluggyAutoSyncIntervalMinutes=interval;
-  pluggyAutoSyncSettingsLoaded=true;
-  try{localStorage.setItem(PLUGGY_SYNC_INTERVAL_KEY,String(interval));}catch(e){}
   if(select)select.value=String(interval);
-  configurePluggyAutoSyncTimer();
-  toast(interval===0?'Sincronização automática desativada.':'Frequência de sincronização salva.');
+  toast(interval===0?'Sincronização automática desativada.':'Frequência de sincronização salva no servidor.');
  }catch(error){
   if(select)select.value=String(previous);
   toast(error.message||'Não foi possível salvar o intervalo.');
- }finally{
-  if(select)select.disabled=false;
- }
+ }finally{if(select)select.disabled=false;}
 }
-async function runPluggyAutoSync(){
- if(pluggyAutoSyncRunning||document.hidden)return;
- const interval=Number(pluggyAutoSyncIntervalMinutes||0);
- if(!interval)return;
- let last=0;try{last=Number(localStorage.getItem('lonelyWalletPluggyAutoSyncAt')||0)}catch(e){}
- if(Date.now()-last<interval*60000)return;
- pluggyAutoSyncRunning=true;
- try{
-  await api('/api/pluggy/sync',{method:'POST',body:JSON.stringify({force:true}),skipAutoRefresh:true,timeoutMs:900000});
-  try{localStorage.setItem('lonelyWalletPluggyAutoSyncAt',String(Date.now()))}catch(e){}
-  if(typeof loadPluggyState==='function')await loadPluggyState();
-  if(typeof refresh==='function')refresh();
- }catch(error){
-  const host=document.getElementById('pluggyState');
-  if(host)host.textContent='Falha na sincronização automática: '+(error.message||'erro desconhecido');
- }finally{pluggyAutoSyncRunning=false;}
-}
-async function startPluggyAutoSync(){
- await loadPluggyAutoSyncSettings();
-}
+async function startPluggyAutoSync(){await loadPluggyAutoSyncSettings();}
 async function syncPluggyConnection(itemId,button){
  const id=String(itemId||'').trim();
  if(!id)return;
@@ -4950,6 +5018,7 @@ function escapeHTML(value){
  return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 function jsArg(value){return JSON.stringify(String(value??'')).replace(/[<>&']/g,c=>({'<':'\\u003c','>':'\\u003e','&':'\\u0026',"'":'\\u0027'}[c]));}
+function jsAttrArg(value){return jsArg(value).replace(/"/g,'&quot;');}
 function closeSuggestions(){suggestions.classList.add('hidden');suggestions.innerHTML='';}
 function moneyInput(value){
  const n=Number(value);
@@ -5280,35 +5349,13 @@ async function exportOperations(){
   toast('Planilha de lançamentos exportada.');
  }catch(error){toast(error.message||'Falha ao exportar lançamentos.')}
 }
-async function autoSyncPluggyOnPageLoad(){
- // Evita consultar a Pluggy em todo F5. Cada conexão é atualizada no máximo
- // uma vez a cada 30 minutos; o servidor também aplica o mesmo bloqueio.
- const intervalMs=30*60*1000;
- try{
-  const stateData=await api('/api/pluggy/state',{skipAutoRefresh:true});
-  const items=stateData.items||[];
-  if(!items.length)return;
-  const now=Date.now();
-  const hasDueItem=items.some(item=>{
-   if(!item.last_synced_at)return true;
-   const last=Date.parse(item.last_synced_at);
-   return !Number.isFinite(last)||(now-last)>=intervalMs;
-  });
-  if(!hasDueItem)return;
-  const configured=await api('/api/integracoes',{skipAutoRefresh:true});
-  const pluggy=(configured.providers||[]).find(p=>p.id==='pluggy'||p.provider==='pluggy');
-  if(pluggy&&(!pluggy.configured||pluggy.enabled===false))return;
-  const result=await api('/api/pluggy/sync',{method:'POST',body:'{}',skipAutoRefresh:true,timeoutMs:900000});
-  if(result&&result.ok!==false&&Number(result.items||0)>0){
-   await refresh();
-   if(document.getElementById('pluggyState'))await loadPluggyState();
-   toast('Pluggy atualizada. Novos ativos e movimentações foram verificados sem duplicar lançamentos.');
-  }
- }catch(error){console.warn('Sincronização automática Pluggy:',error.message||error)}
-}
-
 updateDocumentIdentity('resumo');
-refresh();loadDistribution();autoSyncPluggyOnPageLoad();
+(async function initializeDashboard(){
+ // Restaura o último snapshot completo antes de consultar o servidor, inclusive no F5.
+ await restoreDashboardBrowserCache();
+ refresh();
+ loadDistribution();
+})();
 
 // Preferências locais: tema claro/escuro e ocultação de valores.
 function applyChartTheme(instance){
@@ -5476,7 +5523,7 @@ async function loadB3Imports(){
   const batches=data.lotes||[],legacy=data.legados||[];
   if(!batches.length&&!legacy.length){host.innerHTML='<div class="empty">Nenhuma planilha B3 importada foi registrada.</div>';return;}
   const fmtDate=v=>{const d=new Date(v);return isNaN(d)?escapeHTML(v||''):d.toLocaleString('pt-BR');};
-  host.innerHTML=`${batches.map(b=>`<div class="pluggy-item-row"><div><strong>${escapeHTML(b.arquivo||'Planilha B3')}</strong><div class="mini">${fmtDate(b.importado_em)} · ${Number(b.operacoes||0)} lançamentos · ${Number(b.proventos||0)} proventos · ${Number(b.registros||0)} registros rastreados</div></div><button class="ghost" type="button" onclick="deleteB3ImportBatch('${b.id}')">Excluir importação</button></div>`).join('')}${legacy.length?`<div class="section"><strong>Importações anteriores</strong><p class="mini">Estas importações foram feitas antes do histórico por arquivo. O banco não guardou o nome original nem o vínculo seguro de cada registro, por isso aparecem na lista, mas não podem ser apagadas individualmente por esta tela.</p>${legacy.map(b=>`<div class="pluggy-item-row"><div><strong>Planilha B3 antiga</strong><div class="mini">${fmtDate(b.importado_em)} · ${Number(b.operacoes||0)} lançamentos · ${Number(b.proventos||0)} proventos · ${Number(b.registros||0)} registros</div></div><span class="api-status-pill warning">Exclusão indisponível</span></div>`).join('')}</div>`:''}`;
+  host.innerHTML=`${batches.map(b=>`<div class="pluggy-item-row"><div><strong>${escapeHTML(b.arquivo||'Planilha B3')}</strong><div class="mini">${fmtDate(b.importado_em)} · ${Number(b.operacoes||0)} lançamentos · ${Number(b.proventos||0)} proventos · ${Number(b.registros||0)} registros rastreados</div></div><button class="ghost" type="button" onclick="deleteB3ImportBatch(${jsAttrArg(b.id)})">Excluir importação</button></div>`).join('')}${legacy.length?`<div class="section"><strong>Importações anteriores</strong><p class="mini">Estas importações foram feitas antes do histórico por arquivo. O banco não guardou o nome original nem o vínculo seguro de cada registro, por isso aparecem na lista, mas não podem ser apagadas individualmente por esta tela.</p>${legacy.map(b=>`<div class="pluggy-item-row"><div><strong>Planilha B3 antiga</strong><div class="mini">${fmtDate(b.importado_em)} · ${Number(b.operacoes||0)} lançamentos · ${Number(b.proventos||0)} proventos · ${Number(b.registros||0)} registros</div></div><span class="api-status-pill warning">Exclusão indisponível</span></div>`).join('')}</div>`:''}`;
  }catch(e){host.textContent=e.message||'Não foi possível carregar o histórico.';}
 }
 async function deleteB3ImportBatch(id){
