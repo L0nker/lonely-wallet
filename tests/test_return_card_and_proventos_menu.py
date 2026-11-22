@@ -8,18 +8,14 @@ MAIN = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
 
 
 class ReturnCardAndProventosMenuTests(unittest.TestCase):
-    def test_total_return_uses_same_value_as_total_patrimony_card(self):
+    def test_dashboard_rentability_card_is_replaced_by_paid_dividend_ranking(self):
         render_start = HTML.index("function render(){")
         render_end = HTML.index("\n\nconst rows=state.itens||[];", render_start)
         renderer = HTML[render_start:render_end]
-        self.assertIn("const portfolioReturn=summaryApplied>0?(summaryCapitalGain/summaryApplied)*100:null;", renderer)
-        self.assertIn("renderConsolidatedReturnSparklines(portfolioReturn, return12m);", renderer)
-
-        helper_start = HTML.index("function renderConsolidatedReturnSparklines(")
-        helper_end = HTML.index("\n}\n\nfunction operationQuantity", helper_start) + 2
-        helper = HTML[helper_start:helper_end]
-        self.assertIn("const lastTotal=totalReturn!==null&&totalReturn!==undefined&&Number.isFinite(Number(totalReturn))?Number(totalReturn):null;", helper)
-        self.assertNotIn("const lastTotal=totalSeries.length?", helper)
+        self.assertIn("Maiores pagadores de proventos", renderer)
+        self.assertIn("provDash.maiores_pagadores||[]", renderer)
+        self.assertNotIn("return-stat-card", renderer)
+        self.assertNotIn("renderConsolidatedReturnSparklines", renderer)
 
     def test_twelve_month_card_uses_rolling_twelve_month_price_returns(self):
         helper_start = HTML.index("function renderConsolidatedReturnSparklines(")

@@ -25,7 +25,7 @@ QUOTE_HISTORY_PATH = os.environ.get('QUOTE_HISTORY_PATH', '/data/quotes_last_val
 QUOTE_HISTORY_LOCK = threading.RLock()
 DASHBOARD_CACHE_PATH = os.environ.get('DASHBOARD_CACHE_PATH', '/data/dashboard_cache.json')
 DASHBOARD_CACHE_LOCK = threading.RLock()
-DASHBOARD_CACHE_FORMAT = 5
+DASHBOARD_CACHE_FORMAT = 6
 PORTFOLIO_HISTORY_CACHE, PORTFOLIO_HISTORY_TTL = {}, 1800
 PORTFOLIO_HISTORY_EMPTY_TTL = 120
 def _dashboard_cache_signature():
@@ -5562,6 +5562,36 @@ def dashboard():
     monthly_values = [{'mes':m,'recebido':round(received_by_month.get(m,0),2)} for m in month_keys]
     total_12m = round(sum(received_by_month.get(month, 0.0) for month in month_keys), 2)
     portfolio_total = round(sum(float(x.get('valor_atual') or 0) for x in portfolio.get('itens', [])), 2)
+    # O card Maiores pagadores considera o histórico integral de recebimentos,
+    # inclusive ativos que já não estejam na carteira atual. A fonte canônica
+    # exige status Pago e data de pagamento não posterior à data local atual.
+    all_confirmed_received = _confirmed_received_proventos(
+        _received_proventos_records(), as_of=today
+    )
+    paid_by_ticker = {}
+    for receipt in all_confirmed_received:
+        if not _is_income_event(receipt.get('tipo_evento')):
+            continue
+        ticker = str(receipt.get('ticker') or '').strip().upper()
+        amount = float(receipt.get('valor_total') or 0)
+        if not ticker or not math.isfinite(amount) or amount <= 0:
+            continue
+        bucket = paid_by_ticker.setdefault(ticker, {
+            'ticker': ticker,
+            'tipo_ativo': receipt.get('tipo_ativo') or typesafe_asset_type(ticker),
+            'status': 'Pago',
+            'data_pagamento': receipt.get('data_pagamento'),
+            'valor_total': 0.0,
+        })
+        bucket['valor_total'] += amount
+        if str(receipt.get('data_pagamento') or '') > str(bucket.get('data_pagamento') or ''):
+            bucket['data_pagamento'] = receipt.get('data_pagamento')
+    top_paid_payers = sorted(
+        paid_by_ticker.values(),
+        key=lambda item: (-round(float(item['valor_total']), 2), item['ticker'])
+    )[:3]
+    for item in top_paid_payers:
+        item['valor_total'] = round(float(item['valor_total']), 2)
     type_totals = {}
     for event in detailed:
         if _is_income_event(event.get('tipo_evento')):
@@ -5625,6 +5655,7 @@ def dashboard():
             'mensal':monthly_values,'total_12m':total_12m,'media_mensal':round(total_12m/12,2),
             'total_carteira':portfolio_total,'recebidos':sorted(detailed,key=lambda x:x['data_pagamento'],reverse=True),
             'a_receber':sorted(upcoming,key=lambda x:x['data_pagamento']),
+            'maiores_pagadores':top_paid_payers,
             'distribuicao':type_totals,'sincronizacao':sync_status
         })
     response_payload = dashboard_response.get_json()

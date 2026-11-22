@@ -1,5 +1,12 @@
 # Lonely Wallet
 
+## v4.2.23
+
+- O card **Rentabilidade** do resumo foi substituído por **Maiores pagadores de proventos**, mantendo a estrutura visual compacta do card Últimos ativos lançados.
+- O ranking apresenta os três ativos com maior soma histórica de proventos efetivamente recebidos, agrupados por ticker e com o total pago em reais.
+- Entram no ranking somente registros com status `Pago`, data de pagamento válida e não posterior à data local atual. Eventos `A receber`, anunciados, futuros e amortizações são excluídos.
+- A classificação utiliza a lista canônica de recebimentos confirmados do dashboard, que reúne lançamentos manuais e importações reconciliadas sem contar eventos pendentes.
+
 ## v4.2.22
 
 - O card **Rentabilidade · Últimos 12 meses** apresenta a média aritmética dos percentuais mensais de ganho/perda de capital dos últimos 12 meses calculáveis, ou dos meses disponíveis quando há menos de 12. Proventos não entram.
@@ -99,13 +106,13 @@
 - Privacidade de valores desativada por padrão; quando ativada permanece até novo clique e cobre também conteúdo dinâmico.
 - Legendas da distribuição de aportes usam nomes localizados e acentuação correta (Ação, FIIs, Renda fixa, Tesouro Direto, ETFs, BDRs e demais classes).
 
-# Lonely Wallet v4.2.22
+# Lonely Wallet v4.2.23
 
 **Carteira pessoal de investimentos | Aplicação web self-hosted | Docker / ZimaOS**
 
 > Guia do usuário, instalação, atualização, segurança, backup, solução de problemas e perguntas frequentes.
 
-- **Versão:** 4.2.22
+- **Versão:** 4.2.23
 - **Idioma da interface:** Português (Brasil)
 - **Backend:** Python 3.12 + Flask + Gunicorn
 - **Persistência:** SQLite e arquivo JSON de última cotação válida
@@ -194,12 +201,12 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve indicar `ok: true` e `version: 4.2.22`.
+O retorno deve indicar `ok: true` e `version: 4.2.23`.
 
 ### Atualização de uma versão anterior
 
 1. Faça um backup antes de substituir os arquivos.
-2. Extraia o pacote 4.2.22 em uma pasta de projeto.
+2. Extraia o pacote 4.2.23 em uma pasta de projeto.
 3. **Mantenha exatamente o volume de dados existente**. O Compose padrão utiliza:
 
 ```yaml

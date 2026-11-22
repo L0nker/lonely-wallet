@@ -4495,8 +4495,32 @@ function renderImportedBalances(rows,baseDate){
  }).join('');
 }
 
+function getTopPaidDividendPayers(records, assetRows=[], todayKey=null){
+ const now=new Date();
+ const cutoff=todayKey||`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+ const assetTypes=new Map((assetRows||[]).map(item=>[String(item.ticker||'').trim().toUpperCase(),String(item.tipo||'outros').toLowerCase()]));
+ const totals=new Map();
+ (Array.isArray(records)?records:[]).forEach(record=>{
+  if(String(record?.status||'').trim().toLowerCase()!=='pago')return;
+  const ticker=String(record?.ticker||'').trim().toUpperCase();
+  const paidOn=String(record?.data_pagamento||'').slice(0,10);
+  if(!ticker||!/^\d{4}-\d{2}-\d{2}$/.test(paidOn)||paidOn>cutoff)return;
+  const eventType=String(record?.tipo_evento||'').toUpperCase();
+  if(eventType.includes('AMORTIZA'))return;
+  const amount=Number(record?.valor_total);
+  if(!Number.isFinite(amount)||amount<=0)return;
+  const previous=totals.get(ticker)||{ticker,tipo:String(record?.tipo_ativo||assetTypes.get(ticker)||'outros').toLowerCase(),total:0};
+  previous.total+=amount;
+  if((!previous.tipo||previous.tipo==='outros')&&record?.tipo_ativo)previous.tipo=String(record.tipo_ativo).toLowerCase();
+  totals.set(ticker,previous);
+ });
+ return [...totals.values()]
+  .map(item=>({...item,total:Number(item.total.toFixed(2))}))
+  .sort((a,b)=>b.total-a.total||a.ticker.localeCompare(b.ticker,'pt-BR'))
+  .slice(0,3);
+}
+
 function render(){const r=state.resumo||{},provDash=state.proventos_dashboard||{};
-const performance=state.rentabilidade_historica||{};
 const allTypesHistory=getAllTypesPortfolioHistory().rows;
 const latestEvolution=allTypesHistory.length?allTypesHistory[allTypesHistory.length-1]:null;
 const summaryApplied=Number(r.investido||0);
@@ -4504,16 +4528,15 @@ const summaryApplied=Number(r.investido||0);
 // de preço dos ativos. Proventos recebidos pertencem ao card Lucro total e não
 // integram o patrimônio calculado por esta regra visual.
 const summaryCapitalGain=sumAssetCapitalGain(state.itens||[]);
+const portfolioReturn=summaryApplied>0?(summaryCapitalGain/summaryApplied)*100:null;
+const topDividendPayers=getTopPaidDividendPayers(provDash.maiores_pagadores||[],state.itens||[]);
 const summaryPatrimony=Number((summaryApplied+summaryCapitalGain).toFixed(2));
 const totalProfit=latestEvolution?Number(latestEvolution.ganho||0):Number(r.lucro||0);
-const return12m=performance.rentabilidade_12m;
-const portfolioReturn=summaryApplied>0?(summaryCapitalGain/summaryApplied)*100:null;
 document.getElementById('stats').innerHTML=`
  <div class="card stat"><div class="statlabel-row">Patrimônio total<span class="info-tip" tabindex="0" aria-label="Sobre o patrimônio total" data-tip="Valor atual de todos os seus ativos na carteira, considerando a cotação atual de cada posição.">i</span></div><div class="statvalue statvalue-inline">${brl(summaryPatrimony)} <small class="${summaryCapitalGain>=0?'green':'red'}" title="Ganho de capital de ${brl(summaryCapitalGain)} sobre ${brl(summaryApplied)} investidos">${pct(portfolioReturn)} ${summaryCapitalGain>=0?'▲':'▼'}</small></div><div class="statdetail"><span>Valor investido</span><b>${brl(summaryApplied)}</b></div></div>
  <div class="card stat"><div class="statlabel-row">Lucro total<span class="info-tip" tabindex="0" aria-label="Sobre o lucro total" data-tip="Seu resultado acumulado na carteira: ganho de capital (valorização dos ativos) somado aos dividendos e proventos recebidos.">i</span></div><div class="statvalue ${totalProfit>=0?'green':'red'}">${brl(totalProfit)}</div><div class="statdetail"><span>Ganho de capital</span><b>${brl(summaryCapitalGain)}</b></div><div class="statdetail"><span>Dividendos recebidos</span><b>${brl(r.proventos||0)}</b></div></div>
  <div class="card stat"><div class="statlabel-row">Proventos recebidos (12M)<span class="info-tip" tabindex="0" aria-label="Sobre os proventos recebidos" data-tip="Total de dividendos, JCP e rendimentos recebidos nos últimos 12 meses.">i</span></div><div class="statvalue">${brl(provDash.total_12m||0)}</div><div class="statdetail"><span>Total confirmado</span><b>${brl(provDash.total_12m||0)}</b></div></div>
- <div class="card stat return-stat-card"><div class="statlabel-row">Rentabilidade<span class="info-tip" tabindex="0" aria-label="Sobre o cálculo da rentabilidade" data-tip="O indicador Últimos 12 meses representa a média aritmética dos percentuais mensais de ganho ou perda de capital, usando até 12 meses calculáveis. Meses sem histórico não entram como zero. Dividendos, JCP e demais proventos não entram no cálculo.">i</span></div><div class="return-spark-grid"><div class="return-spark-item"><span>Últimos 12 meses</span><svg id="return12mChart" class="sparkline-svg" viewBox="0 0 300 40" role="img" aria-label="Rentabilidade dos últimos 12 meses"></svg><b class="${return12m===null||return12m===undefined?'':Number(return12m)>=0?'green':'red'}">${return12m===null||return12m===undefined?'—':pct(return12m)}</b></div><div class="return-spark-item"><span>Total</span><svg id="returnTotalChart" class="sparkline-svg" viewBox="0 0 300 40" role="img" aria-label="Rentabilidade total"></svg><b class="${portfolioReturn===null?'':portfolioReturn>=0?'green':'red'}">${portfolioReturn===null?'—':pct(portfolioReturn)}</b></div></div></div>`;
-renderConsolidatedReturnSparklines(portfolioReturn, return12m);
+ <div class="card stat top-dividend-payers-card"><div class="statlabel-row">Maiores pagadores de proventos</div><div class="top-dividend-payers-list">${topDividendPayers.length?topDividendPayers.map(item=>`<div class="top-dividend-payer-row"><div><b>${escapeHTML(item.ticker)}</b><span>${escapeHTML(labels[item.tipo]||item.tipo||'Ativo')}</span></div><strong>${brl(item.total)}</strong></div>`).join(''):'<div class="insight-recent-empty">Nenhum provento recebido.</div>'}</div></div>`;
 
 
 const rows=state.itens||[];
@@ -6449,3 +6472,14 @@ body.light-theme .launch-distribution-row,body.light-theme .launch-distribution-
 .launch-distribution-row .launch-distribution-name span{cursor:default;}
 .launch-distribution-row .launch-distribution-name span[title]{pointer-events:none;}
 </style>
+
+
+/* v4.2.23 — card de maiores pagadores usa somente proventos pagos e vencidos. */
+.top-dividend-payers-card{gap:2px}
+.top-dividend-payers-list{display:grid;gap:0;flex:1;align-content:start;min-width:0;margin-top:3px}
+.top-dividend-payer-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid var(--line);min-width:0}
+.top-dividend-payer-row:last-child{border-bottom:0}
+.top-dividend-payer-row>div{display:grid;gap:2px;min-width:0}
+.top-dividend-payer-row b{font-size:13px;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.top-dividend-payer-row span{font-size:10px;color:var(--muted)}
+.top-dividend-payer-row strong{font-size:12px;line-height:1.2;color:var(--text);white-space:nowrap;font-weight:700;font-variant-numeric:tabular-nums}
