@@ -246,46 +246,44 @@ class RegressionTests(unittest.TestCase):
             usage = wallet._api_usage_snapshot()
             self.assertGreaterEqual(usage['cache_hits'], 1)
 
-    def test_pluggy_request_gap_uses_persisted_request_log(self):
+    def test_no_local_gap_delays_pluggy_requests(self):
+        with wallet.app.app_context(), patch.object(wallet.time, 'sleep') as sleep:
+            wallet._api_record_request('pluggy', 'GET:investments', 200, 'public')
+            wallet._provider_wait_for_gap('pluggy', 'public')
+            self.assertEqual(wallet._provider_gap_remaining('pluggy', 'public'), 0)
+            sleep.assert_not_called()
+
+    def test_upstream_429_cooldown_is_honored_but_403_is_not_a_quota_lock(self):
         with wallet.app.app_context():
-            con = wallet._api_cache_connection()
-            try:
-                now = wallet.time.time()
-                con.execute(
-                    'INSERT INTO api_request_log(provider,endpoint,requested_at,status_code,credential_hash) VALUES(?,?,?,?,?)',
-                    ('pluggy', 'GET:investments', now - 0.2, 200, 'public')
-                )
-                con.commit()
-            finally:
-                con.close()
-            with patch.object(wallet.time, 'sleep') as sleep:
-                wallet._provider_wait_for_gap('pluggy', 'public')
-            self.assertEqual(sleep.call_count, 1)
-            self.assertGreater(sleep.call_args.args[0], 0)
-            self.assertLessEqual(sleep.call_args.args[0], wallet.PLUGGY_REQUEST_GAP_SECONDS)
+            wallet._provider_set_cooldown('pluggy', 60, 429, 'rate_limited', 'credential-429', 'provider')
+            self.assertGreater(
+                wallet._provider_get_cooldown('pluggy', 'credential-429', '/items', {}),
+                wallet.time.time()
+            )
+            wallet._provider_apply_failure_cooldown('pluggy', 403, '/items', {}, 'credential-403')
+            self.assertEqual(
+                wallet._provider_get_cooldown('pluggy', 'credential-403', '/items', {}),
+                0
+            )
 
-    def test_pluggy_429_cooldown_blocks_requests_even_if_gap_is_disabled(self):
-        with wallet.app.app_context(), patch.object(wallet, 'PLUGGY_REQUEST_GAP_SECONDS', 0):
-            wallet._provider_set_cooldown('pluggy', 60, 429, 'rate_limited')
-            with self.assertRaises(ValueError):
-                wallet._provider_wait_for_gap('pluggy')
-
-    def test_budget_reservation_is_atomic_and_scoped_per_credential(self):
-        with wallet.app.app_context(), patch.object(wallet, 'PLUGGY_LOCAL_24H_BUDGET', 1), patch.object(wallet, 'PLUGGY_REQUEST_GAP_SECONDS', 0):
+    def test_api_request_logging_never_reserves_or_blocks_by_local_budget(self):
+        with wallet.app.app_context():
             first = wallet._api_record_request('pluggy', 'GET:items', 200, 'credential-a', enforce_budget=True)
-            blocked = wallet._api_record_request('pluggy', 'GET:items', 200, 'credential-a', enforce_budget=True)
+            second = wallet._api_record_request('pluggy', 'GET:items', 200, 'credential-a', enforce_budget=True)
             separate_token = wallet._api_record_request('pluggy', 'GET:items', 200, 'credential-b', enforce_budget=True)
             self.assertIsNotNone(first)
-            self.assertIsNone(blocked)
+            self.assertIsNotNone(second)
             self.assertIsNotNone(separate_token)
+            for provider in ('brapi', 'hgbrasil', 'dadosb3', 'pluggy', 'fred'):
+                self.assertEqual(wallet._provider_budget_windows(provider), [])
+                self.assertIsNone(wallet._provider_budget_exceeded(provider, 'any-credential'))
 
-    def test_request_gap_is_reserved_atomically_across_workers(self):
-        with wallet.app.app_context(), patch.object(wallet, 'PLUGGY_REQUEST_GAP_SECONDS', 30):
-            first = wallet._api_record_request('pluggy', 'GET:items', 200, 'credential-gap', enforce_budget=True)
-            second = wallet._api_record_request('pluggy', 'GET:items', 200, 'credential-gap', enforce_budget=True)
-            self.assertIsNotNone(first)
-            self.assertIsNone(second)
-            self.assertGreater(wallet._provider_gap_remaining('pluggy', 'credential-gap'), 0)
+    def test_local_request_gap_is_disabled_for_all_providers(self):
+        with wallet.app.app_context():
+            self.assertEqual(wallet._provider_gap_seconds('brapi'), 0)
+            self.assertEqual(wallet._provider_gap_seconds('pluggy'), 0)
+            self.assertEqual(wallet._provider_gap_remaining('pluggy', 'credential-gap'), 0)
+            self.assertEqual(wallet._provider_gap_remaining('brapi', 'credential-gap'), 0)
 
     def test_brapi_cache_key_normalizes_query_and_authorization_token(self):
         token = 'brapi-cache-key-normalization-test'
@@ -457,34 +455,76 @@ class RegressionTests(unittest.TestCase):
             finally:
                 con.close()
 
-    def test_brapi_budget_blocks_network_when_local_limit_is_reached(self):
-        with wallet.app.app_context(), patch.object(wallet, 'BRAPI_LOCAL_30D_BUDGET', 1),              patch.object(wallet.requests, 'get') as mocked:
-            wallet._api_record_request('brapi', 'https://brapi.dev/api/quote/USED4', 200)
+    def test_brapi_has_no_local_daily_or_monthly_budget_block(self):
+        with wallet.app.app_context(), patch.object(wallet.requests, 'get') as mocked:
+            wallet._api_record_request('brapi', 'https://brapi.dev/api/quote/USED4', 200, 'public')
+            def response_for_request(url, **kwargs):
+                response = wallet.requests.Response()
+                response.status_code = 200
+                response._content = b'{"results":[]}'
+                response.url = url
+                response.headers['Content-Type'] = 'application/json'
+                return response
+            mocked.side_effect = response_for_request
             response = wallet._brapi_get('https://brapi.dev/api/quote/BLOCK4',
-                params={'unique': 'budget-test'}, cache_ttl=3600, stale_ttl=3600)
-            self.assertEqual(response.status_code, 429)
-            mocked.assert_not_called()
+                params={'unique': 'no-local-budget-test'}, cache_ttl=3600, stale_ttl=3600)
+            self.assertEqual(response.status_code, 200)
+            mocked.assert_called_once()
 
-    def test_hgbrasil_and_dadosb3_local_budgets_block_network(self):
+    def test_hgbrasil_and_dadosb3_have_no_local_budget_block(self):
         with wallet.app.app_context():
             cases = (
-                ('hgbrasil', 'https://api.hgbrasil.com/finance', 'HGBRASIL_LOCAL_24H_BUDGET'),
-                ('dadosb3', 'https://dadosb3.com/indices/IFIX/precos', 'DADOSB3_LOCAL_24H_BUDGET'),
+                ('hgbrasil', 'https://api.hgbrasil.com/finance'),
+                ('dadosb3', 'https://dadosb3.com/indices/IFIX/precos'),
             )
-            for provider, url, setting in cases:
-                with self.subTest(provider=provider), patch.object(wallet, setting, 1), patch.object(wallet.requests, 'get') as mocked:
-                    wallet._api_record_request(provider, 'previous-request', 200)
+            for provider, url in cases:
+                with self.subTest(provider=provider), patch.object(wallet.requests, 'get') as mocked:
+                    previous = wallet._api_record_request(provider, 'previous-request', 200, 'public')
+                    self.assertIsNotNone(previous)
+                    def response_for_request(request_url, **kwargs):
+                        response = wallet.requests.Response()
+                        response.status_code = 200
+                        response._content = b'{"ok":true}'
+                        response.url = request_url
+                        response.headers['Content-Type'] = 'application/json'
+                        return response
+                    mocked.side_effect = response_for_request
                     response = wallet._provider_get(provider, url, params={'unique': provider}, cache_ttl=3600)
-                    self.assertEqual(response.status_code, 429)
-                    mocked.assert_not_called()
+                    self.assertEqual(response.status_code, 200)
+                    mocked.assert_called_once()
 
-    def test_api_usage_endpoint_uses_only_local_database(self):
+    def test_api_usage_endpoint_reports_statistics_without_local_quotas(self):
         response = self.client.get('/api/integracoes/consumo')
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()['brapi']
         self.assertIn('requests_last_30_days', payload)
-        self.assertIn('remaining_local_budget', payload)
+        self.assertFalse(payload['limits_enforced_locally'])
+        self.assertFalse(payload['budget_enabled'])
         self.assertIn('cache_hits', payload)
+
+    def test_api_usage_logging_failure_does_not_block_external_request(self):
+        with wallet.app.app_context(), patch.object(wallet, '_api_record_request', return_value=None), patch.object(wallet.requests, 'get') as mocked:
+            def response_for_request(url, **kwargs):
+                response = wallet.requests.Response()
+                response.status_code = 200
+                response._content = b'{"ok":true}'
+                response.url = url
+                response.headers['Content-Type'] = 'application/json'
+                return response
+            mocked.side_effect = response_for_request
+            response = wallet._provider_get('hgbrasil', 'https://api.hgbrasil.com/finance',
+                params={'unique': 'logging-failure-does-not-block'}, cache_ttl=0)
+            self.assertEqual(response.status_code, 200)
+            mocked.assert_called_once()
+
+    def test_provider_429_is_still_respected_without_local_quotas(self):
+        with wallet.app.app_context(), patch.object(wallet.requests, 'get') as mocked:
+            wallet._provider_set_cooldown('brapi', 60, 429, 'upstream_rate_limit', 'public', 'provider')
+            response = wallet._provider_get('brapi', 'https://brapi.dev/api/quote/RATE4',
+                params={'unique': 'upstream-429'}, cache_ttl=0)
+            self.assertEqual(response.status_code, 429)
+            self.assertTrue(response.headers.get('Retry-After'))
+            mocked.assert_not_called()
 
     def test_retired_market_apis_are_not_available(self):
         self.assertNotIn('twelvedata', wallet.API_PROVIDERS)

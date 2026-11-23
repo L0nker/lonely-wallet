@@ -1,14 +1,14 @@
-# Lonely Wallet v4.2.38
+# Lonely Wallet v4.2.39
 
 **Gerenciador pessoal de investimentos | Docker / ZimaOS | Português (Brasil)**
 
-Esta versão corrige a inicialização do armazenamento de APIs em instalações que possuem metadados antigos no `ativos.db`, além de configurar o socket de controle do Gunicorn em um diretório gravável pelo usuário não privilegiado. Mantém a interface, as regras financeiras, a importação B3 e o fluxo de carregamento do dashboard da versão anterior.
+Esta versão remove os orçamentos artificiais diários e mensais anteriormente definidos pela aplicação para brapi, HG Brasil, Dados B3, Pluggy e FRED. As APIs deixam de ser bloqueadas por contadores internos. A aplicação mantém cache persistente, registro informativo de chamadas, reutilização de respostas e tratamento de HTTP 429/Retry-After conforme informado pelo próprio provedor.
 
-As consultas da brapi passam a usar cache persistente em SQLite, orçamento local móvel de 30 dias, uma chamada por ticker, concorrência serializada e intervalo mínimo entre chamadas. As respostas recentes podem ser reutilizadas após reinicializações e, durante indisponibilidades temporárias, respostas anteriores dentro da janela de contingência podem ser reaproveitadas. A sincronização Pluggy para novas instalações passa a ter frequência padrão de quatro horas; preferências já salvas pelo usuário são preservadas.
+Foram removidos também os intervalos fixos locais entre requisições da brapi e Pluggy. Permanecem proteções contra rajadas de solicitações idênticas simultâneas, autenticação reutilizável da Pluggy e backoff temporário para HTTP 429 e falhas transitórias de rede/servidor. O painel de APIs agora mostra apenas estatísticas de utilização, sem saldo ou teto local.
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.38 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.39 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
 - **Persistência:** SQLite, com bancos separados para ativos, tokens e estado das APIs
 - **Porta:** `8085` no host e `8080` no container
@@ -38,7 +38,7 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve apresentar `ok: true` e `version: 4.2.38`. O estado de cache e consumo das APIs é mantido em `/data/api_state.db`.
+O retorno deve apresentar `ok: true` e `version: 4.2.39`. O estado de cache e consumo das APIs é mantido em `/data/api_state.db`.
 
 **Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
 
@@ -48,7 +48,7 @@ O retorno deve apresentar `ok: true` e `version: 4.2.38`. O estado de cache e co
 |---|---|
 | `ativos.db` | Operações, posições, proventos e dados da carteira |
 | `tokens.db` | PIN, autenticação, credenciais e configurações sensíveis |
-| `api_state.db` | Cache HTTP, limites, cooldowns e histórico de consumo das APIs |
+| `api_state.db` | Cache HTTP, estados temporários de erro e histórico informativo de consumo das APIs |
 | `carteira.db` | Banco legado, preservado para migração/compatibilidade quando existir |
 | `quotes_last_valid.json` | Últimas cotações válidas salvas |
 | `dashboard_cache.json` | Snapshot completo do dashboard, invalidado quando os bancos mudam |
@@ -234,38 +234,27 @@ Consulte o estado da integração e os logs do container. A falta de cotação n
 
 Consulte as notas históricas preservadas nos pacotes anteriores. Este README prioriza o histórico confirmado a partir da v4.2.25 e as orientações atuais de instalação, segurança e manutenção.
 
-## 12. Controle de consumo das APIs gratuitas
+## 12. Uso das APIs sem orçamentos locais
 
-- A brapi usa cache persistente em SQLite, compartilhado entre threads e preservado após reinicializações do container.
-- O cache padrão é de 30 minutos durante o pregão, 12 horas fora do pregão, 12 horas para proventos, 24 horas para histórico e 6 horas para a lista de ativos.
-- O limite padrão é de um ticker por chamada, com apenas uma requisição brapi simultânea e intervalo mínimo de 350 ms entre chamadas.
-- Os orçamentos locais padrão são de 10.000 chamadas brapi por janela móvel de 30 dias, 300 chamadas HG Brasil por 24 horas e 150 chamadas Dados B3 por 24 horas. Os limites reservam margem para outras aplicações que possam compartilhar os tokens; as contagens incluem apenas esta instalação.
-- Quando o orçamento é atingido, a aplicação deixa de chamar a brapi e tenta reutilizar uma resposta em cache ainda dentro da janela de contingência.
-- O painel de consumo aparece em **Integrações e APIs** e mostra os limites locais da brapi, HG Brasil e Dados B3, além das chamadas registradas de Pluggy e outras fontes. Consultá-lo não chama o provedor; lê apenas o SQLite local.
-- A frequência padrão da sincronização Pluggy para novas instalações é de 4 horas. As chamadas Pluggy são espaçadas em pelo menos 1 segundo, com o intervalo persistido entre reinicializações, e a API Key é reutilizada por aproximadamente 115 minutos. Uma frequência já salva pelo usuário não é sobrescrita.
+- A Lonely Wallet não impõe limites diários ou mensais de chamadas para brapi, HG Brasil, Dados B3, Pluggy ou FRED.
+- Os contadores do painel são somente informativos e não bloqueiam novas consultas.
+- O cache persistente continua ativo: cotações, proventos, histórico e listas de ativos reutilizam respostas recentes para evitar chamadas duplicadas.
+- A aplicação não aplica intervalo fixo de 350 ms na brapi nem de um segundo na Pluggy.
+- Solicitações idênticas simultâneas usam um bloqueio por chave de cache, evitando trabalho duplicado; consultas diferentes aos demais provedores podem ocorrer em paralelo. A brapi mantém uma chamada simultânea no perfil padrão, compatível com o plano Gratuito.
+- Respostas HTTP 429 respeitam o cabeçalho `Retry-After` do provedor. Falhas transitórias de rede e respostas 5xx recebem uma pausa curta para evitar repetição agressiva. Respostas 400, 401 e 403 não criam cotas artificiais persistentes; erros de autenticação são apresentados para correção.
+- O endpoint `/api/integracoes/consumo` e o painel **Integrações e APIs** apresentam somente contagens locais, reutilização de cache e última chamada registrada. Consultar o painel não chama os provedores.
+- `BRAPI_MAX_TICKERS_PER_REQUEST` controla apenas o tamanho do lote por chamada, não a quantidade de chamadas. O padrão permanece em 1 ticker para compatibilidade com o plano Gratuito; ajuste para 10 ou 20 somente se o plano contratado permitir.
+- `PLUGGY_MAX_PAGES` é uma proteção estrutural de paginação contra respostas inconsistentes ou loops infinitos; não é um orçamento de chamadas.
 
-Variáveis configuráveis no Compose:
+Variáveis de ambiente restantes para formato de consulta e paginação (não são orçamentos de chamadas):
 
 ```yaml
-BRAPI_LOCAL_30D_BUDGET: "10000"
 BRAPI_MAX_TICKERS_PER_REQUEST: "1"
-BRAPI_REQUEST_GAP_SECONDS: "0.35"
-HGBRASIL_LOCAL_24H_BUDGET: "300"
-DADOSB3_LOCAL_24H_BUDGET: "150"
-PLUGGY_REQUEST_GAP_SECONDS: "1.0"
-PLUGGY_LOCAL_24H_BUDGET: "500"
-PLUGGY_LOCAL_30D_BUDGET: "5000"
 PLUGGY_MAX_PAGES: "100"
 PLUGGY_PAGE_SIZE: "500"
-FRED_LOCAL_24H_BUDGET: "300"
-FRED_LOCAL_30D_BUDGET: "5000"
 ```
 
-A HG Brasil usa limite local padrão de 300 chamadas por 24 horas, abaixo da cota gratuita publicada de 400 por dia; Dados B3 usa limite local padrão de 150 por 24 horas, abaixo da cota grátis publicada de 200 por dia. Os limites podem ser ajustados com `HGBRASIL_LOCAL_24H_BUDGET` e `DADOSB3_LOCAL_24H_BUDGET`; valor `0` desativa o limite local daquele provedor. Para a brapi, `BRAPI_LOCAL_30D_BUDGET=0` desativa o orçamento local, mas não é recomendado no plano gratuito. Mantenha `BRAPI_MAX_TICKERS_PER_REQUEST=1` no plano gratuito; aumente somente se o plano contratado permitir mais tickers por chamada.
-
-O orçamento é uma proteção local, não uma leitura oficial da cota do provedor. Outras aplicações usando o mesmo token não são contabilizadas. Consulte o painel do próprio provedor para conferir o saldo global.
-
-
+Os limites comerciais, cotas e políticas de rate limit pertencem a cada provedor e ao plano contratado. Quando o provedor retorna HTTP 429, a Lonely Wallet respeita a orientação de espera recebida; não inventa uma contagem máxima de chamadas.
 
 ## 13. Correções e validação da v4.2.36
 
@@ -283,10 +272,10 @@ O orçamento é uma proteção local, não uma leitura oficial da cota do proved
 - `XDG_RUNTIME_DIR` aponta para `/tmp/lonely-wallet-runtime`, criado com permissões restritas e proprietário `app` pelo entrypoint.
 - O socket de controle do Gunicorn é definido explicitamente em `/tmp/lonely-wallet-runtime/gunicorn.ctl`, evitando tentativas de gravação em `/root/.gunicorn` após a redução de privilégios.
 
-### Proteções de consumo das APIs mantidas
+### Proteções de consumo das APIs na v4.2.36
 
-- Preservados os orçamentos locais, caches persistentes, cooldowns e controles por credencial da versão 4.2.35.
-- Preservada a validação estrita da paginação Pluggy e a sinalização de dados antigos reutilizados do cache.
+- A v4.2.36 ainda utilizava orçamentos locais conservadores e intervalos fixos de requisição. Esses bloqueios artificiais foram removidos na v4.2.39.
+- A validação estrita da paginação Pluggy e a sinalização de dados antigos reutilizados do cache permanecem.
 - A rotina de migração do `api_state.db` continua separada do banco financeiro `ativos.db`.
 
 ### Validação da v4.2.36
@@ -341,3 +330,17 @@ O orçamento é uma proteção local, não uma leitura oficial da cota do proved
 - Clicar em qualquer parte da coluna abre a distribuição combinada daquele mês, com detalhamento por ativo ou por tipo de provento.
 - O filtro “Últimos 12 meses” mantém os recebimentos do período histórico e inclui os pagamentos pendentes a partir do mês corrente.
 - A atualização não altera o histórico bruto nem exclui registros das APIs; apenas deixa de projetar eventos pendentes cujo mês já terminou sem confirmação.
+
+## 15. Remoção dos limites artificiais de APIs (v4.2.39)
+
+- Removidos os tetos locais diários e mensais de brapi, HG Brasil, Dados B3, Pluggy e FRED.
+- Removidos os intervalos fixos locais de 350 ms da brapi e 1 segundo da Pluggy.
+- Contadores de chamadas permanecem apenas para diagnóstico e não bloqueiam requisições.
+- Falhas ao registrar métricas no `api_state.db` não impedem a chamada externa.
+- O cache persistente e a proteção contra solicitações idênticas simultâneas continuam ativos.
+- HTTP 429 continua respeitando `Retry-After` do provedor; falhas transitórias 5xx/rede recebem backoff curto.
+- HTTP 400, 401 e 403 deixam de criar bloqueios locais persistentes.
+- Removidas as variáveis de orçamento e intervalo do `docker-compose.yml`; variáveis antigas ainda presentes em instalações existentes são ignoradas pelo código.
+- Validação local: 63 testes Python independentes e 40 verificações de runtime JavaScript aprovados; os três scripts JavaScript inline da página também passaram em `node --check`.
+- A suíte integrada que importa o backend não foi executada neste ambiente porque Flask não está instalado; build Docker real e teste final no ZimaOS permanecem pendentes.
+

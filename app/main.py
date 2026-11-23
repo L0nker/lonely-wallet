@@ -2,6 +2,7 @@ import os, sqlite3, time, json, threading, hashlib, io, re, unicodedata, uuid, s
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
+from weakref import WeakValueDictionary
 from datetime import date, datetime, time as clock_time, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from zoneinfo import ZoneInfo
@@ -197,76 +198,39 @@ SGS_CACHE_TTL = 12 * 3600
 BENCHMARK_CACHE = {'time': 0, 'data': {}}
 BENCHMARK_CACHE_TTL = 6 * 3600
 
-# A cota gratuita da brapi permite uma chamada simultânea e 1 ticker por chamada.
-# O orçamento local usa 10.000 requisições em 30 dias para reservar margem para
-# outras aplicações que compartilhem o mesmo token.
-try:
-    BRAPI_LOCAL_30D_BUDGET = max(0, int(os.environ.get('BRAPI_LOCAL_30D_BUDGET', '10000')))
-except (TypeError, ValueError):
-    BRAPI_LOCAL_30D_BUDGET = 10000
-try:
-    HGBRASIL_LOCAL_24H_BUDGET = max(0, int(os.environ.get('HGBRASIL_LOCAL_24H_BUDGET', '300')))
-except (TypeError, ValueError):
-    HGBRASIL_LOCAL_24H_BUDGET = 300
-try:
-    DADOSB3_LOCAL_24H_BUDGET = max(0, int(os.environ.get('DADOSB3_LOCAL_24H_BUDGET', '150')))
-except (TypeError, ValueError):
-    DADOSB3_LOCAL_24H_BUDGET = 150
-try:
-    PLUGGY_LOCAL_24H_BUDGET = max(0, int(os.environ.get('PLUGGY_LOCAL_24H_BUDGET', '500')))
-except (TypeError, ValueError):
-    PLUGGY_LOCAL_24H_BUDGET = 500
-try:
-    PLUGGY_LOCAL_30D_BUDGET = max(0, int(os.environ.get('PLUGGY_LOCAL_30D_BUDGET', '5000')))
-except (TypeError, ValueError):
-    PLUGGY_LOCAL_30D_BUDGET = 5000
-try:
-    FRED_LOCAL_24H_BUDGET = max(0, int(os.environ.get('FRED_LOCAL_24H_BUDGET', '300')))
-except (TypeError, ValueError):
-    FRED_LOCAL_24H_BUDGET = 300
-try:
-    FRED_LOCAL_30D_BUDGET = max(0, int(os.environ.get('FRED_LOCAL_30D_BUDGET', '5000')))
-except (TypeError, ValueError):
-    FRED_LOCAL_30D_BUDGET = 5000
-
-
+# A aplicação não impõe orçamentos diários ou mensais às APIs.
+# As cotas e limites comerciais pertencem aos provedores; a aplicação apenas
+# registra consumo, reutiliza cache e respeita respostas HTTP 429/Retry-After.
 def _provider_budget_windows(provider):
-    """Returns conservative local safeguards, scoped to one credential fingerprint."""
-    if provider == 'brapi':
-        return [(BRAPI_LOCAL_30D_BUDGET, 30 * 86400, 'BRAPI_LOCAL_30D_BUDGET')]
-    if provider == 'hgbrasil':
-        return [(HGBRASIL_LOCAL_24H_BUDGET, 24 * 3600, 'HGBRASIL_LOCAL_24H_BUDGET')]
-    if provider == 'dadosb3':
-        return [(DADOSB3_LOCAL_24H_BUDGET, 24 * 3600, 'DADOSB3_LOCAL_24H_BUDGET')]
-    if provider == 'pluggy':
-        return [
-            (PLUGGY_LOCAL_24H_BUDGET, 24 * 3600, 'PLUGGY_LOCAL_24H_BUDGET'),
-            (PLUGGY_LOCAL_30D_BUDGET, 30 * 86400, 'PLUGGY_LOCAL_30D_BUDGET'),
-        ]
-    if provider == 'fred':
-        return [
-            (FRED_LOCAL_24H_BUDGET, 24 * 3600, 'FRED_LOCAL_24H_BUDGET'),
-            (FRED_LOCAL_30D_BUDGET, 30 * 86400, 'FRED_LOCAL_30D_BUDGET'),
-        ]
+    """No local request budgets: never block calls by an application-defined quota."""
     return []
 
 
 def _provider_budget_config(provider):
-    """Backward-compatible primary budget tuple."""
-    windows = _provider_budget_windows(provider)
-    return windows[0][:2] if windows else (0, 30 * 86400)
+    """Legacy compatibility: zero means that no local budget is enforced."""
+    return (0, 0)
 
 
 try:
     BRAPI_MAX_TICKERS_PER_REQUEST = min(20, max(1, int(os.environ.get('BRAPI_MAX_TICKERS_PER_REQUEST', '1'))))
 except (TypeError, ValueError):
     BRAPI_MAX_TICKERS_PER_REQUEST = 1
-try:
-    BRAPI_REQUEST_GAP_SECONDS = min(5.0, max(0.0, float(os.environ.get('BRAPI_REQUEST_GAP_SECONDS', '0.35'))))
-except (TypeError, ValueError):
-    BRAPI_REQUEST_GAP_SECONDS = 0.35
+# The free brapi plan documents a single concurrent request. Keep that
+# provider-specific guard, but other APIs only deduplicate identical cache misses.
 BRAPI_REQUEST_LOCK = threading.RLock()
-_PROVIDER_REQUEST_LOCKS = {name: threading.RLock() for name in ('brapi', 'hgbrasil', 'dadosb3', 'yahoo', 'bcb', 'ibge', 'fred')}
+_API_INFLIGHT_LOCKS = WeakValueDictionary()
+_API_INFLIGHT_LOCKS_GUARD = threading.Lock()
+
+
+def _api_inflight_lock(provider, cache_key):
+    key = (str(provider), str(cache_key))
+    with _API_INFLIGHT_LOCKS_GUARD:
+        lock = _API_INFLIGHT_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _API_INFLIGHT_LOCKS[key] = lock
+        return lock
+
 _API_CACHE_CLEANUP_LOCK = threading.Lock()
 _API_CACHE_LAST_CLEANUP = 0.0
 _API_CACHE_MAX_BODY = 8 * 1024 * 1024
@@ -570,7 +534,7 @@ def _api_request_fingerprint(params=None, headers=None):
 
 
 def _provider_credential_hash(provider, params=None, headers=None):
-    """Stable per-credential scope; changing a token resets only its local budget/cooldowns."""
+    """Stable per-credential scope for cache entries, usage statistics and cooldowns."""
     if provider == 'brapi':
         # Normaliza token de query string e Authorization Bearer para a mesma identidade.
         token_value = ''
@@ -644,7 +608,7 @@ def _provider_get_cooldown(provider, credential_hash='public', endpoint='', para
         connection = _api_cache_connection()
         placeholders = ','.join('?' for _ in set(scopes))
         row = connection.execute(
-            f"SELECT MAX(cooldown_until) FROM api_provider_state_scoped WHERE provider=? AND credential_hash=? AND scope IN ({placeholders})",
+            f"SELECT MAX(cooldown_until) FROM api_provider_state_scoped WHERE provider=? AND credential_hash=? AND scope IN ({placeholders}) AND (last_status_code IN (0,408,425,429) OR last_status_code>=500)",
             (provider, credential_hash, *sorted(set(scopes)))
         ).fetchone()
         return float(row[0] or 0) if row else 0.0
@@ -656,121 +620,35 @@ def _provider_get_cooldown(provider, credential_hash='public', endpoint='', para
 
 
 def _provider_wait_for_gap(provider, credential_hash='public'):
-    """Persisted, credential-scoped interval and provider-level cooldown."""
-    gap = BRAPI_REQUEST_GAP_SECONDS if provider == 'brapi' else (PLUGGY_REQUEST_GAP_SECONDS if provider == 'pluggy' else 0.0)
-    if gap <= 0 and provider not in ('brapi', 'pluggy'):
-        return
-    connection = None
-    last_request = None
-    try:
-        connection = _api_cache_connection()
-        row = connection.execute(
-            'SELECT MAX(requested_at) FROM api_request_log WHERE provider=? AND credential_hash=?',
-            (provider, credential_hash)
-        ).fetchone()
-        last_request = float(row[0]) if row and row[0] else None
-        state = connection.execute(
-            "SELECT cooldown_until FROM api_provider_state_scoped WHERE provider=? AND credential_hash=? AND scope='provider'",
-            (provider, credential_hash)
-        ).fetchone()
-        cooldown_until = float(state[0] or 0) if state else 0
-        if cooldown_until > time.time():
-            raise ValueError(f'Consultas ao provedor {provider} pausadas temporariamente para esta credencial. Tente novamente após {int(cooldown_until - time.time()) + 1}s.')
-    except sqlite3.Error:
-        if provider in ('brapi', 'pluggy'):
-            raise
-    finally:
-        if connection is not None:
-            connection.close()
-    if gap > 0 and last_request is not None:
-        remaining = gap - (time.time() - last_request)
-        if remaining > 0:
-            time.sleep(remaining)
-
-
-def _api_cache_store(cache_key, provider, endpoint, payload, status_code, ttl, stale_ttl):
-    if not isinstance(payload, (bytes, bytearray)) or len(payload) > _API_CACHE_MAX_BODY:
-        return
-    now = time.time()
-    connection = None
-    try:
-        connection = _api_cache_connection()
-        connection.execute(
-            '''INSERT INTO api_response_cache(cache_key,provider,endpoint,payload,status_code,fetched_at,expires_at,stale_until)
-               VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET
-               provider=excluded.provider,endpoint=excluded.endpoint,payload=excluded.payload,
-               status_code=excluded.status_code,fetched_at=excluded.fetched_at,
-               expires_at=excluded.expires_at,stale_until=excluded.stale_until''',
-            (cache_key, provider, endpoint, sqlite3.Binary(payload), int(status_code), now, now + ttl, now + max(ttl, stale_ttl))
-        )
-        connection.commit()
-    except sqlite3.Error as exc:
-        app.logger.warning('Não foi possível persistir o cache da API %s: %s', provider, exc)
-    finally:
-        if connection is not None:
-            connection.close()
+    """Compatibility shim: no locally imposed inter-request delay."""
+    return None
 
 
 def _provider_gap_seconds(provider):
-    if provider == 'brapi':
-        return BRAPI_REQUEST_GAP_SECONDS
-    if provider == 'pluggy':
-        return PLUGGY_REQUEST_GAP_SECONDS
     return 0.0
 
 
 def _provider_gap_remaining(provider, credential_hash='public'):
-    gap = _provider_gap_seconds(provider)
-    if gap <= 0:
-        return 0.0
-    connection = None
-    try:
-        connection = _api_cache_connection()
-        row = connection.execute(
-            'SELECT MAX(requested_at) FROM api_request_log WHERE provider=? AND credential_hash=?',
-            (provider, str(credential_hash or 'public')[:64])
-        ).fetchone()
-        last_request = float(row[0]) if row and row[0] else None
-        return max(0.0, gap - (time.time() - last_request)) if last_request else 0.0
-    finally:
-        if connection is not None:
-            connection.close()
+    return 0.0
 
 
 def _api_record_request(provider, endpoint, status_code=0, credential_hash='public', enforce_budget=False):
-    """Register a provider call; optionally reserve budget atomically across workers."""
+    """Record a call for diagnostics; logging failure never blocks the provider request.
+
+    ``enforce_budget`` remains accepted for backwards compatibility but is ignored.
+    """
     connection = None
     request_id = None
     credential_hash = str(credential_hash or 'public')[:64]
     try:
         connection = _api_cache_connection()
-        # BEGIN IMMEDIATE serializes the budget check + reservation across processes.
+        # Usage metrics must never hold up an external API call when the local
+        # statistics database is busy. A failed insert is simply not counted.
+        connection.execute('PRAGMA busy_timeout=250')
         connection.execute('BEGIN IMMEDIATE')
-        now = time.time()
-        if enforce_budget:
-            for limit, window_seconds, env_name in _provider_budget_windows(provider):
-                if limit <= 0:
-                    continue
-                used = connection.execute(
-                    'SELECT COUNT(*) FROM api_request_log WHERE provider=? AND credential_hash=? AND requested_at>=?',
-                    (provider, credential_hash, now - window_seconds)
-                ).fetchone()[0]
-                if int(used or 0) >= limit:
-                    connection.rollback()
-                    return None
-            gap = _provider_gap_seconds(provider)
-            if gap > 0:
-                last = connection.execute(
-                    'SELECT MAX(requested_at) FROM api_request_log WHERE provider=? AND credential_hash=?',
-                    (provider, credential_hash)
-                ).fetchone()
-                last_requested = float(last[0]) if last and last[0] else None
-                if last_requested is not None and now - last_requested < gap:
-                    connection.rollback()
-                    return None
         cursor = connection.execute(
             'INSERT INTO api_request_log(provider,endpoint,requested_at,status_code,credential_hash) VALUES(?,?,?,?,?)',
-            (provider, endpoint, now, int(status_code or 0), credential_hash)
+            (provider, endpoint, time.time(), int(status_code or 0), credential_hash)
         )
         request_id = int(cursor.lastrowid)
         connection.commit()
@@ -780,7 +658,7 @@ def _api_record_request(provider, endpoint, status_code=0, credential_hash='publ
                 connection.rollback()
             except sqlite3.Error:
                 pass
-        app.logger.warning('Não foi possível registrar consumo da API %s: %s', provider, exc)
+        app.logger.warning('Não foi possível registrar a chamada da API %s; a consulta não será bloqueada: %s', provider, exc)
     finally:
         if connection is not None:
             connection.close()
@@ -793,6 +671,7 @@ def _api_update_request_status(request_id, status_code):
     connection = None
     try:
         connection = _api_cache_connection()
+        connection.execute('PRAGMA busy_timeout=250')
         connection.execute('UPDATE api_request_log SET status_code=? WHERE id=?', (int(status_code or 0), request_id))
         connection.commit()
     except sqlite3.Error:
@@ -820,12 +699,7 @@ def _api_budget_used(provider='brapi', window_seconds=30 * 86400, credential_has
 
 
 def _provider_budget_exceeded(provider, credential_hash):
-    for limit, window_seconds, env_name in _provider_budget_windows(provider):
-        if limit <= 0:
-            continue
-        used = _api_budget_used(provider, window_seconds=window_seconds, credential_hash=credential_hash)
-        if used >= limit:
-            return {'limit': limit, 'used': used, 'window_seconds': window_seconds, 'env_name': env_name}
+    """No local quota is enforced for any provider."""
     return None
 
 
@@ -876,14 +750,12 @@ def _provider_set_cooldown(provider, seconds, status_code, reason, credential_ha
 
 
 def _provider_apply_failure_cooldown(provider, status_code, endpoint, params, credential_hash, retry_after=None):
+    """Respect upstream HTTP 429 and briefly back off transient network/server errors.
+
+    Client/auth errors (400/401/403) never create an application-defined quota lock.
+    """
     code = int(status_code or 0)
-    if code == 400:
-        seconds = 300
-    elif code == 401:
-        seconds = 15 * 60
-    elif code == 403:
-        seconds = 6 * 3600
-    elif code == 429:
+    if code == 429:
         delay = 60.0
         if retry_after:
             try:
@@ -896,9 +768,9 @@ def _provider_apply_failure_cooldown(provider, status_code, endpoint, params, cr
                     delay = retry_date.timestamp() - time.time()
                 except (TypeError, ValueError, OverflowError):
                     delay = 60.0
-        seconds = min(6 * 3600, max(60, int(math.ceil(delay))))
+        seconds = max(1, int(math.ceil(delay)))
     elif code in (408, 425) or code >= 500 or code == 0:
-        seconds = 30
+        seconds = 15
     else:
         return
     scope = _provider_scope_for_status(code, endpoint, params)
@@ -907,7 +779,7 @@ def _provider_apply_failure_cooldown(provider, status_code, endpoint, params, cr
 
 def _provider_get(provider, url, params=None, headers=None, timeout=12, cache_ttl=0, stale_ttl=None,
                   budgeted=False):
-    """Credential-scoped GET cache, budget, cooldown and stale provenance."""
+    """Credential-scoped GET cache and upstream-error handling, without local quotas."""
     _api_cache_cleanup()
     params = dict(params or {})
     headers = dict(headers or {})
@@ -920,7 +792,10 @@ def _provider_get(provider, url, params=None, headers=None, timeout=12, cache_tt
         _api_cache_record_hit(provider, stale=False)
         return _cached_http_response(cached['payload'], url, cached['status_code'], stale=False, fetched_at=cached['fetched_at'])
 
-    lock = BRAPI_REQUEST_LOCK if provider == 'brapi' else _PROVIDER_REQUEST_LOCKS.setdefault(provider, threading.RLock())
+    # Collapse only identical cache misses. Unrelated API calls are not serialized.
+    # brapi's documented free tier permits one concurrent request, so retain that
+    # provider-specific guard; other providers use a per-cache-key lock only.
+    lock = BRAPI_REQUEST_LOCK if provider == 'brapi' else _api_inflight_lock(provider, cache_key)
     with lock:
         now = time.time()
         cached = _api_cache_row(cache_key)
@@ -929,46 +804,16 @@ def _provider_get(provider, url, params=None, headers=None, timeout=12, cache_tt
             return _cached_http_response(cached['payload'], url, cached['status_code'], stale=False, fetched_at=cached['fetched_at'])
 
         stale_ttl = float(stale_ttl if stale_ttl is not None else max(cache_ttl * 4, 24 * 3600))
-        budget_window = _provider_budget_exceeded(provider, credential_hash)
-        if (budgeted or _provider_budget_windows(provider)) and budget_window:
-            if cached and cached['stale_until'] > now:
-                _api_cache_record_hit(provider, stale=True)
-                return _cached_http_response(cached['payload'], url, cached['status_code'], stale=True, fetched_at=cached['fetched_at'])
-            window_label = '30 dias' if budget_window['window_seconds'] >= 30 * 86400 else '24 horas'
-            return _synthetic_api_response(
-                429,
-                f'Orçamento local de segurança de {provider} atingido ({budget_window["limit"]} chamadas em {window_label}) para esta credencial. Aguarde a janela ou ajuste {budget_window["env_name"]}.',
-                url, retry_after=3600
-            )
-
         cooldown_until = _provider_get_cooldown(provider, credential_hash, endpoint, params)
         if cooldown_until > now:
             if cached and cached['stale_until'] > now:
                 _api_cache_record_hit(provider, stale=True)
                 return _cached_http_response(cached['payload'], url, cached['status_code'], stale=True, fetched_at=cached['fetched_at'])
-            return _synthetic_api_response(429, f'Consultas ao provedor {provider} pausadas temporariamente para esta credencial/endpoint.', url, retry_after=max(1, int(cooldown_until - now)))
+            return _synthetic_api_response(429, f'O provedor {provider} solicitou uma pausa temporária para esta credencial/endpoint.', url, retry_after=max(1, int(cooldown_until - now)))
 
-        try:
-            _provider_wait_for_gap(provider, credential_hash)
-        except ValueError as exc:
-            if cached and cached['stale_until'] > now:
-                _api_cache_record_hit(provider, stale=True)
-                return _cached_http_response(cached['payload'], url, cached['status_code'], stale=True, fetched_at=cached['fetched_at'])
-            return _synthetic_api_response(429, str(exc), url, retry_after=60)
-        except sqlite3.Error:
-            return _synthetic_api_response(503, 'Não foi possível validar o intervalo seguro de consultas; a chamada externa foi bloqueada.', url, retry_after=60)
-        request_id = _api_record_request(provider, endpoint, 0, credential_hash, enforce_budget=bool(budgeted or _provider_budget_windows(provider)))
-        if (budgeted or _provider_budget_windows(provider)) and not request_id:
-            if cached and cached['stale_until'] > now:
-                _api_cache_record_hit(provider, stale=True)
-                return _cached_http_response(cached['payload'], url, cached['status_code'], stale=True, fetched_at=cached['fetched_at'])
-            blocked = _provider_budget_exceeded(provider, credential_hash)
-            if blocked:
-                return _synthetic_api_response(429, f'Orçamento local de segurança de {provider} atingido ({blocked["limit"]} chamadas).', url, retry_after=3600)
-            gap_remaining = _provider_gap_remaining(provider, credential_hash)
-            if gap_remaining > 0:
-                return _synthetic_api_response(429, f'Intervalo mínimo entre chamadas de {provider} em uso por outro worker.', url, retry_after=max(1, int(gap_remaining + 0.999)))
-            return _synthetic_api_response(503, 'Não foi possível registrar o consumo da API com segurança; a chamada externa foi bloqueada.', url, retry_after=300)
+        # Request logging is for observability only. SQLite contention while
+        # recording metrics must never suppress a legitimate provider request.
+        request_id = _api_record_request(provider, endpoint, 0, credential_hash)
         try:
             response = requests.get(url, params=params, headers=headers, timeout=timeout)
         except requests.RequestException:
@@ -980,7 +825,7 @@ def _provider_get(provider, url, params=None, headers=None, timeout=12, cache_tt
             raise
 
         _api_update_request_status(request_id, response.status_code)
-        if response.status_code in (400, 401, 403, 408, 425, 429) or response.status_code >= 500:
+        if response.status_code in (408, 425, 429) or response.status_code >= 500:
             retry_after = response.headers.get('Retry-After')
             _provider_apply_failure_cooldown(provider, response.status_code, endpoint, params, credential_hash, retry_after)
             if cached and cached['stale_until'] > now:
@@ -1016,7 +861,7 @@ def _brapi_get(url, params=None, headers=None, timeout=12, cache_ttl=None, stale
     if stale_ttl is None:
         stale_ttl = 7 * 86400 if cache_ttl <= 12 * 3600 else 30 * 86400
     return _provider_get('brapi', url, params=params, headers=headers, timeout=timeout,
-                         cache_ttl=float(cache_ttl), stale_ttl=float(stale_ttl), budgeted=True)
+                         cache_ttl=float(cache_ttl), stale_ttl=float(stale_ttl))
 
 
 def _acquire_api_sync_lease(lock_name, owner, ttl_seconds=1800):
@@ -1122,18 +967,21 @@ def _current_provider_credential_hash(provider):
 
 
 def _api_usage_snapshot():
+    """Return local request/cache statistics without defining or exposing quotas."""
     _api_cache_cleanup()
-    brapi_credential = _current_provider_credential_hash('brapi')
-    used = _api_budget_used('brapi', credential_hash=brapi_credential)
-    connection = None
+    providers = {}
     cache_entries = 0
     fresh_hits = stale_hits = 0
     last_request = None
-    providers = {}
+    connection = None
+    now = time.time()
     try:
         connection = _api_cache_connection()
-        cache_entries = int(connection.execute('SELECT COUNT(*) FROM api_response_cache WHERE provider=?', ('brapi',)).fetchone()[0])
-        row = connection.execute('SELECT MAX(requested_at) FROM api_request_log WHERE provider=? AND credential_hash=?', ('brapi', brapi_credential)).fetchone()
+        cache_entries = int(connection.execute('SELECT COUNT(*) FROM api_response_cache').fetchone()[0])
+        row = connection.execute(
+            'SELECT MAX(requested_at) FROM api_request_log WHERE provider=? AND credential_hash=?',
+            ('brapi', _current_provider_credential_hash('brapi'))
+        ).fetchone()
         last_request = float(row[0]) if row and row[0] else None
         stats = connection.execute('SELECT fresh_hits,stale_hits FROM api_cache_stats WHERE provider=?', ('brapi',)).fetchone()
         if stats:
@@ -1142,53 +990,35 @@ def _api_usage_snapshot():
             credential = _current_provider_credential_hash(provider_name)
             row = connection.execute(
                 'SELECT COUNT(*),MAX(requested_at) FROM api_request_log WHERE provider=? AND credential_hash=? AND requested_at>=?',
-                (provider_name, credential, time.time() - 30 * 86400)
+                (provider_name, credential, now - 30 * 86400)
             ).fetchone()
             providers[provider_name] = {
                 'requests_last_30_days': int(row[0] or 0) if row else 0,
                 'last_request_epoch': float(row[1]) if row and row[1] else None,
                 'credential_fingerprint': credential[:8]
             }
-    except sqlite3.Error:
-        pass
+    except sqlite3.Error as exc:
+        app.logger.debug('Não foi possível ler estatísticas locais das APIs: %s', exc)
     finally:
         if connection is not None:
             connection.close()
-    budgets = {}
-    for name in ('brapi', 'hgbrasil', 'dadosb3', 'pluggy', 'fred'):
-        credential_hash = _current_provider_credential_hash(name)
-        windows = _provider_budget_windows(name)
-        daily_or_primary = windows[0] if windows else (0, 86400, '')
-        primary_limit, primary_seconds, _ = daily_or_primary
-        primary_count = _api_budget_used(name, window_seconds=primary_seconds, credential_hash=credential_hash)
-        item = {
-            'requests': primary_count,
-            'local_budget': primary_limit,
-            'remaining': max(0, primary_limit - primary_count) if primary_limit > 0 else None,
-            'window_hours': int(primary_seconds / 3600),
-            'enabled': primary_limit > 0,
-            'credential_configured': credential_hash not in ('public', 'unconfigured')
-        }
-        if len(windows) > 1:
-            monthly_limit, monthly_seconds, _ = windows[1]
-            monthly_count = _api_budget_used(name, window_seconds=monthly_seconds, credential_hash=credential_hash)
-            item.update({
-                'requests_30d': monthly_count,
-                'local_budget_30d': monthly_limit,
-                'remaining_30d': max(0, monthly_limit - monthly_count) if monthly_limit > 0 else None,
-                'enabled_30d': monthly_limit > 0
-            })
-        budgets[name] = item
-    budget = BRAPI_LOCAL_30D_BUDGET
+    brapi_stats = providers.get('brapi', {})
     return {
-        'provider': 'brapi', 'window_days': 30, 'requests_last_30_days': used,
-        'local_budget': budget, 'remaining_local_budget': max(0, budget - used) if budget > 0 else None,
-        'budget_enabled': budget > 0, 'provider_budgets': budgets,
-        'cache_entries': cache_entries, 'cache_hits': fresh_hits, 'stale_cache_hits': stale_hits,
-        'last_request_epoch': last_request, 'providers': providers,
-        'note': 'Contagem local por credencial desta instalação; outras aplicações que compartilham os tokens não são contabilizadas. Trocar a credencial inicia um contador local separado.'
+        'provider': 'brapi',
+        'window_days': 30,
+        'requests_last_30_days': int(brapi_stats.get('requests_last_30_days') or 0),
+        'local_budget': None,
+        'remaining_local_budget': None,
+        'budget_enabled': False,
+        'provider_budgets': {},
+        'cache_entries': cache_entries,
+        'cache_hits': fresh_hits,
+        'stale_cache_hits': stale_hits,
+        'last_request_epoch': last_request,
+        'providers': providers,
+        'limits_enforced_locally': False,
+        'note': 'Estatísticas locais para acompanhamento. A aplicação não aplica cotas diárias ou mensais; limites e HTTP 429 são definidos pelos próprios provedores.'
     }
-
 
 
 
@@ -1995,11 +1825,6 @@ def _get_pluggy_credentials():
 # the user copies each itemId from the Pluggy Dashboard Demo page.
 PLUGGY_AUTH_CACHE = {'api_key': '', 'expires_at': 0, 'credential_hash': ''}
 PLUGGY_AUTH_LOCK = threading.Lock()
-PLUGGY_REQUEST_LOCK = threading.RLock()
-try:
-    PLUGGY_REQUEST_GAP_SECONDS = min(5.0, max(0.0, float(os.environ.get('PLUGGY_REQUEST_GAP_SECONDS', '1.0'))))
-except (TypeError, ValueError):
-    PLUGGY_REQUEST_GAP_SECONDS = 1.0
 try:
     PLUGGY_MAX_PAGES = min(500, max(1, int(os.environ.get('PLUGGY_MAX_PAGES', '100'))))
 except (TypeError, ValueError):
@@ -2018,14 +1843,9 @@ def _pluggy_credential_hash(credentials=None):
     return hashlib.sha256(material.encode('utf-8')).hexdigest()[:24]
 
 
-def _pluggy_check_budget(credential_hash):
-    blocked = _provider_budget_exceeded('pluggy', credential_hash)
-    if blocked:
-        window_label = '24 horas' if blocked['window_seconds'] <= 24 * 3600 else '30 dias'
-        raise RuntimeError(
-            f'Orçamento local de segurança da Pluggy atingido: {blocked["limit"]} chamadas em {window_label} para esta credencial. '
-            f'Aguarde a renovação da janela ou ajuste {blocked["env_name"]}. Sincronização manual não ignora esse limite.'
-        )
+def _pluggy_check_budget(credential_hash=None):
+    """Compatibility shim: no local daily/monthly Pluggy quota is enforced."""
+    return None
 
 
 def _pluggy_apply_failure(response, credential_hash, endpoint, params=None, allow_401_retry=False):
@@ -2049,20 +1869,10 @@ def _pluggy_api_key(force=False):
             return PLUGGY_AUTH_CACHE['api_key']
         if not credentials.get('client_id') or not credentials.get('client_secret'):
             raise ValueError('Cadastre Client ID e Client Secret da Pluggy.')
-        _pluggy_check_budget(credential_hash)
         cooldown_until = _provider_get_cooldown('pluggy', credential_hash, 'AUTH', {})
         if cooldown_until > now:
             raise RuntimeError(f'Autenticação Pluggy pausada para esta credencial por mais {int(cooldown_until-now)+1}s.')
-        _provider_wait_for_gap('pluggy', credential_hash)
-        request_id = _api_record_request('pluggy', 'AUTH', 0, credential_hash, enforce_budget=True)
-        if not request_id:
-            blocked = _provider_budget_exceeded('pluggy', credential_hash)
-            if blocked:
-                raise RuntimeError(f'Orçamento local Pluggy atingido: {blocked["limit"]} chamadas na janela configurada. A autenticação foi bloqueada para preservar a cota gratuita.')
-            gap_remaining = _provider_gap_remaining('pluggy', credential_hash)
-            if gap_remaining > 0:
-                raise RuntimeError(f'Intervalo mínimo Pluggy em uso por outro worker. Tente novamente em {int(gap_remaining + 0.999)}s.')
-            raise RuntimeError('Não foi possível registrar a chamada Pluggy com segurança.')
+        request_id = _api_record_request('pluggy', 'AUTH', 0, credential_hash)
         try:
             response = requests.post(
                 'https://api.pluggy.ai/auth',
@@ -2093,35 +1903,29 @@ def _pluggy_request(method, path, params=None, force_auth=False):
     endpoint_group = str(path).strip('/').split('/', 1)[0] or 'root'
 
     def perform(current_key, allow_401_retry=False):
-        with PLUGGY_REQUEST_LOCK:
-            _pluggy_check_budget(credential_hash)
-            cooldown_until = _provider_get_cooldown('pluggy', credential_hash, path, params)
-            if cooldown_until > time.time():
-                raise RuntimeError(f'Consultas Pluggy para este endpoint pausadas por mais {int(cooldown_until-time.time())+1}s.')
-            _provider_wait_for_gap('pluggy', credential_hash)
-            request_id = _api_record_request('pluggy', f'{str(method).upper()}:{endpoint_group}', 0, credential_hash, enforce_budget=True)
-            if not request_id:
-                blocked = _provider_budget_exceeded('pluggy', credential_hash)
-                if blocked:
-                    raise RuntimeError(f'Orçamento local Pluggy atingido: {blocked["limit"]} chamadas na janela configurada. A sincronização foi interrompida para preservar a cota gratuita.')
-                gap_remaining = _provider_gap_remaining('pluggy', credential_hash)
-                if gap_remaining > 0:
-                    raise RuntimeError(f'Intervalo mínimo Pluggy em uso por outro worker. Tente novamente em {int(gap_remaining + 0.999)}s.')
-                raise RuntimeError('Não foi possível registrar a chamada Pluggy com segurança.')
-            try:
-                result = requests.request(method, url, headers={'X-API-KEY': current_key, 'Accept': 'application/json'}, params=params, timeout=35)
-            except requests.RequestException:
-                _api_update_request_status(request_id, 0)
-                _provider_apply_failure_cooldown('pluggy', 0, path, params, credential_hash)
-                raise
-            _api_update_request_status(request_id, result.status_code)
-            if result.status_code != 401 or not allow_401_retry:
-                _pluggy_apply_failure(result, credential_hash, path, params, allow_401_retry=False)
-            return result
+        cooldown_until = _provider_get_cooldown('pluggy', credential_hash, path, params)
+        if cooldown_until > time.time():
+            raise RuntimeError(f'A Pluggy solicitou uma pausa temporária; tente novamente em {int(cooldown_until-time.time())+1}s.')
+        request_id = _api_record_request('pluggy', f'{str(method).upper()}:{endpoint_group}', 0, credential_hash)
+        try:
+            result = requests.request(
+                method, url,
+                headers={'X-API-KEY': current_key, 'Accept': 'application/json'},
+                params=params,
+                timeout=35
+            )
+        except requests.RequestException:
+            _api_update_request_status(request_id, 0)
+            _provider_apply_failure_cooldown('pluggy', 0, path, params, credential_hash)
+            raise
+        _api_update_request_status(request_id, result.status_code)
+        if result.status_code != 401 or not allow_401_retry:
+            _pluggy_apply_failure(result, credential_hash, path, params, allow_401_retry=False)
+        return result
 
     response = perform(key, allow_401_retry=True)
     if response.status_code == 401 and not force_auth:
-        # A single expired API key may be renewed; the first 401 must not block this retry.
+        # A single expired API key may be renewed; the first 401 does not create a local cooldown.
         PLUGGY_AUTH_CACHE.update(api_key='', expires_at=0, credential_hash=credential_hash)
         key = _pluggy_api_key(force=True)
         response = perform(key, allow_401_retry=False)

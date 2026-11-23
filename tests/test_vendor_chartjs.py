@@ -92,7 +92,7 @@ class VendorChartJsTests(unittest.TestCase):
     def test_build_user_agent_and_status_use_project_version_file(self):
         expected = vendor.VERSION_FILE.read_text(encoding='utf-8').strip()
         self.assertEqual(vendor.APP_VERSION, expected)
-        self.assertEqual(expected, '4.2.38')
+        self.assertEqual(expected, '4.2.39')
 
 
 if __name__ == '__main__':
