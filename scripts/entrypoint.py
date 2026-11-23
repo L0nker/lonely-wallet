@@ -63,8 +63,22 @@ def main():
         raise SystemExit('Comando do container não informado.')
     if os.geteuid() == 0:
         DATA.mkdir(parents=True, exist_ok=True)
-        uid = pwd.getpwnam(USER).pw_uid
+        user_info = pwd.getpwnam(USER)
+        uid = user_info.pw_uid
         gid = grp.getgrnam(GROUP).gr_gid
+        # Gunicorn 25+ creates a control socket under XDG_RUNTIME_DIR (or
+        # $HOME/.gunicorn). The entrypoint drops privileges, so both paths
+        # must point to directories writable by the unprivileged app user.
+        app_home = Path(user_info.pw_dir)
+        app_home.mkdir(parents=True, exist_ok=True)
+        os.chown(app_home, uid, gid)
+        os.chmod(app_home, 0o700)
+        runtime_dir = Path(os.environ.get('XDG_RUNTIME_DIR', '/tmp/lonely-wallet-runtime'))
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        os.chown(runtime_dir, uid, gid)
+        os.chmod(runtime_dir, 0o700)
+        os.environ['HOME'] = str(app_home)
+        os.environ['XDG_RUNTIME_DIR'] = str(runtime_dir)
         if not MARKER.exists():
             migrate_permissions(DATA, uid, gid)
             _write_marker(uid, gid)

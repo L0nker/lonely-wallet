@@ -40,10 +40,12 @@ services:
       API_STATE_DB_PATH: /data/api_state.db
       DB_PATH: /data/carteira.db # caminho legado usado somente na migração inicial
       TZ: America/Sao_Paulo
+      HOME: /home/app
+      XDG_RUNTIME_DIR: /tmp/lonely-wallet-runtime
     volumes:
       - /DATA/AppData/lonely-wallet/data:/data
     labels:
-      icon: "/static/lonely-wallet-logo.png?v=4.2.35"
+      icon: "/static/lonely-wallet-logo.png?v=4.2.36"
     deploy:
       resources:
         limits:
@@ -63,7 +65,7 @@ x-casaos:
     pt_BR: Carteira pessoal para acompanhar investimentos, posições e proventos.
     en_US: Personal investment portfolio dashboard.
   developer: Lonely Wallet
-  icon: "/static/lonely-wallet-logo.png?v=4.2.35"
+  icon: "/static/lonely-wallet-logo.png?v=4.2.36"
   index: /
   is_uncontrolled: false
   main: lonely-wallet

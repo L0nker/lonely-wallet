@@ -141,6 +141,84 @@ class RegressionTests(unittest.TestCase):
                 finally:
                     api_con.close()
 
+    def test_legacy_api_schema_without_endpoint_migrates_with_defaults(self):
+        with tempfile.TemporaryDirectory(prefix='lw-api-old-schema-') as temp:
+            source = Path(temp) / 'ativos-legacy.db'
+            target = Path(temp) / 'api_state.db'
+            source_con = sqlite3.connect(source)
+            source_con.executescript("""
+                CREATE TABLE api_response_cache(
+                    cache_key TEXT PRIMARY KEY, provider TEXT, payload BLOB,
+                    status_code INTEGER, fetched_at REAL, expires_at REAL, stale_until REAL
+                );
+                CREATE TABLE api_request_log(
+                    id INTEGER PRIMARY KEY, provider TEXT, requested_at REAL, status_code INTEGER
+                );
+                CREATE TABLE api_cache_stats(provider TEXT PRIMARY KEY, fresh_hits INTEGER);
+                CREATE TABLE api_provider_state(provider TEXT PRIMARY KEY);
+            """)
+            source_con.execute(
+                'INSERT INTO api_response_cache VALUES(?,?,?,?,?,?,?)',
+                ('legacy-no-endpoint', 'hgbrasil', b'{"ok":true}', 200, 10, 20, 30)
+            )
+            source_con.execute(
+                'INSERT INTO api_request_log VALUES(?,?,?,?)',
+                (11, 'pluggy', 12, 200)
+            )
+            source_con.execute(
+                'INSERT INTO api_cache_stats VALUES(?,?)', ('hgbrasil', 9)
+            )
+            source_con.execute('INSERT INTO api_provider_state(provider) VALUES(?)', ('pluggy',))
+            source_con.commit()
+            source_con.close()
+
+            # Simulate a target database created by an older, incomplete schema.
+            target_con = sqlite3.connect(target)
+            target_con.executescript("""
+                CREATE TABLE api_response_cache(
+                    cache_key TEXT PRIMARY KEY, provider TEXT, payload BLOB,
+                    status_code INTEGER, fetched_at REAL, expires_at REAL, stale_until REAL
+                );
+                CREATE TABLE api_request_log(
+                    id INTEGER PRIMARY KEY, provider TEXT, requested_at REAL, status_code INTEGER
+                );
+                CREATE TABLE api_cache_stats(provider TEXT PRIMARY KEY, fresh_hits INTEGER);
+                CREATE TABLE api_provider_state(provider TEXT PRIMARY KEY);
+            """)
+            target_con.commit()
+            target_con.close()
+
+            with patch.object(wallet, 'DB_PATH', str(source)), patch.object(wallet, 'API_STATE_DB_PATH', str(target)):
+                wallet.init_api_state_db()
+                con = sqlite3.connect(target)
+                try:
+                    cache = con.execute(
+                        'SELECT endpoint,payload,fetched_at,expires_at,stale_until FROM api_response_cache WHERE cache_key=?',
+                        ('legacy-no-endpoint',)
+                    ).fetchone()
+                    self.assertEqual(cache, ('', b'{"ok":true}', 10.0, 20.0, 30.0))
+                    request_row = con.execute(
+                        'SELECT endpoint,credential_hash,requested_at,status_code FROM api_request_log WHERE id=11'
+                    ).fetchone()
+                    self.assertEqual(request_row, ('', 'legacy', 12.0, 200))
+                    stats = con.execute(
+                        'SELECT fresh_hits,stale_hits FROM api_cache_stats WHERE provider=?', ('hgbrasil',)
+                    ).fetchone()
+                    self.assertEqual(stats, (9, 0))
+                    state = con.execute(
+                        'SELECT cooldown_until,last_status_code,last_error FROM api_provider_state WHERE provider=?',
+                        ('pluggy',)
+                    ).fetchone()
+                    self.assertEqual(state, (0.0, 0, ''))
+                finally:
+                    con.close()
+                wallet.init_api_state_db()
+                con = sqlite3.connect(target)
+                try:
+                    self.assertEqual(con.execute('SELECT COUNT(*) FROM api_request_log').fetchone()[0], 1)
+                finally:
+                    con.close()
+
     def test_api_state_database_is_separate_from_financial_database(self):
         self.assertNotEqual(os.path.abspath(wallet.API_STATE_DB_PATH), os.path.abspath(wallet.DB_PATH))
         self.assertTrue(Path(wallet.API_STATE_DB_PATH).exists())

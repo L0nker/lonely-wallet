@@ -1,14 +1,14 @@
-# Lonely Wallet v4.2.35
+# Lonely Wallet v4.2.36
 
 **Gerenciador pessoal de investimentos | Docker / ZimaOS | Português (Brasil)**
 
-Esta versão parte da base estável v4.2.32. Mantém a interface, as regras financeiras, a importação B3 e o fluxo de carregamento do dashboard, com otimizações específicas para reduzir chamadas repetidas às APIs e proteger as cotas de planos gratuitos.
+Esta versão corrige a inicialização do armazenamento de APIs em instalações que possuem metadados antigos no `ativos.db`, além de configurar o socket de controle do Gunicorn em um diretório gravável pelo usuário não privilegiado. Mantém a interface, as regras financeiras, a importação B3 e o fluxo de carregamento do dashboard da versão anterior.
 
 As consultas da brapi passam a usar cache persistente em SQLite, orçamento local móvel de 30 dias, uma chamada por ticker, concorrência serializada e intervalo mínimo entre chamadas. As respostas recentes podem ser reutilizadas após reinicializações e, durante indisponibilidades temporárias, respostas anteriores dentro da janela de contingência podem ser reaproveitadas. A sincronização Pluggy para novas instalações passa a ter frequência padrão de quatro horas; preferências já salvas pelo usuário são preservadas.
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.35 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.36 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
 - **Persistência:** SQLite, com bancos separados para ativos, tokens e estado das APIs
 - **Porta:** `8085` no host e `8080` no container
@@ -38,7 +38,7 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve apresentar `ok: true` e `version: 4.2.35`. O estado de cache e consumo das APIs é mantido em `/data/api_state.db`.
+O retorno deve apresentar `ok: true` e `version: 4.2.36`. O estado de cache e consumo das APIs é mantido em `/data/api_state.db`.
 
 **Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
 
@@ -267,50 +267,38 @@ O orçamento é uma proteção local, não uma leitura oficial da cota do proved
 
 
 
-## Lonely Wallet v4.2.35 · Proteções adicionais de consumo das APIs
+## 13. Correções e validação da v4.2.36
 
-- Orçamentos locais da Pluggy e FRED por credencial, com janelas diária e móvel de 30 dias; as chamadas de autenticação e de dados Pluggy contam para o mesmo orçamento.
-- Contadores e pausas vinculados à impressão digital SHA-256 normalizada da credencial; trocar o token inicia orçamento e cooldown independentes. O token original não é gravado nos logs.
-- Cooldowns diferenciados: 400 por requisição/parâmetros, 401 por credencial, 403 por endpoint (ou apenas pela variante `includeRaw`), 429 por credencial e falhas transitórias por credencial. `Retry-After` aceita segundos ou data HTTP.
-- Paginação Pluggy falha assim que o total de páginas excede o limite configurado ou quando uma página intermediária chega vazia; não consome o restante das chamadas nem aceita histórico parcial como completo.
-- Dados reutilizados de cache antigo passam a carregar data da última consulta real e aviso visual; eventos de proventos obtidos de cache antigo não atualizam a data de sincronização para o momento atual.
-- Limpeza automática do cache, logs e estados expirados executada durante requisições normais, sem depender da abertura da página de APIs.
-- Orçamento e intervalo mínimo são reservados atomicamente no SQLite (`BEGIN IMMEDIATE`), protegendo também instalações com múltiplos workers Gunicorn.
-- Intervalo brapi/Pluggy é revalidado dentro da reserva, evitando rajadas entre processos.
-- Dados de proventos/histórico/benchmarks reutilizados de cache antigo exibem aviso e preservam a data da última consulta real; uma resposta stale vazia também é sinalizada.
-- A identidade do token brapi é normalizada para que `token` em query string e `Authorization: Bearer` usem o mesmo contador.
-- O botão de sincronização manual Pluggy não ignora limites locais de consumo.
+### Estabilidade da migração SQLite
 
-Variáveis adicionais: `PLUGGY_LOCAL_24H_BUDGET`, `PLUGGY_LOCAL_30D_BUDGET`, `PLUGGY_MAX_PAGES`, `PLUGGY_PAGE_SIZE`, `FRED_LOCAL_24H_BUDGET` e `FRED_LOCAL_30D_BUDGET`.
-- A chave do cache brapi usa a mesma impressão digital normalizada quando o token é enviado em query string ou em `Authorization: Bearer`, evitando duplicação de cache e consumo contabilizado em identidades diferentes.
-- A paginação Pluggy exige o array `results` e o campo `totalPages` em todas as páginas, valida que o total permaneça estável durante a consulta e aborta se houver página intermediária vazia ou resposta inconsistente.
-- Os tooltips de cotação identificam explicitamente quando o preço foi reutilizado de cache/último valor válido e mostram a data real da fonte, sem apresentar a reutilização como atualização nova.
-- Foram adicionados testes de regressão para cooldown HTTP 400/401/403/429/5xx, troca de credencial, cache de token normalizado, orçamento/intervalo atômicos, limpeza automática, metadados stale de proventos e respostas incompletas da paginação Pluggy.
-- As chamadas Pluggy agora contam para limites locais móveis de 24 horas e 30 dias por credencial; autenticação e endpoints de dados compartilham o orçamento. A sincronização manual também respeita orçamento e intervalo.
-- A paginação Pluggy exige `results` como lista e `totalPages` como inteiro válido e estável entre páginas. Página intermediária vazia, metadados ausentes, alteração do total ou limite excedido interrompem a sincronização com erro explícito, sem aceitar resultado parcial como completo.
-- Cooldowns de falhas são persistidos e vinculados à impressão digital da credencial: HTTP 400 por combinação de endpoint/parâmetros, 401 por credencial, 403 por endpoint (ou pela variante `includeRaw`), 429 por credencial respeitando `Retry-After` em segundos ou data HTTP, e falhas transitórias por credencial.
-- A contagem e a reserva de orçamento/intervalo são feitas em transação SQLite `BEGIN IMMEDIATE`, protegendo chamadas entre workers/processos. A chave de cache brapi normaliza o mesmo token enviado em query string ou `Authorization: Bearer`.
-- Os tooltips de preço informam quando o valor exibido foi reutilizado de cache antigo/última cotação válida e mostram a data real da fonte quando disponível. Os avisos de dados antigos de proventos e histórico também preservam a data da consulta real.
-- A limpeza de respostas expiradas, logs antigos e pausas vencidas ocorre automaticamente durante requisições normais, sem depender da abertura da página Integrações e APIs.
+- A migração do armazenamento de APIs inspeciona `PRAGMA table_info` antes de consultar tabelas legadas.
+- Schemas antigos sem `endpoint`, `credential_hash`, `stale_hits` ou campos opcionais de estado recebem valores padrão seguros.
+- O schema já existente de `api_state.db` também é atualizado com colunas ausentes antes da criação dos índices.
+- O marcador `legacy_assets_migrated_v2` só é gravado após a cópia ser concluída; a execução pode ser repetida sem duplicar os registros migrados.
+- O histórico antigo de cache, requisições, estatísticas e cooldowns é preservado quando as colunas de origem estão disponíveis.
 
-### Validação da v4.2.35
+### Inicialização do Gunicorn
 
-- 8 testes Python independentes executados e aprovados (`test_vendor_chartjs` e `test_backup_atomic`).
-- 19 verificações de runtime JavaScript executadas e aprovadas.
-- Compilação sintática Python aprovada para aplicação, backup e testes atualizados.
-- 5 verificações isoladas do armazenamento de APIs executadas: leitura de cache, métricas fresh/stale, migração do histórico e idempotência da migração.
-- Docker Compose YAML analisado e `API_STATE_DB_PATH` conferido.
-- Integridade do ZIP conferida após a geração.
-- A suíte integrada `tests/test_regressions.py` não pôde ser executada neste ambiente porque Flask não está instalado e a instalação de dependências não está disponível sem rede.
-- Build Docker real e validação visual final no ZimaOS não foram executados neste ambiente.
+- `HOME` agora aponta para `/home/app`, diretório pertencente ao usuário não privilegiado da aplicação.
+- `XDG_RUNTIME_DIR` aponta para `/tmp/lonely-wallet-runtime`, criado com permissões restritas e proprietário `app` pelo entrypoint.
+- O socket de controle do Gunicorn é definido explicitamente em `/tmp/lonely-wallet-runtime/gunicorn.ctl`, evitando tentativas de gravação em `/root/.gunicorn` após a redução de privilégios.
 
+### Proteções de consumo das APIs mantidas
 
-## 10. Correções de estabilidade na v4.2.35
+- Preservados os orçamentos locais, caches persistentes, cooldowns e controles por credencial da versão 4.2.35.
+- Preservada a validação estrita da paginação Pluggy e a sinalização de dados antigos reutilizados do cache.
+- A rotina de migração do `api_state.db` continua separada do banco financeiro `ativos.db`.
 
-- Corrigida a leitura do cache HTTP e a contabilização de cache hits, evitando `NameError` no fluxo de cotações e no dashboard.
-- Isolados cache, orçamento, cooldown e histórico de requisições em `api_state.db`, separado do banco financeiro `ativos.db`, para reduzir contenção de escrita com operações da carteira.
-- Migrados uma única vez os registros de cache e consumo que estavam nas tabelas legadas de `ativos.db`, preservando o histórico e evitando duplicação.
-- Incluído `api_state.db` no backup consistente do SQLite.
-- Falhas de leitura de cache e métricas passam a ser tratadas sem propagar exceções para a resposta financeira.
+### Validação da v4.2.36
 
-Durante a atualização, mantenha o volume `/data` existente. O banco `api_state.db` é criado automaticamente e os registros legados são migrados sem apagar os dados financeiros.
+- 4 testes do entrypoint e preparação das permissões aprovados, incluindo `HOME` e `XDG_RUNTIME_DIR`.
+- 3 testes de backup SQLite aprovados.
+- 5 testes do fornecedor/validação do Chart.js aprovados.
+- Teste isolado da migração de schemas antigos sem `endpoint` aprovado, incluindo atualização de destino preexistente e idempotência.
+- Compilação sintática Python aprovada para `app/main.py`, entrypoint, backup e testes alterados.
+- Docker Compose YAML analisado e válido.
+- Integridade do pacote ZIP conferida após a geração.
+- A suíte integrada `tests/test_regressions.py` não foi executada porque Flask não está instalado neste ambiente.
+- Build Docker real e validação final no ZimaOS não foram executados neste ambiente.
+
+**Atualização:** mantenha o volume `/DATA/AppData/lonely-wallet/data:/data`. Não apague `ativos.db`, `tokens.db` ou `api_state.db`. A atualização corrige o schema e a migração automaticamente, preservando os dados financeiros e o histórico de consumo.

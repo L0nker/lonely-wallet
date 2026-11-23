@@ -329,119 +329,219 @@ def _api_cache_record_hit(provider, stale=False):
 
 
 def init_api_state_db():
-    """Create isolated API metadata storage and migrate the old tables once.
+    """Create API metadata storage and migrate legacy schemas defensively.
 
-    Older releases kept API cache/accounting tables inside ativos.db. Moving these
-    high-frequency writes into api_state.db prevents Pluggy/cache bookkeeping from
-    contending with financial transactions in the portfolio database.
+    Older installations may have API tables created by releases whose columns
+    differ from the current schema. Missing metadata columns are supplied with
+    safe defaults so an old ativos.db can never prevent Gunicorn from booting.
+    The migration marker is written only after every available table is copied.
     """
     os.makedirs(os.path.dirname(API_STATE_DB_PATH) or '.', exist_ok=True)
     target = sqlite3.connect(API_STATE_DB_PATH, timeout=30)
     target.execute('PRAGMA busy_timeout=30000')
     target.execute('PRAGMA journal_mode=WAL')
     target.execute('PRAGMA synchronous=NORMAL')
-    target.executescript('''
-        CREATE TABLE IF NOT EXISTS api_response_cache (
-          cache_key TEXT PRIMARY KEY, provider TEXT NOT NULL, endpoint TEXT NOT NULL,
-          payload BLOB NOT NULL, status_code INTEGER NOT NULL DEFAULT 200,
-          fetched_at REAL NOT NULL, expires_at REAL NOT NULL, stale_until REAL NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_api_response_cache_expiry
-          ON api_response_cache(provider,expires_at,stale_until);
-        CREATE TABLE IF NOT EXISTS api_request_log (
-          id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, endpoint TEXT NOT NULL,
-          requested_at REAL NOT NULL, status_code INTEGER NOT NULL DEFAULT 0,
-          credential_hash TEXT NOT NULL DEFAULT 'legacy'
-        );
-        CREATE INDEX IF NOT EXISTS idx_api_request_log_provider_time
-          ON api_request_log(provider,requested_at);
-        CREATE INDEX IF NOT EXISTS idx_api_request_log_credential_time
-          ON api_request_log(provider,credential_hash,requested_at);
-        CREATE TABLE IF NOT EXISTS api_cache_stats (
-          provider TEXT PRIMARY KEY, fresh_hits INTEGER NOT NULL DEFAULT 0,
-          stale_hits INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS api_provider_state (
-          provider TEXT PRIMARY KEY, cooldown_until REAL NOT NULL DEFAULT 0,
-          last_status_code INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT ''
-        );
-        CREATE TABLE IF NOT EXISTS api_provider_state_scoped (
-          provider TEXT NOT NULL, credential_hash TEXT NOT NULL, scope TEXT NOT NULL,
-          cooldown_until REAL NOT NULL DEFAULT 0, last_status_code INTEGER NOT NULL DEFAULT 0,
-          last_error TEXT NOT NULL DEFAULT '', PRIMARY KEY(provider,credential_hash,scope)
-        );
-        CREATE TABLE IF NOT EXISTS api_state_meta (
-          key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT ''
-        );
-    ''')
-    marker = target.execute(
-        "SELECT value FROM api_state_meta WHERE key='legacy_assets_migrated_v1'"
-    ).fetchone()
-    if marker:
-        target.close()
-        return
-
     source = None
     try:
+        target.executescript('''
+            CREATE TABLE IF NOT EXISTS api_response_cache (
+              cache_key TEXT PRIMARY KEY, provider TEXT NOT NULL DEFAULT 'legacy',
+              endpoint TEXT NOT NULL DEFAULT '', payload BLOB NOT NULL DEFAULT X'7B7D',
+              status_code INTEGER NOT NULL DEFAULT 200, fetched_at REAL NOT NULL DEFAULT 0,
+              expires_at REAL NOT NULL DEFAULT 0, stale_until REAL NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS api_request_log (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL DEFAULT 'legacy',
+              endpoint TEXT NOT NULL DEFAULT '', requested_at REAL NOT NULL DEFAULT 0,
+              status_code INTEGER NOT NULL DEFAULT 0, credential_hash TEXT NOT NULL DEFAULT 'legacy'
+            );
+            CREATE TABLE IF NOT EXISTS api_cache_stats (
+              provider TEXT PRIMARY KEY, fresh_hits INTEGER NOT NULL DEFAULT 0,
+              stale_hits INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS api_provider_state (
+              provider TEXT PRIMARY KEY, cooldown_until REAL NOT NULL DEFAULT 0,
+              last_status_code INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS api_provider_state_scoped (
+              provider TEXT NOT NULL, credential_hash TEXT NOT NULL, scope TEXT NOT NULL,
+              cooldown_until REAL NOT NULL DEFAULT 0, last_status_code INTEGER NOT NULL DEFAULT 0,
+              last_error TEXT NOT NULL DEFAULT '', PRIMARY KEY(provider,credential_hash,scope)
+            );
+            CREATE TABLE IF NOT EXISTS api_state_meta (
+              key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT ''
+            );
+        ''')
+
+        # CREATE TABLE IF NOT EXISTS does not upgrade a database created by an
+        # earlier schema. Add every column used by the current runtime before
+        # creating indexes or querying the target database.
+        target_columns = {
+            'api_response_cache': {
+                'provider': "TEXT NOT NULL DEFAULT 'legacy'",
+                'endpoint': "TEXT NOT NULL DEFAULT ''",
+                'payload': "BLOB NOT NULL DEFAULT X'7B7D'",
+                'status_code': 'INTEGER NOT NULL DEFAULT 200',
+                'fetched_at': 'REAL NOT NULL DEFAULT 0',
+                'expires_at': 'REAL NOT NULL DEFAULT 0',
+                'stale_until': 'REAL NOT NULL DEFAULT 0',
+            },
+            'api_request_log': {
+                'provider': "TEXT NOT NULL DEFAULT 'legacy'",
+                'endpoint': "TEXT NOT NULL DEFAULT ''",
+                'requested_at': 'REAL NOT NULL DEFAULT 0',
+                'status_code': 'INTEGER NOT NULL DEFAULT 0',
+                'credential_hash': "TEXT NOT NULL DEFAULT 'legacy'",
+            },
+            'api_cache_stats': {
+                'fresh_hits': 'INTEGER NOT NULL DEFAULT 0',
+                'stale_hits': 'INTEGER NOT NULL DEFAULT 0',
+            },
+            'api_provider_state': {
+                'cooldown_until': 'REAL NOT NULL DEFAULT 0',
+                'last_status_code': 'INTEGER NOT NULL DEFAULT 0',
+                'last_error': "TEXT NOT NULL DEFAULT ''",
+            },
+            'api_provider_state_scoped': {
+                'credential_hash': "TEXT NOT NULL DEFAULT 'legacy'",
+                'scope': "TEXT NOT NULL DEFAULT ''",
+                'cooldown_until': 'REAL NOT NULL DEFAULT 0',
+                'last_status_code': 'INTEGER NOT NULL DEFAULT 0',
+                'last_error': "TEXT NOT NULL DEFAULT ''",
+            },
+            'api_state_meta': {'value': "TEXT NOT NULL DEFAULT ''"},
+        }
+        for table, definitions in target_columns.items():
+            existing = {row[1] for row in target.execute(f'PRAGMA table_info({table})').fetchall()}
+            for column, definition in definitions.items():
+                if column not in existing:
+                    target.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
+
+        target.executescript('''
+            CREATE INDEX IF NOT EXISTS idx_api_response_cache_expiry
+              ON api_response_cache(provider,expires_at,stale_until);
+            CREATE INDEX IF NOT EXISTS idx_api_request_log_provider_time
+              ON api_request_log(provider,requested_at);
+            CREATE INDEX IF NOT EXISTS idx_api_request_log_credential_time
+              ON api_request_log(provider,credential_hash,requested_at);
+        ''')
+        target.commit()
+
+        marker = target.execute(
+            "SELECT value FROM api_state_meta WHERE key='legacy_assets_migrated_v2'"
+        ).fetchone()
+        if marker:
+            return
+
         if os.path.abspath(DB_PATH) != os.path.abspath(API_STATE_DB_PATH) and os.path.exists(DB_PATH):
             source = sqlite3.connect(DB_PATH, timeout=30)
             source.execute('PRAGMA busy_timeout=30000')
             source.row_factory = sqlite3.Row
-            available = {r[0] for r in source.execute(
+            available = {row[0] for row in source.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()}
+
+            def columns_for(table):
+                return {row[1] for row in source.execute(f'PRAGMA table_info({table})').fetchall()}
+
+            def value_expr(columns, name, default_sql):
+                return f'COALESCE({name},{default_sql})' if name in columns else default_sql
+
             target.execute('BEGIN IMMEDIATE')
             if 'api_response_cache' in available:
-                cur = source.execute('''SELECT cache_key,provider,endpoint,payload,status_code,
-                                        fetched_at,expires_at,stale_until FROM api_response_cache''')
+                cols = columns_for('api_response_cache')
+                if 'cache_key' in cols and 'payload' in cols:
+                    selected = [
+                        'cache_key', value_expr(cols, 'provider', "'legacy'"),
+                        value_expr(cols, 'endpoint', "''"), value_expr(cols, 'payload', "X'7B7D'"),
+                        value_expr(cols, 'status_code', '200'), value_expr(cols, 'fetched_at', '0'),
+                        value_expr(cols, 'expires_at', '0'), value_expr(cols, 'stale_until', '0'),
+                    ]
+                    cursor = source.execute(
+                        'SELECT ' + ','.join(selected) + ' FROM api_response_cache'
+                    )
+                    while True:
+                        rows = cursor.fetchmany(500)
+                        if not rows:
+                            break
+                        target.executemany(
+                            '''INSERT OR IGNORE INTO api_response_cache
+                               (cache_key,provider,endpoint,payload,status_code,fetched_at,expires_at,stale_until)
+                               VALUES(?,?,?,?,?,?,?,?)''',
+                            [tuple(row) for row in rows]
+                        )
+
+            if 'api_request_log' in available:
+                cols = columns_for('api_request_log')
+                selected_names = []
+                if 'id' in cols:
+                    selected_names.append(('id', 'id'))
+                selected_names.extend([
+                    ('provider', value_expr(cols, 'provider', "'legacy'")),
+                    ('endpoint', value_expr(cols, 'endpoint', "''")),
+                    ('requested_at', value_expr(cols, 'requested_at', '0')),
+                    ('status_code', value_expr(cols, 'status_code', '0')),
+                    ('credential_hash', value_expr(cols, 'credential_hash', "'legacy'")),
+                ])
+                insert_columns = [name for name, _ in selected_names]
+                sql = 'SELECT ' + ','.join(expr for _, expr in selected_names) + ' FROM api_request_log'
+                cursor = source.execute(sql)
+                placeholders = ','.join('?' for _ in insert_columns)
                 while True:
-                    rows = cur.fetchmany(500)
-                    if not rows: break
+                    rows = cursor.fetchmany(1000)
+                    if not rows:
+                        break
                     target.executemany(
-                        '''INSERT OR IGNORE INTO api_response_cache
-                           (cache_key,provider,endpoint,payload,status_code,fetched_at,expires_at,stale_until)
-                           VALUES(?,?,?,?,?,?,?,?)''',
+                        f'INSERT OR IGNORE INTO api_request_log({",".join(insert_columns)}) VALUES({placeholders})',
                         [tuple(row) for row in rows]
                     )
-            if 'api_request_log' in available:
-                cols = {r[1] for r in source.execute('PRAGMA table_info(api_request_log)').fetchall()}
-                credential_expr = 'credential_hash' if 'credential_hash' in cols else "'legacy'"
-                cur = source.execute(
-                    f'''SELECT id,provider,endpoint,requested_at,status_code,{credential_expr}
-                        FROM api_request_log'''
-                )
-                while True:
-                    rows = cur.fetchmany(1000)
-                    if not rows: break
+
+            if 'api_cache_stats' in available:
+                cols = columns_for('api_cache_stats')
+                if 'provider' in cols:
+                    selected = [
+                        'provider', value_expr(cols, 'fresh_hits', '0'),
+                        value_expr(cols, 'stale_hits', '0'),
+                    ]
+                    rows = source.execute('SELECT ' + ','.join(selected) + ' FROM api_cache_stats').fetchall()
                     target.executemany(
-                        '''INSERT OR IGNORE INTO api_request_log
-                           (id,provider,endpoint,requested_at,status_code,credential_hash)
+                        'INSERT OR IGNORE INTO api_cache_stats(provider,fresh_hits,stale_hits) VALUES(?,?,?)',
+                        [tuple(row) for row in rows]
+                    )
+
+            if 'api_provider_state' in available:
+                cols = columns_for('api_provider_state')
+                if 'provider' in cols:
+                    selected = [
+                        'provider', value_expr(cols, 'cooldown_until', '0'),
+                        value_expr(cols, 'last_status_code', '0'),
+                        value_expr(cols, 'last_error', "''"),
+                    ]
+                    rows = source.execute('SELECT ' + ','.join(selected) + ' FROM api_provider_state').fetchall()
+                    target.executemany(
+                        'INSERT OR IGNORE INTO api_provider_state(provider,cooldown_until,last_status_code,last_error) VALUES(?,?,?,?)',
+                        [tuple(row) for row in rows]
+                    )
+
+            if 'api_provider_state_scoped' in available:
+                cols = columns_for('api_provider_state_scoped')
+                if {'provider', 'credential_hash', 'scope'}.issubset(cols):
+                    selected = [
+                        'provider', 'credential_hash', 'scope',
+                        value_expr(cols, 'cooldown_until', '0'),
+                        value_expr(cols, 'last_status_code', '0'),
+                        value_expr(cols, 'last_error', "''"),
+                    ]
+                    rows = source.execute('SELECT ' + ','.join(selected) + ' FROM api_provider_state_scoped').fetchall()
+                    target.executemany(
+                        '''INSERT OR IGNORE INTO api_provider_state_scoped
+                           (provider,credential_hash,scope,cooldown_until,last_status_code,last_error)
                            VALUES(?,?,?,?,?,?)''',
                         [tuple(row) for row in rows]
                     )
-            if 'api_cache_stats' in available:
-                rows = source.execute('SELECT provider,fresh_hits,stale_hits FROM api_cache_stats').fetchall()
-                target.executemany(
-                    'INSERT OR IGNORE INTO api_cache_stats(provider,fresh_hits,stale_hits) VALUES(?,?,?)',
-                    [tuple(row) for row in rows]
-                )
-            if 'api_provider_state' in available:
-                rows = source.execute('SELECT provider,cooldown_until,last_status_code,last_error FROM api_provider_state').fetchall()
-                target.executemany(
-                    'INSERT OR IGNORE INTO api_provider_state(provider,cooldown_until,last_status_code,last_error) VALUES(?,?,?,?)',
-                    [tuple(row) for row in rows]
-                )
-            if 'api_provider_state_scoped' in available:
-                rows = source.execute('''SELECT provider,credential_hash,scope,cooldown_until,
-                                         last_status_code,last_error FROM api_provider_state_scoped''').fetchall()
-                target.executemany(
-                    '''INSERT OR IGNORE INTO api_provider_state_scoped
-                       (provider,credential_hash,scope,cooldown_until,last_status_code,last_error)
-                       VALUES(?,?,?,?,?,?)''',
-                    [tuple(row) for row in rows]
-                )
+
         target.execute(
-            "INSERT OR REPLACE INTO api_state_meta(key,value) VALUES('legacy_assets_migrated_v1',?)",
+            "INSERT OR REPLACE INTO api_state_meta(key,value) VALUES('legacy_assets_migrated_v2',?)",
             (datetime.now(TZ).isoformat(timespec='seconds'),)
         )
         target.commit()
@@ -452,8 +552,6 @@ def init_api_state_db():
         if source is not None:
             source.close()
         target.close()
-
-
 def _api_request_fingerprint(params=None, headers=None):
     """Identifies a credential without storing its raw value."""
     secret_parts = []
