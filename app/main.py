@@ -195,6 +195,16 @@ SGS_CACHE_TTL = 12 * 3600
 BENCHMARK_CACHE = {'time': 0, 'data': {}}
 BENCHMARK_CACHE_TTL = 6 * 3600
 
+# A reconstrução do histórico patrimonial pode exigir dezenas de chamadas à
+# brapi no plano gratuito (1 ticker por requisição). Ela roda fora da resposta
+# HTTP do dashboard para não bloquear a interface.
+PERFORMANCE_HISTORY_LOCK = threading.RLock()
+PERFORMANCE_HISTORY_STATE = {
+    'status': 'idle', 'signature': '', 'pending_signature': '',
+    'result': None, 'error': '', 'updated_at': ''
+}
+PERFORMANCE_HISTORY_PENDING_INPUTS = None
+
 # A cota gratuita da brapi permite uma chamada simultânea e 1 ticker por chamada.
 # O orçamento local usa 10.000 requisições em 30 dias para reservar margem para
 # outras aplicações que compartilhem o mesmo token.
@@ -1016,6 +1026,16 @@ def init_db():
       PRIMARY KEY(item_id,investment_id)
     );
     CREATE INDEX IF NOT EXISTS idx_pluggy_position_snapshots_ticker ON pluggy_position_snapshots(ticker);
+    CREATE TABLE IF NOT EXISTS pluggy_sync_runs (
+      run_id TEXT PRIMARY KEY,
+      item_id TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'running',
+      last_investment_id TEXT DEFAULT '',
+      error TEXT DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_pluggy_sync_runs_item_started ON pluggy_sync_runs(item_id,started_at);
     CREATE TABLE IF NOT EXISTS pluggy_transactions (
       transaction_id TEXT PRIMARY KEY,
       item_id TEXT NOT NULL,
@@ -2266,7 +2286,14 @@ def _pluggy_sync_impl():
                'dividends_imported':0,'duplicates_ignored':0,'b3_duplicates_reconciled':0,
                'skipped_recent':skipped_recent,'interval_minutes':sync_interval_minutes,'warnings':[]}
     now_text = datetime.now(TZ).isoformat(timespec='seconds')
+    sync_run_id = uuid.uuid4().hex
     try:
+        for local_item in items:
+            db().execute(
+                "INSERT INTO pluggy_sync_runs(run_id,item_id,started_at,status) VALUES(?,?,?,'running')",
+                (sync_run_id + ':' + str(local_item['item_id']), str(local_item['item_id']), now_text)
+            )
+        db().commit()
         _pluggy_api_key()
         summary['b3_duplicates_reconciled'] = _reconcile_existing_pluggy_b3_duplicates()
         for local_item in items:
@@ -2334,6 +2361,10 @@ def _pluggy_sync_impl():
                     elif state == 'matched_existing': summary['operations_matched'] += 1
                     elif state == 'imported_provento': summary['dividends_imported'] += 1
                     elif state == 'provento_duplicado_ignorado': summary['duplicates_ignored'] += 1
+                db().execute(
+                    "UPDATE pluggy_sync_runs SET last_investment_id=? WHERE run_id=? AND status='running'",
+                    (investment_id, sync_run_id + ':' + str(item_id))
+                )
             pluggy_snapshot_date = snapshot_date_for() or datetime.now(TZ).date().isoformat()
             snapshot_fixed, snapshot_market, skipped_fixed = _pluggy_fixed_income_snapshot_rows(
                 item_id, investments, pluggy_snapshot_date, now_text
@@ -2345,14 +2376,32 @@ def _pluggy_sync_impl():
                 summary['warnings'].append(f'{skipped_fixed} posição(ões) de renda fixa não importada(s): faltam indexador ou taxa contratual.')
             db().execute('UPDATE pluggy_items SET last_synced_at=?,updated_at=? WHERE item_id=?',
                          (now_text,now_text,item_id))
+            db().execute(
+                "UPDATE pluggy_sync_runs SET status='completed',finished_at=?,last_investment_id=?,error='' WHERE run_id=?",
+                (datetime.now(TZ).isoformat(timespec='seconds'), investment_id if investments else '', sync_run_id + ':' + str(item_id))
+            )
             db().commit()
     except requests.HTTPError as exc:
         db().rollback()
+        try:
+            db().execute("UPDATE pluggy_sync_runs SET status='failed',finished_at=?,error=? WHERE run_id LIKE ? AND status='running'",
+                         (datetime.now(TZ).isoformat(timespec='seconds'), safe_error_text(exc, 180), sync_run_id + ':%'))
+            db().commit()
+        except sqlite3.Error:
+            try: db().rollback()
+            except sqlite3.Error: pass
         code = exc.response.status_code if exc.response is not None else 502
         return json_error('Falha ao sincronizar Pluggy (HTTP %s). Confira itemId, autorização MeuPluggy e credenciais.' % code, 400)
     except Exception as exc:
         db().rollback()
-        app.logger.exception('Falha durante sincronização Pluggy')
+        try:
+            db().execute("UPDATE pluggy_sync_runs SET status='failed',finished_at=?,error=? WHERE run_id LIKE ? AND status='running'",
+                         (datetime.now(TZ).isoformat(timespec='seconds'), safe_error_text(exc, 180), sync_run_id + ':%'))
+            db().commit()
+        except sqlite3.Error:
+            try: db().rollback()
+            except sqlite3.Error: pass
+        app.logger.exception('Falha durante sincronização Pluggy; os checkpoints concluídos foram preservados e a próxima execução poderá retomar pelos IDs externos já importados.')
         return json_error('Falha na sincronização Pluggy: ' + safe_error_text(exc, 140), 400)
     # Após atualizar as posições/movimentações, reconcilia proventos dos ativos atuais.
     try:
@@ -4643,7 +4692,8 @@ def carteira(use_cached_quotes=False, force_refresh_quotes=False):
         qty, avg = posicao(ticker)
         pluggy_position = db().execute(
             "SELECT s.asset_type, SUM(s.quantity) AS quantity, "
-            "SUM(s.amount_original) AS amount_original, SUM(s.balance) AS balance "
+            "SUM(s.amount_original) AS amount_original, SUM(s.balance) AS balance, "
+            "MAX(s.snapshot_at) AS snapshot_at "
             "FROM pluggy_position_snapshots s JOIN pluggy_items i ON i.item_id=s.item_id "
             "WHERE i.active=1 AND UPPER(s.ticker)=? GROUP BY UPPER(s.ticker)",
             (ticker,)
@@ -4746,7 +4796,7 @@ def carteira(use_cached_quotes=False, force_refresh_quotes=False):
             display_price = observed_price
         else:
             display_price = None
-        itens.append({'ticker':ticker,'tipo':kind,'quantidade':round(qty,6),'preco_medio':round(avg,2),'preco_atual':round(display_price,2) if display_price is not None else None,'cotacao_disponivel':quote_available,'cotacao_desatualizada':stale_quote_available,'cotacao_referencia_disponivel':price_reference_available,'valor_atual_origem':quote_source,'rentabilidade_parcial':not has_usable_valuation,'cotacao_ultima_atualizacao':quote.get('quoteLastUpdated'),'cotacao_origem':quote_source,'investido':round(cost,2),'valor_atual':round(value,2),'lucro':round(variation_value,2) if variation_value is not None else None,'lucro_pct':profitability_pct,'variacao_valor':round(variation_value,2) if variation_value is not None else None,'variacao_pct':variation_pct,'pluggy_variacao_pct':pluggy_return['variation_pct'] if pluggy_return else None,'pluggy_variacao_valor':pluggy_return['variation_value'] if pluggy_return else None,'pluggy_retorno_pct':pluggy_return['total_pct'] if pluggy_return else None,'pluggy_retorno_valor':pluggy_return['total_value'] if pluggy_return else None,'pluggy_investido_historico':pluggy_return['invested'] if pluggy_return else None,'pluggy_primeira_compra':pluggy_return['first_buy'] if pluggy_return else None,'proventos':0.0 if kind=='renda_fixa' else round(dividends,2),'calculo_indexador':fixed_calc_ok if kind=='renda_fixa' else None,'aviso_calculo':fixed_calc_warning if kind=='renda_fixa' else None,'saldo_com_descontos':fixed_tax_estimate.get('saldo') if kind=='renda_fixa' else None,'desconto_iof_estimado':fixed_tax_estimate.get('iof') if kind=='renda_fixa' else None,'desconto_ir_estimado':fixed_tax_estimate.get('ir') if kind=='renda_fixa' else None,'aviso_saldo_com_descontos':fixed_tax_estimate.get('mensagem') if kind=='renda_fixa' else None,'pl':quote.get('priceEarnings'),'pvp':quote.get('priceToBook') or quote.get('priceToBookRatio') or quote.get('priceToBookValue'),'avaliacao':_fundamental_rating(quote, kind),'preco_teto_bazin':round(ceiling,2) if ceiling else None,'abaixo_do_teto':bool(ceiling and market_quote_available and observed_price and observed_price<=ceiling),'nome':quote.get('longName') or quote.get('shortName') or default_name or ticker,'logo':quote.get('logourl') or quote.get('logo') or ('/static/lonely-wallet-logo.png' if kind=='renda_fixa' else f'https://icons.brapi.dev/icons/{ticker}.svg'),'variacao_dia':variation_pct})
+        itens.append({'ticker':ticker,'tipo':kind,'quantidade':round(qty,6),'preco_medio':round(avg,2),'preco_atual':round(display_price,2) if display_price is not None else None,'cotacao_disponivel':quote_available,'cotacao_desatualizada':stale_quote_available,'cotacao_referencia_disponivel':price_reference_available,'valor_atual_origem':quote_source,'rentabilidade_parcial':not has_usable_valuation,'cotacao_ultima_atualizacao':quote.get('quoteLastUpdated'),'cotacao_origem':quote_source,'investido':round(cost,2),'valor_atual':round(value,2),'lucro':round(variation_value,2) if variation_value is not None else None,'lucro_pct':profitability_pct,'variacao_valor':round(variation_value,2) if variation_value is not None else None,'variacao_pct':variation_pct,'pluggy_variacao_pct':pluggy_return['variation_pct'] if pluggy_return else None,'pluggy_variacao_valor':pluggy_return['variation_value'] if pluggy_return else None,'pluggy_retorno_pct':pluggy_return['total_pct'] if pluggy_return else None,'pluggy_retorno_valor':pluggy_return['total_value'] if pluggy_return else None,'pluggy_investido_historico':pluggy_return['invested'] if pluggy_return else None,'pluggy_primeira_compra':pluggy_return['first_buy'] if pluggy_return else None,'proventos':0.0 if kind=='renda_fixa' else round(dividends,2),'calculo_indexador':fixed_calc_ok if kind=='renda_fixa' else None,'aviso_calculo':fixed_calc_warning if kind=='renda_fixa' else None,'saldo_com_descontos':fixed_tax_estimate.get('saldo') if kind=='renda_fixa' else None,'desconto_iof_estimado':fixed_tax_estimate.get('iof') if kind=='renda_fixa' else None,'desconto_ir_estimado':fixed_tax_estimate.get('ir') if kind=='renda_fixa' else None,'aviso_saldo_com_descontos':fixed_tax_estimate.get('mensagem') if kind=='renda_fixa' else None,'pl':quote.get('priceEarnings'),'pvp':quote.get('priceToBook') or quote.get('priceToBookRatio') or quote.get('priceToBookValue'),'avaliacao':_fundamental_rating(quote, kind),'preco_teto_bazin':round(ceiling,2) if ceiling else None,'abaixo_do_teto':bool(ceiling and market_quote_available and observed_price and observed_price<=ceiling),'nome':quote.get('longName') or quote.get('shortName') or default_name or ticker,'logo':quote.get('logourl') or quote.get('logo') or ('/static/lonely-wallet-logo.png' if kind=='renda_fixa' else f'https://icons.brapi.dev/icons/{ticker}.svg'),'variacao_dia':variation_pct,'pluggy_snapshot_at':pluggy_position['snapshot_at'] if pluggy_position else None,'pluggy_snapshot':bool(pluggy_position)})
     allocation={}
     for item in itens: allocation[item['tipo']]=allocation.get(item['tipo'],0)+item['valor_atual']
     return jsonify(itens=itens,resumo={'investido':round(invested,2),'atual':round(actual,2),'lucro':round(actual-invested,2),'lucro_pct':round((actual/invested-1)*100,2) if invested else 0,'proventos':round(received,2),'ativos':len(itens)},alocacao=allocation)
@@ -5392,14 +5442,18 @@ def fetch_portfolio_price_history(operations, extra_positions=None):
         if symbol:
             asset_types.setdefault(symbol, str(position.get('tipo') or '').strip().lower())
             try:
-                first_dates.append(date.fromisoformat(str(position.get('data_base') or '')[:10]))
+                first_dates.append(date.fromisoformat(str(position.get('data_base') or position.get('pluggy_snapshot_at') or '')[:10]))
             except (TypeError, ValueError):
                 pass
 
     symbols = sorted(asset_types)
     if not symbols:
         return {}
-    cache_key = ('price-only-v2',) + tuple(sorted((symbol, asset_types[symbol]) for symbol in symbols))
+    coverage_start = min(first_dates).isoformat() if first_dates else ''
+    # A carteira pode ganhar operações mais antigas após uma importação B3/Pluggy.
+    # Incluir a menor data no cache evita reutilizar uma série FII que começou
+    # depois da nova primeira operação e parecia completa por engano.
+    cache_key = ('price-only-v3', coverage_start) + tuple(sorted((symbol, asset_types[symbol]) for symbol in symbols))
     now = time.time()
     cached = PORTFOLIO_HISTORY_CACHE.get(cache_key)
     if cached:
@@ -5425,16 +5479,10 @@ def fetch_portfolio_price_history(operations, extra_positions=None):
                     headers=headers
                 )
                 response_data.update({symbol: [{**point, 'fonte': 'brapi · histórico de ações'} for point in points] for symbol, points in found.items()})
-            # A resposta pode ser parcial mesmo com HTTP 200. Consulte individualmente
-            # cada símbolo ausente; não deixe um ticker sem cobertura esconder os demais.
-            missing_after_batch = [symbol for symbol in stock_symbols if symbol not in response_data]
-            for symbol in missing_after_batch:
-                found = _request_historical_batch(
-                    stock_url, [symbol],
-                    {'range': range_value, 'interval': '1d', 'sortOrder': 'asc'},
-                    headers=headers
-                )
-                response_data.update({symbol: [{**point, 'fonte': 'brapi · histórico de ações'} for point in points] for symbol, points in found.items()})
+            # Não transformar uma resposta parcial em dezenas de chamadas
+            # individuais no carregamento do dashboard. Os tickers sem série
+            # permanecem sinalizados como histórico incompleto e podem ser
+            # reconsultados em uma atualização posterior após expirar o cache.
             if all(symbol in response_data for symbol in stock_symbols):
                 break
 
@@ -5451,12 +5499,8 @@ def fetch_portfolio_price_history(operations, extra_positions=None):
                 fii_url, batch, fii_params, response_key='fiis', headers=headers
             )
             response_data.update({symbol: [{**point, 'fonte': 'brapi · histórico de FIIs'} for point in points] for symbol, points in fii_found.items()})
-        # Uma resposta parcial não deve encerrar a busca dos demais FIIs.
-        for symbol in [item for item in fii_symbols if item not in response_data]:
-            fii_found = _request_historical_batch(
-                fii_url, [symbol], fii_params, response_key='fiis', headers=headers
-            )
-            response_data.update({symbol: [{**point, 'fonte': 'brapi · histórico de FIIs'} for point in points] for symbol, points in fii_found.items()})
+        # Tickers ausentes permanecem identificados como histórico incompleto.
+        # Evita chamadas individuais em cascata quando a resposta em lote é parcial.
 
     # Classes sem endpoint histórico específico (ex.: renda fixa cadastrada manualmente)
     # não podem bloquear as séries de ativos negociados em bolsa. Para classes não reconhecidas,
@@ -5474,23 +5518,24 @@ def fetch_portfolio_price_history(operations, extra_positions=None):
     PORTFOLIO_HISTORY_CACHE[cache_key] = {'time': now, 'data': response_data}
     return response_data
 
-def _market_cost_basis_at_date(executed, snapshot_map, base_day, cutoff, market_tickers):
-    """Reconstrói o custo médio das posições de bolsa na data consultada.
+def _market_cost_basis_at_date(executed, snapshot_map, base_day, cutoff, market_tickers, include_details=False):
+    """Reconstrói o custo médio de ativos negociados em bolsa sem inventar custos.
 
-    A série do gráfico representa o custo das posições mantidas, não o fluxo de
-    caixa líquido de vendas. Com saldo-base, operações posteriores são aplicadas
-    para frente e operações entre o fechamento consultado e a fotografia são
-    revertidas para trás. Vendas reduzem o custo pelo custo médio, não pelo preço
-    de venda, para não transformar lucro/prejuízo realizado em capital investido.
+    Quando o histórico anterior a uma venda está incompleto, o ticker é marcado
+    como custo desconhecido. O preço de venda nunca é usado como substituto do
+    preço de aquisição. include_details retorna o custo por ticker e a lista de
+    posições cujo custo não pôde ser comprovado.
     """
     market_tickers = set(market_tickers or ())
     if not market_tickers:
-        return 0.0
+        return {'basis': 0.0, 'basis_by_ticker': {}, 'unknown_tickers': []} if include_details else 0.0
 
     def average_cost_before(target):
         quantity = 0.0
         basis = 0.0
+        incomplete = False
         target_key = (target['_date'], int(target.get('id') or 0))
+        target_qty = max(0.0, float(target.get('_quantity') or 0))
         for previous in executed:
             if (previous['_date'], int(previous.get('id') or 0)) >= target_key:
                 break
@@ -5502,24 +5547,24 @@ def _market_cost_basis_at_date(executed, snapshot_map, base_day, cutoff, market_
                 basis += qty * max(0.0, float(previous.get('_price') or 0)) + max(0.0, float(previous.get('_costs') or 0))
             elif quantity > 1e-8:
                 sold = min(quantity, qty)
-                average = basis / quantity
+                average = basis / quantity if quantity > 1e-8 else 0.0
                 quantity -= sold
                 basis = max(0.0, basis - average * sold)
-        if quantity > 1e-8 and basis > 0:
-            return basis / quantity
-        return max(0.0, float(target.get('_price') or 0))
+                if qty - sold > 1e-8:
+                    incomplete = True
+            else:
+                incomplete = True
+        if incomplete or quantity + 1e-8 < target_qty or quantity <= 1e-8 or basis <= 0:
+            return None
+        return basis / quantity
 
     positions = {}
     snapshot_map = snapshot_map or {}
     for ticker in market_tickers:
         base = snapshot_map.get(ticker)
-        if base and base_day:
-            quantity = max(0.0, float(base.get('quantidade') or 0))
-            basis = quantity * max(0.0, float(base.get('preco_medio') or 0))
-        else:
-            quantity = 0.0
-            basis = 0.0
-        positions[ticker] = {'quantity': quantity, 'basis': basis}
+        quantity = max(0.0, float(base.get('quantidade') or 0)) if base and base_day else 0.0
+        basis = quantity * max(0.0, float(base.get('preco_medio') or 0)) if base and base_day else 0.0
+        positions[ticker] = {'quantity': quantity, 'basis': basis, 'unknown_basis': bool(quantity > 1e-8 and basis <= 0)}
 
     if base_day and cutoff >= base_day:
         for op in executed:
@@ -5531,11 +5576,15 @@ def _market_cost_basis_at_date(executed, snapshot_map, base_day, cutoff, market_
             if op.get('lado') == 'compra':
                 position['quantity'] += qty
                 position['basis'] += amount
-            elif position['quantity'] > 1e-8:
-                sold = min(position['quantity'], qty)
-                average = position['basis'] / position['quantity']
-                position['quantity'] -= sold
-                position['basis'] = max(0.0, position['basis'] - average * sold)
+            else:
+                available = position['quantity']
+                sold = min(available, qty)
+                if sold > 1e-8:
+                    average = position['basis'] / available if available > 1e-8 else 0.0
+                    position['basis'] = max(0.0, position['basis'] - average * sold)
+                    position['quantity'] = max(0.0, available - sold)
+                if qty - sold > 1e-8:
+                    position['unknown_basis'] = True
     elif base_day:
         for op in reversed(executed):
             if not (cutoff < op['_date'] <= base_day) or op['_ticker'] not in market_tickers:
@@ -5544,10 +5593,23 @@ def _market_cost_basis_at_date(executed, snapshot_map, base_day, cutoff, market_
             qty = max(0.0, float(op.get('_quantity') or 0))
             amount = qty * max(0.0, float(op.get('_price') or 0)) + max(0.0, float(op.get('_costs') or 0))
             if op.get('lado') == 'compra':
-                position['quantity'] = max(0.0, position['quantity'] - qty)
-                position['basis'] = max(0.0, position['basis'] - amount)
+                available = position['quantity']
+                if available + 1e-8 < qty:
+                    position['unknown_basis'] = True
+                removable = min(available, qty)
+                # Reverter uma compra significa retirar o custo real daquela
+                # aquisição, não o custo médio posterior da carteira. Usar a
+                # média atual aqui distorce o custo anterior quando o preço da
+                # compra é diferente da média acumulada.
+                purchase_unit_cost = (amount / qty) if qty > 1e-8 else 0.0
+                removed_basis = purchase_unit_cost * removable
+                position['basis'] = max(0.0, position['basis'] - removed_basis)
+                position['quantity'] = max(0.0, available - removable)
             else:
-                average = (position['basis'] / position['quantity']) if position['quantity'] > 1e-8 else average_cost_before(op)
+                average = (position['basis'] / position['quantity']) if position['quantity'] > 1e-8 and position['basis'] > 0 else average_cost_before(op)
+                if average is None:
+                    position['unknown_basis'] = True
+                    average = 0.0
                 position['quantity'] += qty
                 position['basis'] += qty * average
     else:
@@ -5562,13 +5624,28 @@ def _market_cost_basis_at_date(executed, snapshot_map, base_day, cutoff, market_
             if op.get('lado') == 'compra':
                 position['quantity'] += qty
                 position['basis'] += amount
-            elif position['quantity'] > 1e-8:
-                sold = min(position['quantity'], qty)
-                average = position['basis'] / position['quantity']
-                position['quantity'] -= sold
-                position['basis'] = max(0.0, position['basis'] - average * sold)
+            else:
+                available = position['quantity']
+                sold = min(available, qty)
+                if sold > 1e-8:
+                    average = position['basis'] / available if available > 1e-8 else 0.0
+                    position['basis'] = max(0.0, position['basis'] - average * sold)
+                    position['quantity'] = max(0.0, available - sold)
+                if qty - sold > 1e-8:
+                    position['unknown_basis'] = True
 
-    return sum(max(0.0, float(position['basis'])) for position in positions.values())
+    basis_by_ticker = {
+        ticker: max(0.0, float(position['basis']))
+        for ticker, position in positions.items()
+    }
+    unknown_tickers = sorted(
+        ticker for ticker, position in positions.items()
+        if position.get('unknown_basis')
+    )
+    total = sum(basis_by_ticker.values())
+    if include_details:
+        return {'basis': total, 'basis_by_ticker': basis_by_ticker, 'unknown_tickers': unknown_tickers}
+    return total
 
 
 def build_portfolio_performance(operations, dividends, history=None, imported_positions=None, snapshot_date=None, current_positions=None):
@@ -5588,10 +5665,21 @@ def build_portfolio_performance(operations, dividends, history=None, imported_po
         str(row.get('ticker') or '').upper(): str(row.get('tipo') or '').strip().lower()
         for row in imported_positions if row.get('ticker')
     })
+    current_positions = [dict(row) for row in (current_positions or [])]
+    current_map = {str(row.get('ticker') or '').upper(): row for row in current_positions if row.get('ticker')}
+    for row in current_positions:
+        ticker = str(row.get('ticker') or '').strip().upper()
+        kind = str(row.get('tipo') or '').strip().lower()
+        if ticker and kind:
+            all_types[ticker] = kind
+    pluggy_current_map = {
+        ticker: row for ticker, row in current_map.items()
+        if row.get('pluggy_snapshot') and row.get('pluggy_snapshot_at')
+    }
     non_market_types = set()
     fixed_income_symbols = {symbol for symbol, kind in all_types.items() if kind in {'renda_fixa', 'tesouro', 'tesouro_direto'}}
     all_tickers = sorted(symbol for symbol, kind in all_types.items() if kind not in non_market_types)
-    history = history if history is not None else fetch_portfolio_price_history(operations, imported_positions)
+    history = history if history is not None else fetch_portfolio_price_history(operations, [*imported_positions, *current_positions])
     normalized = {}
     history_sources = {}
     for ticker, points in (history or {}).items():
@@ -5628,10 +5716,11 @@ def build_portfolio_performance(operations, dividends, history=None, imported_po
                 first_date_by_ticker[ticker] = min(first_date_by_ticker.get(ticker, operation_date), operation_date)
         except (TypeError, ValueError):
             pass
-    for position in imported_positions:
+    for position in [*imported_positions, *pluggy_current_map.values()]:
         ticker = str(position.get('ticker') or '').strip().upper()
         try:
-            position_date = date.fromisoformat(str(position.get('data_base') or snapshot_date or '')[:10])
+            raw_position_date = position.get('data_base') or position.get('pluggy_snapshot_at') or snapshot_date or ''
+            position_date = date.fromisoformat(str(raw_position_date)[:10])
             if ticker:
                 first_date_by_ticker[ticker] = min(first_date_by_ticker.get(ticker, position_date), position_date)
         except (TypeError, ValueError):
@@ -5649,14 +5738,12 @@ def build_portfolio_performance(operations, dividends, history=None, imported_po
         'series_12m': [], 'series_total': [], 'rentabilidade_12m': None,
         'rentabilidade_total': None, 'meses_disponiveis': 0,
         'primeiro_mes': None, 'historico_completo': False,
-        'ativos_sem_historico': missing_symbols,
+        'ativos_sem_historico': missing_symbols, 'ativos_custo_desconhecido': [],
         'ativos_com_historico': len(historical_tickers), 'total_ativos': len(all_tickers),
         'fontes_historico': history_sources,
         'historico_parcial': bool(missing_symbols) or bool(snapshot_date)
     }
     snapshot_map = {str(row.get('ticker') or '').upper(): row for row in imported_positions if row.get('ticker')}
-    current_map = {str(row.get('ticker') or '').upper(): row for row in (current_positions or []) if row.get('ticker')}
-
     def snapshot_only_result():
         snapshot_cost = sum(float(row.get('quantidade') or 0) * float(row.get('preco_medio') or 0) for row in imported_positions)
         snapshot_value = sum(float(row.get('quantidade') or 0) * float(row.get('preco_base') or 0) for row in imported_positions)
@@ -5672,7 +5759,7 @@ def build_portfolio_performance(operations, dividends, history=None, imported_po
 
     if not normalized and not fixed_income_symbols and not all_tickers:
         return snapshot_only_result()
-    if not operations and not snapshot_map:
+    if not operations and not snapshot_map and not pluggy_current_map:
         return empty
 
     def adjusted_operation_values(ticker, trade_date, quantity, price, costs):
@@ -5695,14 +5782,21 @@ def build_portfolio_performance(operations, dividends, history=None, imported_po
         except (TypeError, ValueError):
             continue
     executed.sort(key=lambda item: (item['_date'], int(item.get('id') or 0)))
-    if not executed and not snapshot_map:
+    if not executed and not snapshot_map and not pluggy_current_map:
         return snapshot_only_result()
     base_day = date.fromisoformat(snapshot_date) if snapshot_date else None
-    if not executed and not base_day:
+    if not executed and not base_day and not pluggy_current_map:
         return snapshot_only_result()
+    pluggy_anchor_days = []
+    for row in pluggy_current_map.values():
+        try:
+            pluggy_anchor_days.append(date.fromisoformat(str(row.get('pluggy_snapshot_at') or '')[:10]))
+        except (TypeError, ValueError):
+            pass
     first_operation = min((item['_date'] for item in executed), default=base_day)
     today = datetime.now(TZ).date()
-    history_start = min(first_operation, base_day) if base_day else first_operation
+    anchors = [value for value in (first_operation, base_day, *pluggy_anchor_days) if value]
+    history_start = min(anchors) if anchors else today
     month_cursor = date(history_start.year, history_start.month, 1)
     month_end = date(today.year, today.month, 1)
     month_keys = []
@@ -5745,10 +5839,25 @@ def build_portfolio_performance(operations, dividends, history=None, imported_po
                 current = holdings.get(op['_ticker'], 0.0)
                 current += op['_quantity'] if op.get('lado') == 'compra' else -op['_quantity']
                 holdings[op['_ticker']] = current
+        for ticker, row in pluggy_current_map.items():
+            try:
+                anchor = date.fromisoformat(str(row.get('pluggy_snapshot_at') or '')[:10])
+            except (TypeError, ValueError):
+                continue
+            if cutoff >= anchor:
+                holdings[ticker] = max(0.0, float(row.get('quantidade') or 0))
         return {ticker: max(0.0, qty) for ticker, qty in holdings.items() if qty > 1e-8}
 
     def fixed_income_value(ticker, cutoff):
         """Reconstrói os lotes de renda fixa e aplica o indexador até o fechamento mensal."""
+        pluggy_row = pluggy_current_map.get(ticker)
+        if pluggy_row:
+            try:
+                pluggy_date = date.fromisoformat(str(pluggy_row.get('pluggy_snapshot_at') or '')[:10])
+            except (TypeError, ValueError):
+                pluggy_date = None
+            if pluggy_date and cutoff >= pluggy_date:
+                return max(0.0, float(pluggy_row.get('valor_atual') or 0))
         lots = []
         if base_day and snapshot_map and cutoff >= base_day:
             base = snapshot_map.get(ticker)
@@ -5890,17 +5999,56 @@ def build_portfolio_performance(operations, dividends, history=None, imported_po
     def market_cost_basis_through(cutoff):
         return _market_cost_basis_at_date(
             executed, snapshot_map, base_day, cutoff,
-            set(all_tickers) - fixed_income_symbols
+            set(all_tickers) - fixed_income_symbols, include_details=True
         )
 
+    def _neutral_value_for_unknown_cost(ticker, quantity, cutoff):
+        """Use market value as a zero-return reference when acquisition cost is unknowable."""
+        if quantity <= 1e-8:
+            return 0.0
+        points = normalized.get(ticker) or []
+        previous = next((point for point in reversed(points) if point['data'] <= cutoff), None)
+        if previous and (cutoff - previous['data']).days <= 45:
+            return max(0.0, quantity * float(previous['preco']))
+        if cutoff >= today:
+            row = current_map.get(ticker) or {}
+            try:
+                current_value = float(row.get('valor_atual') or 0)
+                if current_value > 0:
+                    return current_value
+            except (TypeError, ValueError):
+                pass
+        # Sem cotação histórica, usa exatamente o mesmo valor de referência
+        # empregado em portfolio_value(), evitando ganho fictício por base zero.
+        return max(0.0, fallback_cost_value(ticker, cutoff, quantity))
+
     def applied_capital_through(cutoff):
-        """Combina custo médio para ativos de bolsa e regra preservada de renda fixa."""
+        """Combina custo médio, âncoras Pluggy e regra preservada de renda fixa."""
         fixed_income_applied = net_applied_through(
             cutoff,
             after=base_day if base_day and cutoff >= base_day else None,
             ticker_filter=fixed_income_symbols
         )
-        return market_cost_basis_through(cutoff) + fixed_income_applied
+        details = market_cost_basis_through(cutoff)
+        basis_by_ticker = dict(details['basis_by_ticker'])
+        unknown = set(details['unknown_tickers'])
+        holdings = held_quantities(cutoff)
+        # A fotografia Pluggy é autoritativa a partir da própria data de captura.
+        for ticker, row in pluggy_current_map.items():
+            try:
+                anchor = date.fromisoformat(str(row.get('pluggy_snapshot_at') or '')[:10])
+            except (TypeError, ValueError):
+                continue
+            if cutoff >= anchor:
+                basis_by_ticker[ticker] = max(0.0, float(row.get('investido') or 0))
+                unknown.discard(ticker)
+        # Sem custo de aquisição comprovável, não se usa preço de venda nem se
+        # fabrica ganho: a referência fica neutra pelo valor de mercado e é sinalizada.
+        for ticker in sorted(unknown):
+            basis_by_ticker[ticker] = _neutral_value_for_unknown_cost(
+                ticker, holdings.get(ticker, 0.0), cutoff
+            )
+        return sum(max(0.0, value) for value in basis_by_ticker.values()) + fixed_income_applied, sorted(unknown)
 
     first_year, first_month = int(month_keys[0][:4]), int(month_keys[0][5:7])
     previous_end = date(first_year, first_month, 1) - timedelta(days=1)
@@ -5913,12 +6061,14 @@ def build_portfolio_performance(operations, dividends, history=None, imported_po
         start_value = portfolio_value(start_date)
         end_value = portfolio_value(end_date)
         if end_value is not None:
-            applied_value = applied_capital_through(end_date)
+            applied_value, unknown_cost_tickers = applied_capital_through(end_date)
             portfolio_series.append({
                 'mes': key,
                 'aplicado': round(applied_value, 2),
                 'patrimonio': round(end_value, 2),
-                'ganho': round(end_value - applied_value, 2)
+                'ganho': round(end_value - applied_value, 2),
+                'capital_incompleto': bool(unknown_cost_tickers),
+                'ativos_custo_desconhecido': unknown_cost_tickers
             })
         if end_value is None:
             previous_end = end_date
@@ -5972,6 +6122,7 @@ def build_portfolio_performance(operations, dividends, history=None, imported_po
         return {
             **snapshot_only_result(),
             'series_patrimonio': portfolio_series,
+            'ativos_custo_desconhecido': sorted({ticker for point in portfolio_series for ticker in point.get('ativos_custo_desconhecido', [])}),
             'series_roi_total': roi_total_series,
             'rentabilidade_total': round(roi_total, 2) if roi_total is not None else None,
             'series_12m': [], 'rentabilidade_12m': None,
@@ -5996,6 +6147,7 @@ def build_portfolio_performance(operations, dividends, history=None, imported_po
         'series_total': series_total,
         'series_roi_total': roi_total_series,
         'series_patrimonio': portfolio_series,
+        'ativos_custo_desconhecido': sorted({ticker for point in portfolio_series for ticker in point.get('ativos_custo_desconhecido', [])}),
         'rentabilidade_12m': return_12m_average,
         'meses_base_12m': months_in_average,
         'rentabilidade_total': round(roi_total, 2) if roi_total is not None else None,
@@ -6400,6 +6552,161 @@ def api_benchmarks():
     BENCHMARK_CACHE[cache_key] = {'time': time.time(), 'data': result}
     return jsonify(result)
 
+def _performance_history_signature(inputs):
+    raw = json.dumps(inputs, ensure_ascii=False, sort_keys=True, separators=(',', ':'), default=str)
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+def _compute_performance_history(inputs):
+    operations = [dict(row) for row in inputs.get('operations') or []]
+    dividends = [dict(row) for row in inputs.get('dividends') or []]
+    imported_positions = [dict(row) for row in inputs.get('imported_positions') or []]
+    current_positions = [dict(row) for row in inputs.get('current_positions') or []]
+    snapshot_date = inputs.get('snapshot_date')
+    history = fetch_portfolio_price_history(operations, [*imported_positions, *current_positions])
+    performance = build_portfolio_performance(
+        operations, dividends, history=history,
+        imported_positions=imported_positions, snapshot_date=snapshot_date,
+        current_positions=current_positions
+    )
+    return_types = sorted({
+        str(row.get('tipo') or '').strip().lower()
+        for row in [*operations, *imported_positions, *current_positions]
+        if row.get('tipo')
+    })
+    performance_by_type = {}
+    for asset_type in return_types:
+        type_ops = [row for row in operations if str(row.get('tipo') or '').strip().lower() == asset_type]
+        type_positions = [row for row in imported_positions if str(row.get('tipo') or '').strip().lower() == asset_type]
+        type_current = [row for row in current_positions if str(row.get('tipo') or '').strip().lower() == asset_type]
+        type_tickers = {str(row.get('ticker') or '').upper() for row in [*type_ops, *type_positions, *type_current]}
+        type_dividends = [row for row in dividends if str(row.get('ticker') or '').upper() in type_tickers]
+        performance_by_type[asset_type] = build_portfolio_performance(
+            type_ops, type_dividends, history=history,
+            imported_positions=type_positions, snapshot_date=snapshot_date,
+            current_positions=type_current
+        )
+    return {
+        'rentabilidade_historica': performance,
+        'rentabilidade_por_tipo': performance_by_type,
+    }
+
+
+def _persist_performance_history_snapshot(signature, result):
+    """Atualiza só os campos históricos se o snapshot ainda for da mesma carteira."""
+    try:
+        with DASHBOARD_CACHE_LOCK:
+            with open(DASHBOARD_CACHE_PATH, 'r', encoding='utf-8') as handle:
+                record = json.load(handle)
+            payload = record.get('payload') if isinstance(record, dict) else None
+            if not isinstance(payload, dict) or payload.get('performance_history_signature') != signature:
+                return False
+            if record.get('signature') != _dashboard_cache_signature():
+                return False
+            payload.update(result)
+            payload['performance_history_pending'] = False
+            integrity = payload.setdefault('integridade_dados', {})
+            integrity['historico_precos'] = result['rentabilidade_historica'].get('fontes_historico', {})
+            record['payload'] = payload
+            tmp_path = DASHBOARD_CACHE_PATH + '.tmp'
+            with open(tmp_path, 'w', encoding='utf-8') as handle:
+                json.dump(record, handle, ensure_ascii=False, separators=(',', ':'))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(tmp_path, 0o600)
+            os.replace(tmp_path, DASHBOARD_CACHE_PATH)
+            return True
+    except (OSError, ValueError, TypeError, json.JSONDecodeError, sqlite3.Error) as exc:
+        app.logger.warning('Não foi possível atualizar o cache com o histórico patrimonial: %s', exc)
+        return False
+
+
+def _performance_history_worker(initial_inputs, initial_signature):
+    global PERFORMANCE_HISTORY_PENDING_INPUTS
+    inputs, signature = initial_inputs, initial_signature
+    while inputs is not None:
+        result = None
+        error = None
+        try:
+            # O contexto permite que os helpers de cache/log usem app.logger e g.
+            with app.app_context():
+                result = _compute_performance_history(inputs)
+        except Exception as exc:
+            error = exc
+            app.logger.exception('Falha ao reconstruir histórico patrimonial em segundo plano')
+
+        with PERFORMANCE_HISTORY_LOCK:
+            if PERFORMANCE_HISTORY_PENDING_INPUTS is not None:
+                inputs = PERFORMANCE_HISTORY_PENDING_INPUTS
+                PERFORMANCE_HISTORY_PENDING_INPUTS = None
+                signature = PERFORMANCE_HISTORY_STATE.get('pending_signature') or _performance_history_signature(inputs)
+                PERFORMANCE_HISTORY_STATE.update({
+                    'status': 'running', 'signature': signature,
+                    'pending_signature': '', 'result': None, 'error': '', 'updated_at': ''
+                })
+                continue
+            inputs = None
+            if error is not None:
+                PERFORMANCE_HISTORY_STATE.update({
+                    'status': 'failed', 'result': None,
+                    'error': str(error)[:500], 'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
+                })
+            else:
+                PERFORMANCE_HISTORY_STATE.update({
+                    'status': 'ready', 'result': result,
+                    'error': '', 'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
+                })
+        if error is None and result is not None:
+            _persist_performance_history_snapshot(signature, result)
+
+
+def _queue_performance_history(inputs):
+    global PERFORMANCE_HISTORY_PENDING_INPUTS
+    signature = _performance_history_signature(inputs)
+    with PERFORMANCE_HISTORY_LOCK:
+        status = PERFORMANCE_HISTORY_STATE.get('status')
+        current_signature = PERFORMANCE_HISTORY_STATE.get('signature')
+        pending_signature = PERFORMANCE_HISTORY_STATE.get('pending_signature')
+        if status == 'ready' and current_signature == signature:
+            return signature
+        if status == 'running':
+            if current_signature == signature or pending_signature == signature:
+                return signature
+            PERFORMANCE_HISTORY_PENDING_INPUTS = inputs
+            PERFORMANCE_HISTORY_STATE['pending_signature'] = signature
+            return signature
+        PERFORMANCE_HISTORY_STATE.update({
+            'status': 'running', 'signature': signature,
+            'pending_signature': '', 'result': None, 'error': '', 'updated_at': ''
+        })
+        PERFORMANCE_HISTORY_PENDING_INPUTS = None
+        thread = threading.Thread(
+            target=_performance_history_worker,
+            args=(inputs, signature),
+            name='portfolio-performance-history', daemon=True
+        )
+        thread.start()
+    return signature
+
+
+@app.route('/api/performance-history')
+def performance_history_status():
+    requested_signature = str(request.args.get('signature') or '')
+    with PERFORMANCE_HISTORY_LOCK:
+        state = dict(PERFORMANCE_HISTORY_STATE)
+        pending_signature = state.get('pending_signature')
+        if requested_signature and requested_signature not in (state.get('signature'), pending_signature):
+            return jsonify(status='superseded')
+        if requested_signature and requested_signature == pending_signature:
+            return jsonify(status='running')
+        response = {'status': state.get('status'), 'updated_at': state.get('updated_at')}
+        if state.get('status') == 'ready' and isinstance(state.get('result'), dict):
+            response.update(state['result'])
+        if state.get('status') == 'failed':
+            response['erro'] = state.get('error') or 'Não foi possível reconstruir o histórico patrimonial.'
+        return jsonify(response)
+
+
 @app.route('/api/dashboard')
 def dashboard():
     # O último dashboard totalmente processado é reaproveitado no F5 quando
@@ -6621,27 +6928,30 @@ def dashboard():
         {'ticker':item['ticker'],'data':item['data_pagamento'],'valor_total':item['valor_total'],'tipo_evento':item.get('tipo_evento')}
         for item in detailed if _is_income_event(item.get('tipo_evento'))
     ]
+    performance_pending = False
+    performance_signature = ''
     if full_refresh and not current_only:
-        performance_history = fetch_portfolio_price_history(ops, imported_rows)
-        performance = build_portfolio_performance(
-            ops, performance_dividends, history=performance_history,
-            imported_positions=imported_rows, snapshot_date=base_date,
-            current_positions=portfolio.get('itens', [])
-        )
-        # Séries por classe permitem que o filtro da página Rentabilidade altere
-        # os indicadores e o gráfico sem misturar classes diferentes.
-        return_types = sorted({str(row.get('tipo') or '').strip().lower() for row in [*ops, *imported_rows] if row.get('tipo')})
+        performance_inputs = {
+            'operations': ops,
+            'dividends': performance_dividends,
+            'imported_positions': imported_rows,
+            'snapshot_date': base_date,
+            'current_positions': [dict(row) for row in portfolio.get('itens', [])]
+        }
+        performance_signature = _queue_performance_history(performance_inputs)
+        performance_pending = True
+        # Resposta imediata: a consulta histórica (que pode consumir uma chamada
+        # por ativo no plano gratuito) é executada em worker e consultada por polling.
+        performance = {
+            'series_12m': [], 'series_total': [], 'series_roi_total': [],
+            'series_patrimonio': [], 'rentabilidade_12m': None,
+            'rentabilidade_total': None, 'meses_disponiveis': 0,
+            'primeiro_mes': None, 'historico_completo': False,
+            'historico_parcial': True, 'ativos_sem_historico': [],
+            'ativos_com_historico': 0, 'total_ativos': len(portfolio.get('itens', [])),
+            'fontes_historico': {}
+        }
         performance_by_type = {}
-        for asset_type in return_types:
-            type_ops = [row for row in ops if str(row.get('tipo') or '').strip().lower() == asset_type]
-            type_positions = [row for row in imported_rows if str(row.get('tipo') or '').strip().lower() == asset_type]
-            type_tickers = {str(row.get('ticker') or '').upper() for row in [*type_ops, *type_positions]}
-            type_dividends = [row for row in performance_dividends if str(row.get('ticker') or '').upper() in type_tickers]
-            performance_by_type[asset_type] = build_portfolio_performance(
-                type_ops, type_dividends, history=performance_history,
-                imported_positions=type_positions, snapshot_date=base_date,
-                current_positions=[row for row in portfolio.get('itens', []) if str(row.get('tipo') or '').strip().lower() == asset_type]
-            )
     else:
         # Estrutura compatível com a interface enquanto o histórico é carregado.
         performance = {
@@ -6659,6 +6969,7 @@ def dashboard():
         aportes_mensais=monthly, proventos_mensais=received_by_month,
         metas=[dict(r) for r in db().execute('SELECT * FROM metas').fetchall()],
         rentabilidade_historica=performance, rentabilidade_por_tipo=performance_by_type,
+        performance_history_pending=performance_pending, performance_history_signature=performance_signature,
         integridade_dados={
             'cotacoes': {item['ticker']: {'fonte': item.get('cotacao_origem'), 'disponivel': bool(item.get('cotacao_disponivel'))} for item in portfolio.get('itens', [])},
             'historico_precos': performance.get('fontes_historico', {}),
@@ -6676,6 +6987,13 @@ def dashboard():
         try:
             saved_at = _write_dashboard_snapshot(response_payload)
             response_payload['cache_info'] = {'cached': False, 'saved_at': saved_at, 'age_seconds': 0}
+            if performance_signature:
+                with PERFORMANCE_HISTORY_LOCK:
+                    ready_result = (PERFORMANCE_HISTORY_STATE.get('result')
+                                    if PERFORMANCE_HISTORY_STATE.get('status') == 'ready'
+                                    and PERFORMANCE_HISTORY_STATE.get('signature') == performance_signature else None)
+                if ready_result:
+                    _persist_performance_history_snapshot(performance_signature, ready_result)
         except (OSError, TypeError, ValueError) as cache_error:
             app.logger.warning('Não foi possível salvar o cache do dashboard: %s', cache_error)
             response_payload['cache_info'] = {'cached': False, 'saved_at': '', 'cache_error': True}

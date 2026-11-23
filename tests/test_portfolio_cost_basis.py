@@ -51,6 +51,15 @@ class PortfolioCostBasisTests(unittest.TestCase):
         self.assertAlmostEqual(after_buy, 1000.0, places=2)
         self.assertAlmostEqual(at_snapshot, 800.0, places=2)
 
+    def test_reversing_purchase_removes_actual_purchase_cost_not_later_average(self):
+        ops = [
+            operation(1, "2026-05-15", "compra", 50, 12),
+            operation(2, "2026-08-10", "venda", 20, 14),
+        ]
+        snapshot = {"ABC3": {"quantidade": 80, "preco_medio": 10}}
+        actual = market_cost_basis(ops, snapshot, date(2026, 10, 31), date(2026, 5, 1), {"ABC3"})
+        self.assertAlmostEqual(actual, 400.0, places=2)
+
     def test_post_snapshot_buy_and_sale_preserve_average_cost_basis(self):
         ops = [
             operation(1, "2026-11-05", "compra", 10, 15),
@@ -72,6 +81,23 @@ class PortfolioCostBasisTests(unittest.TestCase):
         ops = [operation(1, "2026-01-10", "compra", 10, 10)]
         actual = market_cost_basis(ops, {}, None, date(2026, 1, 31), set())
         self.assertEqual(actual, 0.0)
+
+    def test_sale_without_known_acquisition_cost_is_marked_unknown_not_sale_price(self):
+        ops = [operation(1, "2026-02-10", "venda", 5, 30)]
+        result = market_cost_basis(ops, {}, None, date(2026, 2, 28), {"ABC3"}, include_details=True)
+        self.assertEqual(result["basis"], 0.0)
+        self.assertEqual(result["basis_by_ticker"]["ABC3"], 0.0)
+        self.assertEqual(result["unknown_tickers"], ["ABC3"])
+
+    def test_sale_larger_than_known_position_marks_cost_incomplete(self):
+        ops = [
+            operation(1, "2026-01-10", "compra", 3, 10),
+            operation(2, "2026-02-10", "venda", 5, 30),
+        ]
+        result = market_cost_basis(ops, {}, None, date(2026, 2, 28), {"ABC3"}, include_details=True)
+        self.assertEqual(result["unknown_tickers"], ["ABC3"])
+        self.assertAlmostEqual(result["basis"], 0.0, places=2)
+
 
 
 if __name__ == "__main__":

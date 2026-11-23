@@ -83,6 +83,10 @@ class VendorChartJsTests(unittest.TestCase):
         self.assertEqual(status['mode'], 'chartjs')
         self.assertTrue(status['integrity_verified'])
 
+    def test_application_version_is_read_from_version_file(self):
+        version_file = MODULE_PATH.parents[1] / 'VERSION'
+        self.assertEqual(vendor.APP_VERSION, version_file.read_text(encoding='utf-8').strip())
+
     def test_npm_integrity_pin_matches_expected_metadata(self):
         self.assertEqual(
             vendor.EXPECTED_SRI,

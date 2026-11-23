@@ -388,6 +388,9 @@ class RegressionTests(unittest.TestCase):
             'indicators': {'quote':[{'close':[63.10]}]}
         }]}}
         class FakeResponse:
+            status_code = 200
+            content = b'{"chart":{"result":[]}}'
+            headers = {'content-type': 'application/json'}
             def raise_for_status(self):
                 return None
             def json(self):

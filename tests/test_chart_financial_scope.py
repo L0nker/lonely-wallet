@@ -27,7 +27,9 @@ class EvolutionChartFinancialScopeTests(unittest.TestCase):
         start = HTML.index('function sumAssetCapitalGain(')
         end = HTML.index('\n}', start) + 2
         helper = HTML[start:end]
-        self.assertIn('item?.variacao_valor??item?.lucro', helper)
+        self.assertIn('const current=Number(item?.valor_atual||0);', helper)
+        self.assertIn('const invested=Number(item?.investido||0);', helper)
+        self.assertIn('const value=current-invested;', helper)
         self.assertNotIn('provento', helper.lower())
         self.assertNotIn('dividend', helper.lower())
 

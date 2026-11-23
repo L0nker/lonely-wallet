@@ -2297,6 +2297,8 @@ function scheduleMutationRefresh(){
 let dashboardDataRevision=0;
 let dashboardFullRefreshInFlight=false;
 let dashboardFullRefreshQueued=false;
+let performanceHistoryPollTimer=null;
+let performanceHistoryPollSignature='';
 let dashboardEnrichmentInFlight=false;
 let dashboardEnrichmentQueued=false;
 async function api(url,opts={}){
@@ -2375,6 +2377,39 @@ function scheduleDashboardFullRetry(showWait=true){
   refreshDashboardInBackground(showWait);
  },delay);
 }
+function startPerformanceHistoryPolling(signature){
+ if(!signature)return;
+ if(performanceHistoryPollTimer){clearTimeout(performanceHistoryPollTimer);performanceHistoryPollTimer=null;}
+ performanceHistoryPollSignature=signature;
+ const poll=async()=>{
+  if(performanceHistoryPollSignature!==signature)return;
+  try{
+   const result=await api('/api/performance-history?signature='+encodeURIComponent(signature),{timeoutMs:20000,cache:'no-store'});
+   if(result.status==='ready'){
+    if(performanceHistoryPollSignature!==signature)return;
+    state.rentabilidade_historica=result.rentabilidade_historica||{};
+    state.rentabilidade_por_tipo=result.rentabilidade_por_tipo||{};
+    state.performance_history_pending=false;
+    if(state.integridade_dados)state.integridade_dados.historico_precos=(result.rentabilidade_historica||{}).fontes_historico||{};
+    render();
+    return;
+   }
+   if(result.status==='failed'){
+    state.performance_history_pending=false;
+    state.performance_history_error=result.erro||'Não foi possível atualizar o histórico patrimonial.';
+    console.warn('Histórico patrimonial não concluído:',state.performance_history_error);
+    return;
+   }
+   if(result.status==='superseded')return;
+  }catch(error){
+   console.warn('Aguardando conclusão do histórico patrimonial:',error);
+  }
+  if(performanceHistoryPollSignature===signature){
+   performanceHistoryPollTimer=setTimeout(poll,2500);
+  }
+ };
+ poll();
+}
 async function refreshDashboardInBackground(showWait=true){
  if(dashboardFullRefreshInFlight){dashboardFullRefreshQueued=true;return;}
  dashboardFullRefreshInFlight=true;
@@ -2392,6 +2427,9 @@ async function refreshDashboardInBackground(showWait=true){
    state=complete;
    render();
    applyPositionColumnPrefs();
+   if(complete.performance_history_pending&&complete.performance_history_signature){
+    startPerformanceHistoryPolling(complete.performance_history_signature);
+   }
    const updated=document.getElementById('updated');
    if(updated)updated.textContent='Atualizado '+new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
    hideDashboardDataWait();
@@ -3883,7 +3921,7 @@ function renderEvolutionChart(canvasId='aporteChart',periodId='aportePeriod',typ
   if(note){
    const missing=Number(performance.ativos_sem_historico?.length||0);
    note.textContent=missing
-    ? `Patrimônio histórico em barras. ${missing} ativo(s) sem cotação histórica usam custo médio como referência, sem ganho histórico estimado.`
+    ? `Patrimônio histórico parcial: ${missing} ativo(s) sem cobertura completa. Quando o custo de aquisição é desconhecido, o sistema não usa preço de venda como custo nem estima ganho histórico.`
     : 'Patrimônio histórico em barras: valor aplicado e valorização ou prejuízo dos ativos, sem incluir proventos. Considera fechamentos mensais, compras e vendas; a cobertura depende das APIs configuradas.';
   }
   chart(canvasId,'bar',{labels,datasets:[
