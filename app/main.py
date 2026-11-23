@@ -362,22 +362,48 @@ def _api_cache_store(cache_key, provider, endpoint, payload, status_code, ttl, s
             connection.close()
 
 
+_API_REQUEST_LOG_LOCK = threading.RLock()
+
+
 def _api_record_request(provider, endpoint, status_code=0):
-    connection = None
+    """Registra o consumo com retries curtos para contornar locks SQLite transitórios.
+
+
+    Nunca libera a chamada externa quando o registro de segurança falha.
+    """
     request_id = None
-    try:
-        connection = _api_cache_connection()
-        cursor = connection.execute(
-            'INSERT INTO api_request_log(provider,endpoint,requested_at,status_code) VALUES(?,?,?,?)',
-            (provider, endpoint, time.time(), int(status_code or 0))
-        )
-        request_id = int(cursor.lastrowid)
-        connection.commit()
-    except sqlite3.Error as exc:
-        app.logger.warning('Não foi possível registrar consumo da API %s: %s', provider, exc)
-    finally:
-        if connection is not None:
-            connection.close()
+    last_error = None
+    # Serializa writes locais e tenta novamente quando outro worker está gravando.
+    with _API_REQUEST_LOG_LOCK:
+        for attempt in range(4):
+            connection = None
+            try:
+                connection = _api_cache_connection()
+                connection.execute('PRAGMA busy_timeout=15000')
+                cursor = connection.execute(
+                    'INSERT INTO api_request_log(provider,endpoint,requested_at,status_code) VALUES(?,?,?,?)',
+                    (provider, endpoint, time.time(), int(status_code or 0))
+                )
+                connection.commit()
+                request_id = int(cursor.lastrowid)
+                last_error = None
+                break
+            except sqlite3.OperationalError as exc:
+                last_error = exc
+                # Retry only transient locking/busy errors; other errors fail closed.
+                message = str(exc).lower()
+                if not any(term in message for term in ('locked', 'busy')) or attempt >= 3:
+                    break
+                time.sleep(0.08 * (attempt + 1))
+            except sqlite3.Error as exc:
+                last_error = exc
+                break
+            finally:
+                if connection is not None:
+                    connection.close()
+    if last_error is not None:
+        app.logger.warning('Não foi possível registrar consumo da API %s (endpoint %s): %s',
+                         provider, str(endpoint)[:80], last_error)
     return request_id
 
 

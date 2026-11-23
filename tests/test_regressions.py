@@ -102,6 +102,18 @@ class RegressionTests(unittest.TestCase):
             usage = wallet._api_usage_snapshot()
             self.assertGreaterEqual(usage['cache_hits'], 1)
 
+    def test_api_request_registration_succeeds_and_returns_id(self):
+        with wallet.app.app_context():
+            request_id = wallet._api_record_request('pluggy', 'AUTH:regression-test', 0)
+            self.assertIsNotNone(request_id)
+            row = wallet.db().execute(
+                'SELECT provider,endpoint,status_code FROM api_request_log WHERE id=?',
+                (request_id,)
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row['provider'], 'pluggy')
+            self.assertEqual(row['endpoint'], 'AUTH:regression-test')
+
     def test_pluggy_request_gap_uses_persisted_request_log(self):
         with wallet.app.app_context():
             con = wallet.db()
