@@ -1,5 +1,6 @@
 """Regression tests for Lonely Wallet 4.2.x security and financial fixes."""
 import os
+import sqlite3
 import tempfile
 import unittest
 import datetime
@@ -37,12 +38,19 @@ class RegressionTests(unittest.TestCase):
             # imported opening balances from leaking into IRPF/position tests.
             for table in (
                 'b3_importados', 'b3_import_lotes', 'proventos_api', 'proventos',
-                'operacoes', 'saldos_importados', 'irpf_lancamentos',
-                'api_response_cache', 'api_request_log', 'api_cache_stats', 'api_provider_state', 'api_provider_state_scoped'
+                'operacoes', 'saldos_importados', 'irpf_lancamentos'
             ):
                 con.execute(f'DELETE FROM {table}')
             con.execute("DELETE FROM app_settings WHERE key='pluggy_sync_interval'")
             con.commit()
+            api_con = wallet._api_cache_connection()
+            try:
+                for table in ('api_response_cache','api_request_log','api_cache_stats',
+                              'api_provider_state','api_provider_state_scoped'):
+                    api_con.execute(f'DELETE FROM {table}')
+                api_con.commit()
+            finally:
+                api_con.close()
 
     def test_00_setup_fixture_leaves_a_balance_for_next_test_to_check(self):
         with wallet.app.app_context():
@@ -79,6 +87,64 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()['interval_minutes'], 240)
 
+    def test_api_cache_row_and_hit_metrics_are_available(self):
+        now = wallet.time.time()
+        with wallet.app.app_context():
+            wallet._api_cache_store('cache-row-test', 'brapi', '/quote', b'{"ok":true}', 200, 60, 120)
+            row = wallet._api_cache_row('cache-row-test')
+            self.assertIsNotNone(row)
+            self.assertEqual(row['payload'], b'{"ok":true}')
+            self.assertEqual(row['status_code'], 200)
+            self.assertGreater(row['expires_at'], now)
+            wallet._api_cache_record_hit('brapi', stale=False)
+            wallet._api_cache_record_hit('brapi', stale=True)
+            con = wallet._api_cache_connection()
+            try:
+                stats = con.execute('SELECT fresh_hits,stale_hits FROM api_cache_stats WHERE provider=?', ('brapi',)).fetchone()
+                self.assertEqual((stats['fresh_hits'], stats['stale_hits']), (1, 1))
+            finally:
+                con.close()
+
+    def test_legacy_api_metadata_migrates_once_to_api_state_database(self):
+        with tempfile.TemporaryDirectory(prefix='lw-api-migrate-') as temp:
+            source = Path(temp) / 'ativos-legacy.db'
+            target = Path(temp) / 'api_state.db'
+            con = sqlite3.connect(source)
+            con.executescript('''
+                CREATE TABLE api_response_cache(cache_key TEXT PRIMARY KEY,provider TEXT,endpoint TEXT,payload BLOB,status_code INTEGER,fetched_at REAL,expires_at REAL,stale_until REAL);
+                CREATE TABLE api_request_log(id INTEGER PRIMARY KEY,provider TEXT,endpoint TEXT,requested_at REAL,status_code INTEGER,credential_hash TEXT);
+                CREATE TABLE api_cache_stats(provider TEXT PRIMARY KEY,fresh_hits INTEGER,stale_hits INTEGER);
+                CREATE TABLE api_provider_state(provider TEXT PRIMARY KEY,cooldown_until REAL,last_status_code INTEGER,last_error TEXT);
+                CREATE TABLE api_provider_state_scoped(provider TEXT,credential_hash TEXT,scope TEXT,cooldown_until REAL,last_status_code INTEGER,last_error TEXT,PRIMARY KEY(provider,credential_hash,scope));
+            ''')
+            con.execute('INSERT INTO api_response_cache VALUES(?,?,?,?,?,?,?,?)', ('legacy-cache','brapi','/quote',b'{ }',200,1,2,3))
+            con.execute('INSERT INTO api_request_log VALUES(?,?,?,?,?,?)', (7,'pluggy','GET:items',100,200,'old-token-hash'))
+            con.execute('INSERT INTO api_cache_stats VALUES(?,?,?)', ('brapi',4,2))
+            con.commit(); con.close()
+            with patch.object(wallet, 'DB_PATH', str(source)), patch.object(wallet, 'API_STATE_DB_PATH', str(target)):
+                wallet.init_api_state_db()
+                api_con = sqlite3.connect(target)
+                try:
+                    self.assertIsNotNone(api_con.execute('SELECT 1 FROM api_response_cache WHERE cache_key=?', ('legacy-cache',)).fetchone())
+                    self.assertEqual(api_con.execute('SELECT COUNT(*) FROM api_request_log WHERE id=7').fetchone()[0], 1)
+                    self.assertEqual(api_con.execute('SELECT fresh_hits,stale_hits FROM api_cache_stats WHERE provider=?', ('brapi',)).fetchone(), (4,2))
+                finally:
+                    api_con.close()
+                # The marker prevents a later startup from replaying old counters.
+                con = sqlite3.connect(source)
+                con.execute('INSERT INTO api_request_log VALUES(?,?,?,?,?,?)', (8,'pluggy','GET:items',101,200,'old-token-hash'))
+                con.commit(); con.close()
+                wallet.init_api_state_db()
+                api_con = sqlite3.connect(target)
+                try:
+                    self.assertEqual(api_con.execute('SELECT COUNT(*) FROM api_request_log').fetchone()[0], 1)
+                finally:
+                    api_con.close()
+
+    def test_api_state_database_is_separate_from_financial_database(self):
+        self.assertNotEqual(os.path.abspath(wallet.API_STATE_DB_PATH), os.path.abspath(wallet.DB_PATH))
+        self.assertTrue(Path(wallet.API_STATE_DB_PATH).exists())
+
     def test_brapi_response_cache_persists_and_avoids_repeat_request(self):
         payload = {'results': [{'symbol': 'CACHE4', 'regularMarketPrice': 12.34}]}
         response = wallet.requests.Response()
@@ -104,13 +170,16 @@ class RegressionTests(unittest.TestCase):
 
     def test_pluggy_request_gap_uses_persisted_request_log(self):
         with wallet.app.app_context():
-            con = wallet.db()
-            now = wallet.time.time()
-            con.execute(
-                'INSERT INTO api_request_log(provider,endpoint,requested_at,status_code,credential_hash) VALUES(?,?,?,?,?)',
-                ('pluggy', 'GET:investments', now - 0.2, 200, 'public')
-            )
-            con.commit()
+            con = wallet._api_cache_connection()
+            try:
+                now = wallet.time.time()
+                con.execute(
+                    'INSERT INTO api_request_log(provider,endpoint,requested_at,status_code,credential_hash) VALUES(?,?,?,?,?)',
+                    ('pluggy', 'GET:investments', now - 0.2, 200, 'public')
+                )
+                con.commit()
+            finally:
+                con.close()
             with patch.object(wallet.time, 'sleep') as sleep:
                 wallet._provider_wait_for_gap('pluggy', 'public')
             self.assertEqual(sleep.call_count, 1)
@@ -271,20 +340,23 @@ class RegressionTests(unittest.TestCase):
 
     def test_cache_cleanup_removes_expired_rows_without_opening_api_page(self):
         with wallet.app.app_context(), patch.object(wallet, '_API_CACHE_LAST_CLEANUP', 0):
-            con = wallet.db()
-            now = wallet.time.time()
-            con.execute(
-                "INSERT OR REPLACE INTO api_response_cache(cache_key,provider,endpoint,payload,status_code,fetched_at,expires_at,stale_until) VALUES(?,?,?,?,?,?,?,?)",
-                ('expired-cache-row','brapi','/quote',b'{}',200,now-100000,now-90000,now-1)
-            )
-            con.execute(
-                'INSERT INTO api_request_log(provider,endpoint,requested_at,status_code,credential_hash) VALUES(?,?,?,?,?)',
-                ('brapi','/old',now-50*86400,200,'public')
-            )
-            con.commit()
-            wallet._api_cache_cleanup()
-            self.assertIsNone(con.execute('SELECT 1 FROM api_response_cache WHERE cache_key=?',('expired-cache-row',)).fetchone())
-            self.assertEqual(con.execute('SELECT COUNT(*) FROM api_request_log WHERE endpoint=?',('/old',)).fetchone()[0],0)
+            con = wallet._api_cache_connection()
+            try:
+                now = wallet.time.time()
+                con.execute(
+                    "INSERT OR REPLACE INTO api_response_cache(cache_key,provider,endpoint,payload,status_code,fetched_at,expires_at,stale_until) VALUES(?,?,?,?,?,?,?,?)",
+                    ('expired-cache-row','brapi','/quote',b'{}',200,now-100000,now-90000,now-1)
+                )
+                con.execute(
+                    'INSERT INTO api_request_log(provider,endpoint,requested_at,status_code,credential_hash) VALUES(?,?,?,?,?)',
+                    ('brapi','/old',now-50*86400,200,'public')
+                )
+                con.commit()
+                wallet._api_cache_cleanup()
+                self.assertIsNone(con.execute('SELECT 1 FROM api_response_cache WHERE cache_key=?',('expired-cache-row',)).fetchone())
+                self.assertEqual(con.execute('SELECT COUNT(*) FROM api_request_log WHERE endpoint=?',('/old',)).fetchone()[0],0)
+            finally:
+                con.close()
 
     def test_cache_cleanup_runs_on_normal_request(self):
         with patch.object(wallet, '_api_cache_cleanup') as cleanup:
@@ -295,13 +367,17 @@ class RegressionTests(unittest.TestCase):
     def test_api_provider_cooldown_is_persisted_after_network_failure(self):
         with wallet.app.app_context():
             wallet._provider_set_cooldown('brapi', 45, 0, 'network_error')
-            row = wallet.db().execute(
-                "SELECT cooldown_until,last_status_code,last_error FROM api_provider_state_scoped WHERE provider=? AND credential_hash=? AND scope='provider'",
-                ('brapi', 'public')
-            ).fetchone()
-            self.assertIsNotNone(row)
-            self.assertGreater(row['cooldown_until'], wallet.time.time())
-            self.assertEqual(row['last_error'], 'network_error')
+            con = wallet._api_cache_connection()
+            try:
+                row = con.execute(
+                    "SELECT cooldown_until,last_status_code,last_error FROM api_provider_state_scoped WHERE provider=? AND credential_hash=? AND scope='provider'",
+                    ('brapi', 'public')
+                ).fetchone()
+                self.assertIsNotNone(row)
+                self.assertGreater(row['cooldown_until'], wallet.time.time())
+                self.assertEqual(row['last_error'], 'network_error')
+            finally:
+                con.close()
 
     def test_brapi_budget_blocks_network_when_local_limit_is_reached(self):
         with wallet.app.app_context(), patch.object(wallet, 'BRAPI_LOCAL_30D_BUDGET', 1),              patch.object(wallet.requests, 'get') as mocked:

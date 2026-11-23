@@ -17,6 +17,7 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax', S
 DB_PATH = os.environ.get('ASSETS_DB_PATH', '/data/ativos.db')
 LEGACY_DB_PATH = os.environ.get('DB_PATH', '/data/carteira.db')
 TOKEN_DB_PATH = os.environ.get('TOKEN_DB_PATH', '/data/tokens.db')
+API_STATE_DB_PATH = os.environ.get('API_STATE_DB_PATH', str(Path(DB_PATH).with_name('api_state.db')))
 VERSION_FILE = Path(__file__).resolve().parents[1] / 'VERSION'
 try:
     APP_VERSION = VERSION_FILE.read_text(encoding='utf-8').strip() or 'desconhecida'
@@ -272,9 +273,185 @@ _API_CACHE_MAX_BODY = 8 * 1024 * 1024
 
 
 def _api_cache_connection():
-    connection = sqlite3.connect(DB_PATH, timeout=15)
-    connection.execute('PRAGMA busy_timeout=15000')
+    """Open the isolated API metadata database, not the financial ledger."""
+    os.makedirs(os.path.dirname(API_STATE_DB_PATH) or '.', exist_ok=True)
+    connection = sqlite3.connect(API_STATE_DB_PATH, timeout=10)
+    connection.execute('PRAGMA busy_timeout=10000')
+    connection.row_factory = sqlite3.Row
     return connection
+
+
+def _api_cache_row(cache_key):
+    """Return a normalized cached response row, or None on miss/unavailable cache."""
+    connection = None
+    try:
+        connection = _api_cache_connection()
+        row = connection.execute(
+            '''SELECT payload,status_code,fetched_at,expires_at,stale_until
+               FROM api_response_cache WHERE cache_key=?''',
+            (str(cache_key),)
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            'payload': bytes(row['payload'] or b''),
+            'status_code': int(row['status_code'] or 200),
+            'fetched_at': float(row['fetched_at'] or 0),
+            'expires_at': float(row['expires_at'] or 0),
+            'stale_until': float(row['stale_until'] or 0),
+        }
+    except sqlite3.Error as exc:
+        # A cache read failure must not crash /api/dashboard with HTTP 500.
+        app.logger.warning('Leitura do cache de APIs indisponível; seguindo como cache miss: %s', exc)
+        return None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _api_cache_record_hit(provider, stale=False):
+    """Best-effort cache metrics; statistics must never break a financial response."""
+    connection = None
+    column = 'stale_hits' if stale else 'fresh_hits'
+    try:
+        connection = _api_cache_connection()
+        connection.execute(
+            f'''INSERT INTO api_cache_stats(provider,{column}) VALUES(?,1)
+                ON CONFLICT(provider) DO UPDATE SET {column}=api_cache_stats.{column}+1''',
+            (str(provider),)
+        )
+        connection.commit()
+    except sqlite3.Error as exc:
+        app.logger.debug('Não foi possível atualizar estatísticas locais do cache %s: %s', provider, exc)
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def init_api_state_db():
+    """Create isolated API metadata storage and migrate the old tables once.
+
+    Older releases kept API cache/accounting tables inside ativos.db. Moving these
+    high-frequency writes into api_state.db prevents Pluggy/cache bookkeeping from
+    contending with financial transactions in the portfolio database.
+    """
+    os.makedirs(os.path.dirname(API_STATE_DB_PATH) or '.', exist_ok=True)
+    target = sqlite3.connect(API_STATE_DB_PATH, timeout=30)
+    target.execute('PRAGMA busy_timeout=30000')
+    target.execute('PRAGMA journal_mode=WAL')
+    target.execute('PRAGMA synchronous=NORMAL')
+    target.executescript('''
+        CREATE TABLE IF NOT EXISTS api_response_cache (
+          cache_key TEXT PRIMARY KEY, provider TEXT NOT NULL, endpoint TEXT NOT NULL,
+          payload BLOB NOT NULL, status_code INTEGER NOT NULL DEFAULT 200,
+          fetched_at REAL NOT NULL, expires_at REAL NOT NULL, stale_until REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_api_response_cache_expiry
+          ON api_response_cache(provider,expires_at,stale_until);
+        CREATE TABLE IF NOT EXISTS api_request_log (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, endpoint TEXT NOT NULL,
+          requested_at REAL NOT NULL, status_code INTEGER NOT NULL DEFAULT 0,
+          credential_hash TEXT NOT NULL DEFAULT 'legacy'
+        );
+        CREATE INDEX IF NOT EXISTS idx_api_request_log_provider_time
+          ON api_request_log(provider,requested_at);
+        CREATE INDEX IF NOT EXISTS idx_api_request_log_credential_time
+          ON api_request_log(provider,credential_hash,requested_at);
+        CREATE TABLE IF NOT EXISTS api_cache_stats (
+          provider TEXT PRIMARY KEY, fresh_hits INTEGER NOT NULL DEFAULT 0,
+          stale_hits INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS api_provider_state (
+          provider TEXT PRIMARY KEY, cooldown_until REAL NOT NULL DEFAULT 0,
+          last_status_code INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS api_provider_state_scoped (
+          provider TEXT NOT NULL, credential_hash TEXT NOT NULL, scope TEXT NOT NULL,
+          cooldown_until REAL NOT NULL DEFAULT 0, last_status_code INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT NOT NULL DEFAULT '', PRIMARY KEY(provider,credential_hash,scope)
+        );
+        CREATE TABLE IF NOT EXISTS api_state_meta (
+          key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT ''
+        );
+    ''')
+    marker = target.execute(
+        "SELECT value FROM api_state_meta WHERE key='legacy_assets_migrated_v1'"
+    ).fetchone()
+    if marker:
+        target.close()
+        return
+
+    source = None
+    try:
+        if os.path.abspath(DB_PATH) != os.path.abspath(API_STATE_DB_PATH) and os.path.exists(DB_PATH):
+            source = sqlite3.connect(DB_PATH, timeout=30)
+            source.execute('PRAGMA busy_timeout=30000')
+            source.row_factory = sqlite3.Row
+            available = {r[0] for r in source.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()}
+            target.execute('BEGIN IMMEDIATE')
+            if 'api_response_cache' in available:
+                cur = source.execute('''SELECT cache_key,provider,endpoint,payload,status_code,
+                                        fetched_at,expires_at,stale_until FROM api_response_cache''')
+                while True:
+                    rows = cur.fetchmany(500)
+                    if not rows: break
+                    target.executemany(
+                        '''INSERT OR IGNORE INTO api_response_cache
+                           (cache_key,provider,endpoint,payload,status_code,fetched_at,expires_at,stale_until)
+                           VALUES(?,?,?,?,?,?,?,?)''',
+                        [tuple(row) for row in rows]
+                    )
+            if 'api_request_log' in available:
+                cols = {r[1] for r in source.execute('PRAGMA table_info(api_request_log)').fetchall()}
+                credential_expr = 'credential_hash' if 'credential_hash' in cols else "'legacy'"
+                cur = source.execute(
+                    f'''SELECT id,provider,endpoint,requested_at,status_code,{credential_expr}
+                        FROM api_request_log'''
+                )
+                while True:
+                    rows = cur.fetchmany(1000)
+                    if not rows: break
+                    target.executemany(
+                        '''INSERT OR IGNORE INTO api_request_log
+                           (id,provider,endpoint,requested_at,status_code,credential_hash)
+                           VALUES(?,?,?,?,?,?)''',
+                        [tuple(row) for row in rows]
+                    )
+            if 'api_cache_stats' in available:
+                rows = source.execute('SELECT provider,fresh_hits,stale_hits FROM api_cache_stats').fetchall()
+                target.executemany(
+                    'INSERT OR IGNORE INTO api_cache_stats(provider,fresh_hits,stale_hits) VALUES(?,?,?)',
+                    [tuple(row) for row in rows]
+                )
+            if 'api_provider_state' in available:
+                rows = source.execute('SELECT provider,cooldown_until,last_status_code,last_error FROM api_provider_state').fetchall()
+                target.executemany(
+                    'INSERT OR IGNORE INTO api_provider_state(provider,cooldown_until,last_status_code,last_error) VALUES(?,?,?,?)',
+                    [tuple(row) for row in rows]
+                )
+            if 'api_provider_state_scoped' in available:
+                rows = source.execute('''SELECT provider,credential_hash,scope,cooldown_until,
+                                         last_status_code,last_error FROM api_provider_state_scoped''').fetchall()
+                target.executemany(
+                    '''INSERT OR IGNORE INTO api_provider_state_scoped
+                       (provider,credential_hash,scope,cooldown_until,last_status_code,last_error)
+                       VALUES(?,?,?,?,?,?)''',
+                    [tuple(row) for row in rows]
+                )
+        target.execute(
+            "INSERT OR REPLACE INTO api_state_meta(key,value) VALUES('legacy_assets_migrated_v1',?)",
+            (datetime.now(TZ).isoformat(timespec='seconds'),)
+        )
+        target.commit()
+    except Exception:
+        target.rollback()
+        raise
+    finally:
+        if source is not None:
+            source.close()
+        target.close()
 
 
 def _api_request_fingerprint(params=None, headers=None):
@@ -1297,6 +1474,7 @@ def init_db():
 
 prepare_database_files()
 init_db()
+init_api_state_db()
 migrate_api_credentials()
 
 

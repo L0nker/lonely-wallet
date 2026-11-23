@@ -1,4 +1,4 @@
-# Lonely Wallet v4.2.34
+# Lonely Wallet v4.2.35
 
 **Gerenciador pessoal de investimentos | Docker / ZimaOS | Português (Brasil)**
 
@@ -8,9 +8,9 @@ As consultas da brapi passam a usar cache persistente em SQLite, orçamento loca
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.34 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.35 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
-- **Persistência:** SQLite, com bancos separados para ativos e tokens
+- **Persistência:** SQLite, com bancos separados para ativos, tokens e estado das APIs
 - **Porta:** `8085` no host e `8080` no container
 - **Dados persistentes:** `/DATA/AppData/lonely-wallet/data` no host, montado em `/data`
 - **Container:** executa com usuário/grupo não privilegiado `app` (UID/GID `10001`) após preparar as permissões do volume
@@ -38,7 +38,7 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve apresentar `ok: true` e `version: 4.2.34`.
+O retorno deve apresentar `ok: true` e `version: 4.2.35`. O estado de cache e consumo das APIs é mantido em `/data/api_state.db`.
 
 **Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
 
@@ -48,6 +48,7 @@ O retorno deve apresentar `ok: true` e `version: 4.2.34`.
 |---|---|
 | `ativos.db` | Operações, posições, proventos e dados da carteira |
 | `tokens.db` | PIN, autenticação, credenciais e configurações sensíveis |
+| `api_state.db` | Cache HTTP, limites, cooldowns e histórico de consumo das APIs |
 | `carteira.db` | Banco legado, preservado para migração/compatibilidade quando existir |
 | `quotes_last_valid.json` | Últimas cotações válidas salvas |
 | `dashboard_cache.json` | Snapshot completo do dashboard, invalidado quando os bancos mudam |
@@ -266,7 +267,7 @@ O orçamento é uma proteção local, não uma leitura oficial da cota do proved
 
 
 
-## Lonely Wallet v4.2.34 · Proteções adicionais de consumo das APIs
+## Lonely Wallet v4.2.35 · Proteções adicionais de consumo das APIs
 
 - Orçamentos locais da Pluggy e FRED por credencial, com janelas diária e móvel de 30 dias; as chamadas de autenticação e de dados Pluggy contam para o mesmo orçamento.
 - Contadores e pausas vinculados à impressão digital SHA-256 normalizada da credencial; trocar o token inicia orçamento e cooldown independentes. O token original não é gravado nos logs.
@@ -292,12 +293,24 @@ Variáveis adicionais: `PLUGGY_LOCAL_24H_BUDGET`, `PLUGGY_LOCAL_30D_BUDGET`, `PL
 - Os tooltips de preço informam quando o valor exibido foi reutilizado de cache antigo/última cotação válida e mostram a data real da fonte quando disponível. Os avisos de dados antigos de proventos e histórico também preservam a data da consulta real.
 - A limpeza de respostas expiradas, logs antigos e pausas vencidas ocorre automaticamente durante requisições normais, sem depender da abertura da página Integrações e APIs.
 
-### Validação da v4.2.34
+### Validação da v4.2.35
 
-- 51 testes Python independentes executados e aprovados.
+- 8 testes Python independentes executados e aprovados (`test_vendor_chartjs` e `test_backup_atomic`).
 - 19 verificações de runtime JavaScript executadas e aprovadas.
-- Compilação sintática Python aprovada.
-- Docker Compose YAML analisado e variáveis de orçamento conferidas.
+- Compilação sintática Python aprovada para aplicação, backup e testes atualizados.
+- 5 verificações isoladas do armazenamento de APIs executadas: leitura de cache, métricas fresh/stale, migração do histórico e idempotência da migração.
+- Docker Compose YAML analisado e `API_STATE_DB_PATH` conferido.
 - Integridade do ZIP conferida após a geração.
-- A suíte `tests/test_regressions.py` não pôde ser executada neste ambiente porque Flask não está instalado e a instalação de dependências não está disponível sem rede.
+- A suíte integrada `tests/test_regressions.py` não pôde ser executada neste ambiente porque Flask não está instalado e a instalação de dependências não está disponível sem rede.
 - Build Docker real e validação visual final no ZimaOS não foram executados neste ambiente.
+
+
+## 10. Correções de estabilidade na v4.2.35
+
+- Corrigida a leitura do cache HTTP e a contabilização de cache hits, evitando `NameError` no fluxo de cotações e no dashboard.
+- Isolados cache, orçamento, cooldown e histórico de requisições em `api_state.db`, separado do banco financeiro `ativos.db`, para reduzir contenção de escrita com operações da carteira.
+- Migrados uma única vez os registros de cache e consumo que estavam nas tabelas legadas de `ativos.db`, preservando o histórico e evitando duplicação.
+- Incluído `api_state.db` no backup consistente do SQLite.
+- Falhas de leitura de cache e métricas passam a ser tratadas sem propagar exceções para a resposta financeira.
+
+Durante a atualização, mantenha o volume `/data` existente. O banco `api_state.db` é criado automaticamente e os registros legados são migrados sem apagar os dados financeiros.
