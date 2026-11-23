@@ -1,7 +1,7 @@
-# Lonely Wallet v4.2.42
+# Lonely Wallet v4.2.43
 
 
-# Atualizações da versão 4.2.42
+# Atualizações da versão 4.2.43
 
 ## Proventos recebidos sem Pluggy configurada
 - Quando não existem credenciais Pluggy válidas e item ativo conectado, os eventos de proventos registrados pelas APIs alternativas podem ser apresentados como recebimentos estimados.
@@ -154,7 +154,7 @@ As consultas da brapi passam a usar cache persistente em SQLite, orçamento loca
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.42 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.43 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
 - **Persistência:** SQLite, com bancos separados para ativos e tokens
 - **Porta:** `8085` no host e `8080` no container
@@ -184,7 +184,7 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve apresentar `ok: true` e `version: 4.2.42`.
+O retorno deve apresentar `ok: true` e `version: 4.2.43`.
 
 **Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
 
@@ -414,3 +414,13 @@ O orçamento é uma proteção local, não uma leitura oficial da cota do proved
 - O resultado é incorporado ao cache do dashboard somente quando a assinatura dos dados ainda corresponde à carteira processada.
 - No plano gratuito da brapi, mantenha `BRAPI_MAX_TICKERS_PER_REQUEST=1`. Aumente apenas de acordo com o plano contratado e as permissões do endpoint.
 - Séries ausentes permanecem sinalizadas como histórico incompleto; não são substituídas por preços de venda ou por retornos presumidos.
+
+
+## Correções da versão 4.2.43
+
+- O histórico de proventos recebidos inclui ativos vendidos; cards de posição atual continuam limitados aos ativos mantidos.
+- A sincronização de proventos considera tipos de ativos presentes em operações executadas e saldos-base históricos, sem fazer uma chamada de cotação ao vivo por ativo vendido.
+- A conciliação Pluggy/agenda de proventos exige ticker, data com tolerância máxima de um dia, diferença de valor de até R$ 0,02 e compatibilidade de categoria quando conhecida.
+- Uma transação Pluggy marca apenas a previsão mais próxima, evitando pagar vários eventos parecidos de uma só vez.
+- Removida a lista de posições financeiras pessoais embutida no código; migrações continuam reconhecendo snapshots de usuário já armazenados no banco.
+- O pacote entregue usa o renderer alternativo porque o registry npm estava inacessível durante a geração. O Dockerfile tenta baixar Chart.js 4.6.1 e valida o SRI/SHA-256 durante o build; quando não há rede, o status correto é `degraded` e o fallback permanece ativo.

@@ -28,7 +28,8 @@ class TopPaidDividendPayersTests(unittest.TestCase):
 
     def test_backend_ranking_uses_confirmed_paid_records_for_all_tickers(self):
         self.assertIn("all_confirmed_received = _confirmed_received_proventos(", MAIN)
-        self.assertIn("_received_proventos_records(), as_of=today", MAIN)
+        self.assertIn("received_records = _confirmed_received_proventos(_received_proventos_records(), as_of=today)", MAIN)
+        self.assertIn("all_confirmed_received = _confirmed_received_proventos(detailed, as_of=today)", MAIN)
         self.assertIn("'maiores_pagadores':top_paid_payers", MAIN)
         self.assertRegex(MAIN, r"top_paid_payers\s*=\s*sorted\([\s\S]*?\)\[:2\]")
         self.assertIn("'status': 'Pago'", MAIN)

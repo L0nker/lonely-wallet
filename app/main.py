@@ -972,7 +972,13 @@ def _migrate_api_response_cache_schema(connection):
 
 
 def _migrate_unconfirmed_proventos_api_status(connection):
-    """Reset legacy auto-paid API forecasts unless a Pluggy event confirms them."""
+    """Reset legacy auto-paid forecasts unless a close Pluggy transaction exists.
+
+    Older releases matched by a three-day window and 1% amount tolerance. That
+    could associate two different distributions of the same ticker. Migration
+    now requires a payment date within one day and a difference no greater than
+    two cents. Unmatched API forecasts return to A receber; the rows are kept.
+    """
     cursor = connection.execute(
         """UPDATE proventos_api AS api
            SET status='A receber'
@@ -984,8 +990,39 @@ def _migrate_unconfirmed_proventos_api_status(connection):
                  AND pe.target_id IS NOT NULL
                  AND COALESCE(pe.import_state,'') IN ('imported','matched_existing')
                  AND UPPER(pe.ticker)=UPPER(api.ticker)
-                 AND date(pe.event_date) BETWEEN date(api.data_pagamento,'-3 day') AND date(api.data_pagamento,'+3 day')
-                 AND ABS(pe.amount-api.valor_total)<=MAX(0.05,api.valor_total*0.01)
+                 AND date(pe.event_date) BETWEEN date(api.data_pagamento,'-1 day') AND date(api.data_pagamento,'+1 day')
+                 AND ABS(pe.amount-api.valor_total)<=0.02
+                 AND (
+                   (UPPER(api.tipo_evento) LIKE '%JCP%' AND (
+                     UPPER(COALESCE(pe.external_id,''))<>'' AND (
+                       EXISTS (SELECT 1 FROM pluggy_investment_transactions tx
+                               WHERE tx.transaction_id=pe.external_id
+                                 AND (UPPER(tx.movement_type) LIKE '%JCP%'
+                                      OR UPPER(tx.movement_type)='INTEREST_ON_EQUITY'
+                                      OR UPPER(tx.description) LIKE '%JCP%'
+                                      OR UPPER(tx.description) LIKE '%JUROS SOBRE CAPITAL%'
+                                      OR UPPER(tx.movement_type)='INTEREST'))
+                       OR NOT EXISTS (SELECT 1 FROM pluggy_investment_transactions tx WHERE tx.transaction_id=pe.external_id)
+                     )
+                   ))
+                   OR (UPPER(api.tipo_evento) LIKE '%DIVID%' AND (
+                     EXISTS (SELECT 1 FROM pluggy_investment_transactions tx
+                             WHERE tx.transaction_id=pe.external_id
+                               AND (UPPER(tx.movement_type) LIKE '%DIVIDEND%'
+                                    OR UPPER(tx.description) LIKE '%DIVIDEND%'
+                                    OR UPPER(tx.description) LIKE '%DIVIDENDO%'
+                                    OR UPPER(tx.movement_type)='INTEREST'))
+                     OR NOT EXISTS (SELECT 1 FROM pluggy_investment_transactions tx WHERE tx.transaction_id=pe.external_id)
+                   ))
+                   OR (UPPER(api.tipo_evento) LIKE '%REND%' AND (
+                     EXISTS (SELECT 1 FROM pluggy_investment_transactions tx
+                             WHERE tx.transaction_id=pe.external_id
+                               AND (UPPER(tx.movement_type) IN ('INTEREST','DISTRIBUTION','INCOME')
+                                    OR UPPER(tx.movement_type) LIKE '%REND%'
+                                    OR UPPER(tx.description) LIKE '%RENDIMENTO%'))
+                     OR NOT EXISTS (SELECT 1 FROM pluggy_investment_transactions tx WHERE tx.transaction_id=pe.external_id)
+                   ))
+                 )
              )"""
     )
     return int(cursor.rowcount or 0)
@@ -1224,42 +1261,12 @@ def init_db():
         ]
         con.executemany('INSERT INTO distribuicao_alvo(nome,percentual,ordem) VALUES(?,?,?)', defaults)
 
-    # Saldo-base capturado em 31/10/2026. Esta fotografia foi importada para
-    # reconciliar a posição do usuário, mas não é um lançamento. Ela só pode
-    # existir enquanto houver operações na carteira. Na versão 45, se o usuário
-    # apagar todas as operações, removemos essa fotografia uma única vez e
-    # gravamos o estado para que ela nunca seja recriada em reinicializações.
+    # Preserve lifecycle handling for legacy user-imported snapshots already
+    # stored in the database. No personal holdings or financial values are
+    # embedded in application source code or seeded into new installations.
     snapshot_origin = 'Posição final informada pelo usuário (captura de 31/10/2026)'
     snapshot_date = '2026-10-31'
     snapshot_state_key = 'snapshot_20261031_lifecycle_v45'
-    snapshot_rows = [
-        ('PETR4','acao',43,40.22,52.66,'Petrobras PN'),
-        ('VALE3','acao',23,85.62,62.09,'Vale ON'),
-        ('BBDC4','acao',67,18.23,13.86,'Bradesco PN'),
-        ('BBAS3','acao',53,22.90,16.45,'Banco do Brasil ON'),
-        ('SANB4','acao',38,14.16,11.96,'Santander PN'),
-        ('BBSE3','acao',7,34.55,41.24,'BB Seguridade ON'),
-        ('WEGE3','acao',2,42.88,48.39,'WEG ON'),
-        ('KLBN4','acao',23,3.70,3.40,'Klabin PN'),
-        ('HGLG11','fii',6,152.95,149.47,'Pátria Logística FII'),
-        ('RBRR11','fii',13,69.81,65.01,'RBR Rendimento High Grade FII'),
-        ('MXRF11','fii',92,9.60,8.90,'Maxi Renda FII'),
-        ('HGRU11','fii',7,116.48,114.00,'Pátria Renda Urbana FII'),
-        ('BTLG11','fii',8,99.91,98.10,'BTG Pactual Logística FII'),
-        ('XPML11','fii',8,106.40,96.80,'XP Malls FII'),
-        ('CPTS11','fii',109,7.86,7.00,'Capitânia Securities II FII'),
-        ('KNRI11','fii',5,156.90,150.50,'Kinea Renda Imobiliária FII'),
-        ('VGIR11','fii',81,9.64,8.92,'Valora RE III FII'),
-        ('VISC11','fii',5,104.10,99.40,'Vinci Shopping Centers FII'),
-        ('KNSC11','fii',11,9.04,8.78,'Kinea Securities FII'),
-        ('HGCR11','fii',1,93.23,92.98,'Patria Crédito Imobiliário FII'),
-        # Renda fixa: uma aplicação por registro. O saldo é exato; o custo foi
-        # reconstituído pelo saldo e pela rentabilidade exibidos na captura.
-        ('CDB_NUBANK_120_CDI','renda_fixa',1,19991.77,21695.07,'CDB - Nubank - Pós-Fixado - 120% CDI'),
-        ('LCA_BANCO_ORIGINAL_93_CDI','renda_fixa',1,7995.83,8499.57,'LCA - Banco Original - Pós-Fixado - 93% CDI'),
-        ('CDB_NUBANK_100_CDI','renda_fixa',1,1999.96,2009.16,'CDB - Nubank - Pós-Fixado - 100% CDI'),
-        ('CDB_MERCADO_PAGO_120_CDI','renda_fixa',1,114.69,125.05,'CDB - Mercado Pago - Pós-Fixado - 120% CDI')
-    ]
     lifecycle = con.execute(
         'SELECT valor FROM integracao_estado WHERE chave=?', (snapshot_state_key,)
     ).fetchone()
@@ -2183,15 +2190,15 @@ def _pluggy_import_investment_transaction(item_id, investment, movement, now_tex
             matched = db().execute(
                 """SELECT p.id FROM proventos p
                    WHERE UPPER(p.ticker)=?
-                     AND date(p.data) BETWEEN date(?,'-3 day') AND date(?,'+3 day')
-                     AND ABS(p.valor_total-?)<=MAX(0.05,?*0.01)
+                     AND date(p.data) BETWEEN date(?,'-1 day') AND date(?,'+1 day')
+                     AND ABS(p.valor_total-?)<=0.02
                      AND NOT EXISTS (
                        SELECT 1 FROM pluggy_imported_events pe
                        WHERE pe.event_type='provento' AND pe.target_id=p.id
                      )
                    ORDER BY ABS(julianday(p.data)-julianday(?)), p.id
                    LIMIT 1""",
-                (ticker, trade_date, trade_date, amount, amount, trade_date)
+                (ticker, trade_date, trade_date, amount, trade_date)
             ).fetchone()
             if matched:
                 target_id = int(matched['id'])
@@ -2223,12 +2230,9 @@ def _pluggy_import_investment_transaction(item_id, investment, movement, now_tex
 
         # A forecast from BRAPI becomes paid only after the matching Pluggy
         # transaction has been persisted. It is not itself used as proof.
-        db().execute(
-            """UPDATE proventos_api SET status='Pago'
-               WHERE UPPER(ticker)=?
-                 AND date(data_pagamento) BETWEEN date(?,'-3 day') AND date(?,'+3 day')
-                 AND ABS(valor_total-?)<=MAX(0.05,?*0.01)""",
-            (ticker, trade_date, trade_date, amount, amount)
+        _mark_matching_api_forecast_paid(
+            ticker, trade_date, amount, movement_type=movement_type,
+            description=description, raw_movement=movement
         )
 
     db().execute(
@@ -4978,7 +4982,7 @@ def carteira(use_cached_quotes=False, force_refresh_quotes=False):
         ).fetchall())
     if force_refresh_quotes and tickers:
         quote_types = {}
-        for row in db().execute('SELECT ticker,tipo FROM operacoes ORDER BY id').fetchall():
+        for row in db().execute("SELECT ticker,tipo FROM operacoes WHERE status='executada' ORDER BY id").fetchall():
             quote_types[str(row['ticker']).upper()] = str(row['tipo'] or '').strip().lower()
         if base_date:
             for row in db().execute('SELECT ticker,tipo FROM saldos_importados WHERE data_base=?', (base_date,)).fetchall():
@@ -5197,7 +5201,7 @@ def _api_date(value):
 
 def _asset_type_map():
     types = {}
-    for row in db().execute('SELECT ticker,tipo FROM operacoes ORDER BY id').fetchall():
+    for row in db().execute("SELECT ticker,tipo FROM operacoes WHERE status='executada' ORDER BY id").fetchall():
         types[str(row['ticker']).upper()] = str(row['tipo'] or 'outros').lower()
     base_date = snapshot_date_for()
     if base_date:
@@ -5255,8 +5259,52 @@ def _fetch_brapi_dividend_events(asset_type, symbols, start_date):
 
 
 
-def _pluggy_confirmed_provento_exists(ticker, payment_date, amount):
-    """Return True only when a Pluggy event ID confirms this forecast payment."""
+def _normalize_provento_category(value, ticker=None, description=''):
+    """Map API/Pluggy descriptions to comparable income categories when possible."""
+    raw = unicodedata.normalize('NFKD', str(value or '') + ' ' + str(description or ''))
+    text = ''.join(ch for ch in raw if not unicodedata.combining(ch)).upper()
+    if 'AMORTIZ' in text:
+        return 'AMORTIZACAO'
+    if 'JUROS SOBRE CAPITAL' in text or re.search(r'\bJCP\b', text) or 'INTEREST_ON_EQUITY' in text:
+        return 'JCP'
+    if 'DIVIDEND' in text or 'DIVIDENDO' in text:
+        return 'DIVIDENDO'
+    if 'RENDIMENTO' in text or 'RENTAL' in text or 'ALUGUEL' in text:
+        return 'RENDIMENTO'
+    if any(token in text for token in ('INTEREST', 'DISTRIBUTION', 'INCOME')):
+        if typesafe_asset_type(ticker) == 'fii':
+            return 'RENDIMENTO'
+        return None
+    return None
+
+
+def _pluggy_record_date(raw_movement):
+    if isinstance(raw_movement, str):
+        try:
+            raw_movement = json.loads(raw_movement or '{}')
+        except (TypeError, ValueError):
+            raw_movement = {}
+    if not isinstance(raw_movement, dict):
+        return ''
+    for key in ('recordDate', 'lastDatePrior', 'referenceDate', 'exDate'):
+        value = _api_date(raw_movement.get(key))
+        if value:
+            return value
+    return ''
+
+
+def _pluggy_match_tolerance(amount):
+    """A distribution is matched to a broker credit only within two cents."""
+    return 0.02
+
+
+def _pluggy_confirmed_provento_exists(ticker, payment_date, amount, event_type=None, record_date=None):
+    """Return True only for a close, category-compatible Pluggy credit.
+
+    Matching is intentionally stricter than older releases: same ticker, at
+    most one calendar day of date drift, at most R$0.02 of amount drift, and no
+    conflict between known income categories or available record dates.
+    """
     symbol = str(ticker or '').strip().upper()
     day = _api_date(payment_date)
     try:
@@ -5265,31 +5313,113 @@ def _pluggy_confirmed_provento_exists(ticker, payment_date, amount):
         return False
     if not symbol or not day or not math.isfinite(value) or value <= 0:
         return False
-    row = db().execute(
-        """SELECT 1
+    rows = db().execute(
+        """SELECT pe.external_id,pe.event_date,pe.amount,tx.movement_type,
+                  tx.description,tx.raw_json
            FROM pluggy_imported_events pe
+           LEFT JOIN pluggy_investment_transactions tx ON tx.transaction_id=pe.external_id
            WHERE pe.event_type='provento'
              AND pe.target_id IS NOT NULL
              AND COALESCE(pe.import_state,'') IN ('imported','matched_existing')
              AND UPPER(pe.ticker)=?
-             AND date(pe.event_date) BETWEEN date(?,'-3 day') AND date(?,'+3 day')
-             AND ABS(pe.amount-?)<=MAX(0.05,?*0.01)
-           LIMIT 1""",
-        (symbol, day, day, value, value)
-    ).fetchone()
-    return row is not None
+             AND date(pe.event_date) BETWEEN date(?,'-1 day') AND date(?,'+1 day')
+           ORDER BY ABS(julianday(pe.event_date)-julianday(?)),pe.external_id""",
+        (symbol, day, day, day)
+    ).fetchall()
+    expected_category = _normalize_provento_category(event_type, symbol)
+    expected_record_date = _api_date(record_date)
+    for raw in rows:
+        row = dict(raw)
+        try:
+            confirmed_amount = float(row.get('amount') or 0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(confirmed_amount) or abs(confirmed_amount - value) > _pluggy_match_tolerance(value):
+            continue
+        confirmed_category = _normalize_provento_category(
+            row.get('movement_type'), symbol, row.get('description')
+        )
+        if expected_category and confirmed_category and expected_category != confirmed_category:
+            continue
+        confirmed_record_date = _pluggy_record_date(row.get('raw_json'))
+        if expected_record_date and confirmed_record_date and expected_record_date != confirmed_record_date:
+            continue
+        return True
+    return False
+
+
+def _mark_matching_api_forecast_paid(ticker, payment_date, amount, movement_type=None,
+                                     description='', raw_movement=None):
+    """Mark only the single best API forecast matching a confirmed Pluggy credit."""
+    symbol = str(ticker or '').strip().upper()
+    day = _api_date(payment_date)
+    try:
+        value = float(amount or 0)
+    except (TypeError, ValueError):
+        return 0
+    if not symbol or not day or not math.isfinite(value) or value <= 0:
+        return 0
+    rows = db().execute(
+        """SELECT event_key,tipo_evento,data_com,data_pagamento,valor_total
+           FROM proventos_api
+           WHERE UPPER(ticker)=?
+             AND date(data_pagamento) BETWEEN date(?,'-1 day') AND date(?,'+1 day')
+             AND status<>'Pago'""",
+        (symbol, day, day)
+    ).fetchall()
+    confirmed_category = _normalize_provento_category(movement_type, symbol, description)
+    confirmed_record_date = _pluggy_record_date(raw_movement)
+    candidates = []
+    for raw in rows:
+        row = dict(raw)
+        try:
+            forecast_amount = float(row.get('valor_total') or 0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(forecast_amount) or abs(forecast_amount - value) > _pluggy_match_tolerance(value):
+            continue
+        forecast_category = _normalize_provento_category(row.get('tipo_evento'), symbol)
+        if forecast_category and confirmed_category and forecast_category != confirmed_category:
+            continue
+        forecast_record_date = _api_date(row.get('data_com'))
+        if forecast_record_date and confirmed_record_date and forecast_record_date != confirmed_record_date:
+            continue
+        forecast_day = _api_date(row.get('data_pagamento'))
+        try:
+            date_distance = abs((date.fromisoformat(forecast_day) - date.fromisoformat(day)).days)
+        except (TypeError, ValueError):
+            date_distance = 99
+        score = (date_distance, abs(forecast_amount - value), 0 if forecast_category == confirmed_category and forecast_category else 1)
+        candidates.append((score, str(row.get('event_key') or '')))
+    if not candidates:
+        return 0
+    candidates.sort(key=lambda item: item[0])
+    best_key = candidates[0][1]
+    if not best_key:
+        return 0
+    cursor = db().execute("UPDATE proventos_api SET status='Pago' WHERE event_key=?", (best_key,))
+    return int(cursor.rowcount or 0)
 
 
 def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
-    """Sincroniza proventos apenas para posições atualmente mantidas. Idempotente e limitada por cache."""
+    """Synchronize announced distributions for current and historically held market assets."""
     now_ts = time.time()
     if active_items is None:
         try:
             active_items = (carteira().json or {}).get('itens', [])
         except Exception:
             active_items = []
-    types = {str(item.get('ticker') or '').strip().upper(): str(item.get('tipo') or 'outros').lower()
-             for item in (active_items or []) if str(item.get('ticker') or '').strip()}
+    # Current holdings plus the full known asset universe. Sold assets can
+    # still have payments announced for a record date when they were owned.
+    types = _asset_type_map()
+    for item in (active_items or []):
+        symbol = str(item.get('ticker') or '').strip().upper()
+        if symbol:
+            types[symbol] = str(item.get('tipo') or types.get(symbol) or 'outros').lower()
+    for item in (quote_items or []):
+        symbol = str(item.get('ticker') or '').strip().upper()
+        if symbol:
+            types[symbol] = str(item.get('tipo') or types.get(symbol) or 'outros').lower()
     signature = tuple(sorted(types.items()))
     if (not force and PROVENTOS_SYNC_CACHE.get('result')
             and PROVENTOS_SYNC_CACHE.get('signature') == signature
@@ -5340,11 +5470,16 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
     # tendo histórico de proventos, mesmo sem posição atual na carteira.
     quote_symbols = set(types)
     quote_symbols.update(str(item.get('ticker') or '').upper() for item in (quote_items or []))
+    active_quote_symbols = {str(item.get('ticker') or '').strip().upper()
+                            for item in (active_items or []) if str(item.get('ticker') or '').strip()}
     for ticker in sorted(symbol for symbol in quote_symbols if symbol):
         kind = types.get(ticker, 'outros')
         if kind not in stock_types and kind not in {'fii', 'fiis', 'fundo_imobiliario', 'fundos_imobiliarios'}:
             continue
-        quote = cotacao(ticker)
+        # Current holdings may refresh their quote. Sold assets use local cache
+        # only here; historical dividend endpoints above remain authoritative,
+        # avoiding one extra live quote request per previously-held ticker.
+        quote = cotacao(ticker) if ticker in active_quote_symbols else cotacao_cacheada(ticker)
         for event in ((quote.get('dividendsData') or {}).get('cashDividends') or []):
             fetched.append(({**event, 'symbol': ticker}, 'fii' if kind in {'fii','fiis','fundo_imobiliario','fundos_imobiliarios'} else 'acao'))
 
@@ -5392,11 +5527,16 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
         if total <= 0:
             ignored += 1
             continue
-        raw_label = str(event.get('label') or ('RENDIMENTO' if source_type == 'fii' else 'PROVENTO')).strip().upper()
-        label = 'JCP' if 'JCP' in raw_label or 'INTEREST' in raw_label else ('RENDIMENTO' if 'REND' in raw_label else 'DIVIDENDO')
+        raw_label = str(event.get('label') or event.get('type') or '').strip().upper()
+        label = _normalize_provento_category(raw_label, ticker) or ('RENDIMENTO' if source_type == 'fii' else 'DIVIDENDO')
+        if label == 'AMORTIZACAO':
+            ignored += 1
+            continue
         # A data de pagamento passada não comprova recebimento. Somente um
         # evento individual confirmado pela Pluggy pode promover a previsão.
-        status = 'Pago' if _pluggy_confirmed_provento_exists(ticker, payment_date, total) else 'A receber'
+        status = 'Pago' if _pluggy_confirmed_provento_exists(
+            ticker, payment_date, total, event_type=label, record_date=record_date
+        ) else 'A receber'
         # Data de pagamento pode ser corrigida pela fonte; não faz parte da chave.
         event_anchor = record_date or payment_date or approved_date or 'sem-data'
         event_key = '|'.join((ticker, label, event_anchor, f'{rate:.10f}'))
@@ -5482,10 +5622,14 @@ def _received_proventos_records(active_tickers=None):
             continue
         movement_type = str(row.get('movement_type') or '').upper()
         description = str(row.get('movement_description') or '').upper()
-        if movement_type in ('JCP', 'INTEREST_ON_EQUITY') or 'JCP' in description:
+        if movement_type in ('JCP', 'INTEREST_ON_EQUITY') or 'JCP' in description or 'JUROS SOBRE CAPITAL' in description:
             event_type = 'JCP'
-        elif movement_type in ('INTEREST', 'DISTRIBUTION') or typesafe_asset_type(ticker) == 'fii' or 'RENDIMENTO' in description:
+        elif 'DIVIDEND' in movement_type or 'DIVIDEND' in description or 'DIVIDENDO' in description:
+            event_type = 'DIVIDENDO'
+        elif 'RENDIMENTO' in description or (typesafe_asset_type(ticker) == 'fii' and movement_type in ('INTEREST', 'DISTRIBUTION', 'INCOME')):
             event_type = 'RENDIMENTO'
+        elif movement_type == 'INTEREST' and typesafe_asset_type(ticker) != 'fii':
+            event_type = 'DIVIDENDO'  # categoria Pluggy genérica; não presumir JCP sem descrição
         else:
             event_type = 'DIVIDENDO'
         records.append({
@@ -5539,7 +5683,10 @@ def _received_proventos_records(active_tickers=None):
         if paid_on.strftime('%Y-%m') >= current_month or not math.isfinite(amount) or amount <= 0 or not _is_income_event(event_type):
             continue
         # Keep Pluggy events as the stronger source if an old receipt matches.
-        if _pluggy_confirmed_provento_exists(ticker, payment_date, amount):
+        if _pluggy_confirmed_provento_exists(
+            ticker, payment_date, amount, event_type=row.get('tipo_evento'),
+            record_date=row.get('data_com')
+        ):
             continue
         # API calendars can repeat the same event across endpoints. Deduplicate
         # those rows by their event identity, while never collapsing Pluggy IDs.
@@ -7137,7 +7284,9 @@ def dashboard():
     active_tickers = {str(item.get('ticker') or '').upper() for item in portfolio.get('itens', []) if item.get('ticker')}
     today = datetime.now(TZ).date()
     pluggy_configured = _pluggy_is_configured()
-    received_records = _confirmed_received_proventos(_received_proventos_records(active_tickers), as_of=today)
+    # Recebimentos realizados pertencem ao histórico do investidor, inclusive
+    # ativos que foram vendidos. Apenas previsões e cards por ativo usam posições atuais.
+    received_records = _confirmed_received_proventos(_received_proventos_records(), as_of=today)
     alternative_received = [row for row in received_records
                             if row.get('confirmacao') == 'estimado_pela_data_de_pagamento_sem_confirmacao_pluggy']
     if active_tickers:
@@ -7193,6 +7342,11 @@ def dashboard():
             })
     for row in pending_rows:
         row_payment_date = _api_date(row.get('data_pagamento'))
+        if pluggy_configured and row_payment_date and _pluggy_confirmed_provento_exists(
+            row.get('ticker'), row_payment_date, row.get('valor_total'),
+            event_type=row.get('tipo_evento'), record_date=row.get('data_com')
+        ):
+            continue
         # In fallback mode, an API payment date that has already passed is shown
         # among estimated receipts, not simultaneously as an upcoming forecast.
         if not pluggy_configured and row_payment_date and row_payment_date[:7] < today.strftime('%Y-%m'):
@@ -7290,9 +7444,8 @@ def dashboard():
     # O card Maiores pagadores considera o histórico integral de recebimentos,
     # inclusive ativos que já não estejam na carteira atual. A fonte canônica
     # exige status Pago e data de pagamento não posterior à data local atual.
-    all_confirmed_received = _confirmed_received_proventos(
-        _received_proventos_records(), as_of=today
-    )
+    # A mesma lista histórica completa é usada no ranking, sem filtrar ativos vendidos.
+    all_confirmed_received = _confirmed_received_proventos(detailed, as_of=today)
     paid_by_ticker = {}
     for receipt in all_confirmed_received:
         if not _is_income_event(receipt.get('tipo_evento')):
@@ -7378,7 +7531,7 @@ def dashboard():
         integridade_dados={
             'cotacoes': {item['ticker']: {'fonte': item.get('cotacao_origem'), 'disponivel': bool(item.get('cotacao_disponivel'))} for item in portfolio.get('itens', [])},
             'historico_precos': performance.get('fontes_historico', {}),
-            'proventos': {'fonte_canonica': ('Pluggy' if pluggy_configured else 'APIs alternativas de meses encerrados; recebimento estimado sem Pluggy'), 'deduplicacao': ('ID externo Pluggy' if pluggy_configured else 'chave de evento + ticker/data-com/data de pagamento/tipo/valor'), 'sincronizacao': sync_status}
+            'proventos': {'fonte_canonica': ('Pluggy' if pluggy_configured else 'APIs alternativas de meses encerrados; recebimento estimado sem Pluggy'), 'escopo_recebidos': 'histórico integral, incluindo ativos vendidos', 'escopo_a_receber': 'ativos com posição atual', 'deduplicacao': ('ID externo Pluggy + categoria/data/valor estritos para conciliar previsões' if pluggy_configured else 'chave de evento + ticker/data-com/data de pagamento/tipo/valor'), 'sincronizacao': sync_status}
         },
         proventos_dashboard={
             'mensal':monthly_values,'total_12m':total_12m,'total_confirmado_12m':total_confirmed_12m,'media_mensal':round(total_12m/12,2),
