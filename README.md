@@ -1,22 +1,27 @@
-# Lonely Wallet v4.2.36
+# Lonely Wallet v4.2.37
 
-## Correção de concorrência SQLite e sincronização Pluggy
+## Correção da distribuição mensal de proventos
 
-- Corrigido o ciclo de bloqueio em que a sincronização mantinha uma transação de escrita aberta em `ativos.db` e tentava registrar a próxima chamada Pluggy por uma segunda conexão ao mesmo arquivo.
-- Antes de registrar uma nova chamada Pluggy, as gravações locais pendentes da sincronização são confirmadas, liberando o bloqueio do SQLite sem desativar o registro de segurança.
-- A sincronização continua bloqueada quando não é possível registrar uma chamada, preservando o comportamento de falha segura.
-- O processamento de operações agendadas passou a consultar primeiro se há operações vencidas e evita executar `UPDATE` sem necessidade.
-- Os erros transitórios `database is locked` / `database is busy` no processamento de operações agendadas não derrubam mais o carregamento do dashboard; as operações permanecem pendentes para nova tentativa.
-- Removido o comando redundante `PRAGMA journal_mode=WAL` da abertura de cada conexão de requisição; o modo WAL permanece configurado na inicialização do banco.
-- Incluída migração compatível para adicionar a coluna `endpoint` em tabelas antigas de cache e registro de chamadas, sem apagar os registros existentes.
-- Corrigido o diretório HOME do processo Gunicorn para evitar a tentativa de criar `/root/.gunicorn` pelo usuário não privilegiado do container.
-- Adicionados testes de regressão para confirmar transações pendentes antes do registro Pluggy e promoção de operações agendadas.
+- Corrigida a janela de distribuição aberta ao clicar em uma coluna do gráfico **Evolução de Proventos**, que podia permanecer vazia devido a uma referência JavaScript a uma variável inexistente (`side`).
+- Corrigida a renderização do gráfico de rosca para apresentar a distribuição dos valores por ativo e por tipo.
+- O clique em qualquer segmento da coluna mensal agora abre a distribuição do mês inteiro, somando proventos recebidos e valores a receber.
+- O título e o total da janela passam a representar o mês selecionado, sem limitar a distribuição ao segmento azul ou claro que recebeu o clique.
+- O modo **Por Ativo** apresenta a participação de cada ticker; o modo **Por Tipo** consolida os valores por classe de ativo.
+- Mantidos os filtros de tipo de ativo e ativo selecionado ao construir a distribuição mensal.
+- Incluído teste de runtime para validar os valores consolidados, as duas formas de agrupamento e a criação do gráfico de rosca.
 
 **Gerenciador pessoal de investimentos | Docker / ZimaOS | Português (Brasil)**
 
-Esta versão parte da base v4.2.35 e preserva a interface, as regras financeiras, as integrações, os dados e as credenciais existentes.
+Esta versão parte da base v4.2.36 e preserva a interface, as regras financeiras, as integrações, os dados e as credenciais existentes.
 
 As consultas da brapi passam a usar cache persistente em SQLite, orçamento local móvel de 30 dias, uma chamada por ticker, concorrência serializada e intervalo mínimo entre chamadas. As respostas recentes podem ser reutilizadas após reinicializações e, durante indisponibilidades temporárias, respostas anteriores dentro da janela de contingência podem ser reaproveitadas. A sincronização Pluggy para novas instalações passa a ter frequência padrão de quatro horas; preferências já salvas pelo usuário são preservadas.
+
+## Atualizações da versão 4.2.37
+
+- Corrigida a referência JavaScript inexistente que interrompia a renderização da janela de distribuição mensal.
+- A distribuição aberta pelo gráfico agora inclui recebidos e a receber do mês selecionado, independentemente do segmento da coluna clicado.
+- Implementados os gráficos de rosca **Por Ativo** e **Por Tipo**, com total consolidado, participação percentual e tooltip com valor.
+- Adicionado teste de runtime para confirmar o detalhamento mensal consolidado.
 
 ## Atualizações da versão 4.2.36
 
@@ -39,7 +44,7 @@ As consultas da brapi passam a usar cache persistente em SQLite, orçamento loca
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.36 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.37 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
 - **Persistência:** SQLite, com bancos separados para ativos e tokens
 - **Porta:** `8085` no host e `8080` no container
@@ -69,7 +74,7 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve apresentar `ok: true` e `version: 4.2.36`.
+O retorno deve apresentar `ok: true` e `version: 4.2.37`.
 
 **Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
 

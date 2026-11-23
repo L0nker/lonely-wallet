@@ -3352,10 +3352,13 @@ function buildProvDistribution(records,title){
  };
  const titleEl=document.getElementById('provDistributionTitle');if(titleEl)titleEl.textContent=title||'Distribuição de proventos em 12 meses';
 }
-function openProvDistributionForBar(key,mode,status='Pago'){
+function openProvDistributionForBar(key,mode){
  const d=state.proventos_dashboard||{},typeSelect=document.getElementById('provTypeFilter'),assetSelect=document.getElementById('provAssetFilter');
  const selectedType=typeSelect?.value||'todos',selectedAsset=assetSelect?.value||'todos';
- const source=status==='A receber'?(d.a_receber||[]):(d.recebidos||[]);
+ // The Investor10 monthly breakdown represents the whole month, not only the
+ // stack segment that happened to receive the click. Combine paid and forecast
+ // records so the chart, total and asset shares reconcile with the full column.
+ const source=[...(d.recebidos||[]),...(d.a_receber||[])];
  const records=source.filter(x=>{
   const date=String(x.data_pagamento||'');if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return false;
   const dt=new Date(date+'T12:00:00');
@@ -3363,8 +3366,8 @@ function openProvDistributionForBar(key,mode,status='Pago'){
   const kind=x.tipo_ativo||((state.itens||[]).find(i=>i.ticker===x.ticker)||{}).tipo||'outros';
   return bucket===key&&(selectedType==='todos'||kind===selectedType)&&(selectedAsset==='todos'||x.ticker===selectedAsset);
  });
- const title=mode==='anual'?`Distribuição de proventos ${status==='A receber'?'a receber':'recebidos'} em ${key}`:`Distribuição de proventos ${status==='A receber'?'a receber':'recebidos'} em ${key.slice(5,7)}/${key.slice(0,4)}`;
- provDistributionStatus=status;
+ const title=mode==='anual'?`Distribuição de proventos em ${key}`:`Distribuição de proventos em ${key.slice(5,7)}/${key.slice(0,4)}`;
+ provDistributionStatus='Consolidado';
  buildProvDistribution(records,title);
  const back=document.getElementById('provDistributionBack');
  if(back){back.style.display='flex';setProvDistributionMode(provDistributionMode||'ativo');}
@@ -3598,7 +3601,7 @@ function renderProventosDashboard(){
  renderProvChartPeriodMenu(availableYears);
  const labelsChart=keys.map(k=>mode==='anual'?k:`${k.slice(5,7)}/${k.slice(0,4)}`);
  const got=keys.map(k=>Number((sums[k]?.recebido||0).toFixed(2))),due=keys.map(k=>Number((sums[k]?.a_receber||0).toFixed(2)));
- chart('provMonthlyChart','bar',{labels:labelsChart,datasets:[{label:'Proventos recebidos',data:got,backgroundColor:'#477bd0',borderRadius:4,stack:'proventos'},{label:'Proventos a receber',data:due,backgroundColor:'#b9c9e8',borderRadius:4,stack:'proventos'}]},{interaction:{mode:'index',intersect:false},onClick:(event,elements)=>{if(!elements?.length)return;const hit=elements[0],index=hit.index;if(index>=0&&keys[index])openProvDistributionForBar(keys[index],mode,hit.datasetIndex===1?'A receber':'Pago');},onHover:(event,elements)=>{if(event?.native?.target)event.native.target.style.cursor=elements?.length?'pointer':'default';},plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false,sort:(a,b)=>b.datasetIndex-a.datasetIndex,displayColors:true,callbacks:{label:ctx=>`${ctx.dataset.label}: ${brl(ctx.raw||0)}`,title:items=>items?.length?labelsChart[items[0].dataIndex]:'',footer:items=>{const index=items?.[0]?.dataIndex;if(index===undefined)return '';return `Total: ${brl(Number(got[index]||0)+Number(due[index]||0))}`}}}},scales:{x:{stacked:true,ticks:{color:'#8f99a8'},grid:{display:false}},y:{stacked:true,beginAtZero:true,ticks:{color:'#8f99a8',callback:v=>'R$ '+Number(v).toLocaleString('pt-BR')},grid:{color:'#303541'}}}});
+ chart('provMonthlyChart','bar',{labels:labelsChart,datasets:[{label:'Proventos recebidos',data:got,backgroundColor:'#477bd0',borderRadius:4,stack:'proventos'},{label:'Proventos a receber',data:due,backgroundColor:'#b9c9e8',borderRadius:4,stack:'proventos'}]},{interaction:{mode:'index',intersect:false},onClick:(event,elements)=>{if(!elements?.length)return;const hit=elements[0],index=hit.index;if(index>=0&&keys[index])openProvDistributionForBar(keys[index],mode);},onHover:(event,elements)=>{if(event?.native?.target)event.native.target.style.cursor=elements?.length?'pointer':'default';},plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false,sort:(a,b)=>b.datasetIndex-a.datasetIndex,displayColors:true,callbacks:{label:ctx=>`${ctx.dataset.label}: ${brl(ctx.raw||0)}`,title:items=>items?.length?labelsChart[items[0].dataIndex]:'',footer:items=>{const index=items?.[0]?.dataIndex;if(index===undefined)return '';return `Total: ${brl(Number(got[index]||0)+Number(due[index]||0))}`}}}},scales:{x:{stacked:true,ticks:{color:'#8f99a8'},grid:{display:false}},y:{stacked:true,beginAtZero:true,ticks:{color:'#8f99a8',callback:v=>'R$ '+Number(v).toLocaleString('pt-BR')},grid:{color:'#303541'}}}});
  const totalReceived=got.reduce((a,b)=>a+b,0);
  const totalUpcoming=due.reduce((a,b)=>a+b,0);
  const totalFiltered=totalReceived+totalUpcoming;
@@ -3733,7 +3736,19 @@ function openProvDistributionModal(){
  back.style.display='flex';setProvDistributionMode(provDistributionMode||'ativo');
 }
 function closeProvDistributionModal(){const back=document.getElementById('provDistributionBack');if(back)back.style.display='none';}
-function setProvDistributionMode(mode){provDistributionMode=mode;document.getElementById('provDistAssetTab')?.classList.toggle('active',mode==='ativo');document.getElementById('provDistTypeTab')?.classList.toggle('active',mode==='tipo');const items=provDistributionData[mode]||[];const total=items.reduce((sum,x)=>sum+Number(x.value||0),0);const totalEl=document.getElementById('provDistributionTotal');if(totalEl){totalEl.textContent=brl(total);totalEl.style.color=side==='venda'?'#ef6680':'#00d4a0';}const list=document.getElementById('provDistributionDetailList');if(list)list.innerHTML=items.length?items.map(item=>`<div class="prov-distribution-item" data-tooltip="${provDistributionStatus==='A receber'?'Previsto':'Recebido'}: ${brl(item.value)}"><span><i style="background:${item.color}"></i>${escapeHTML(item.name)}</span><b>${pct(total?item.value/total*100:0)}</b></div>`).join(''):`<div class="empty">Nenhum provento ${provDistributionStatus==='A receber'?'previsto':'recebido'} no período.</div>`;chart('provDistributionDetailChart','doughnut',{labels:items.map(x=>x.name),datasets:[{data:items.map(x=>x.value),backgroundColor:items.map(x=>x.color),borderWidth:0}]},{cutout:'48%',plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${ctx.label}: ${brl(ctx.raw||0)}`}}}});}
+function setProvDistributionMode(mode){
+ provDistributionMode=mode==='tipo'?'tipo':'ativo';
+ document.getElementById('provDistAssetTab')?.classList.toggle('active',provDistributionMode==='ativo');
+ document.getElementById('provDistTypeTab')?.classList.toggle('active',provDistributionMode==='tipo');
+ const items=provDistributionData[provDistributionMode]||[];
+ const total=items.reduce((sum,x)=>sum+Number(x.value||0),0);
+ const totalEl=document.getElementById('provDistributionTotal');
+ if(totalEl){totalEl.textContent=brl(total);totalEl.style.color=provDistributionStatus==='A receber'?'#b9c9e8':'#00d4a0';}
+ const list=document.getElementById('provDistributionDetailList');
+ const itemDescription=provDistributionStatus==='A receber'?'Previsto':provDistributionStatus==='Consolidado'?'Recebido + a receber':'Recebido';
+ if(list)list.innerHTML=items.length?items.map(item=>`<div class="prov-distribution-item" data-tooltip="${itemDescription}: ${brl(item.value)}"><span><i style="background:${item.color}"></i>${escapeHTML(item.name)}</span><b>${pct(total?item.value/total*100:0)}</b></div>`).join(''):`<div class="empty">Nenhum provento ${provDistributionStatus==='A receber'?'previsto':provDistributionStatus==='Consolidado'?'recebido ou previsto':'recebido'} no período.</div>`;
+ chart('provDistributionDetailChart','doughnut',{labels:items.map(x=>x.name),datasets:[{data:items.map(x=>Number(x.value||0)),backgroundColor:items.map(x=>x.color),borderWidth:0}]},{cutout:'48%',plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${ctx.label}: ${brl(ctx.raw||0)} · ${pct(total?(Number(ctx.raw)||0)/total*100:0)}`}}}});
+}
 
 const chartPalette=['#78b7f5','#f3d978','#42d49b','#b59af3','#ed8e9c','#74d7d2','#d7a36a','#e8a56b','#a8b7cb','#d98ad0','#f28f5b','#88c1a8','#c49aeb','#d9c46a','#78a8d8','#e57da9','#9cc36b','#b6a0d8'];
 function sumAssetCapitalGain(items){
