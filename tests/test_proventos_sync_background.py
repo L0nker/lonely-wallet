@@ -12,6 +12,7 @@ import unittest
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / 'app' / 'main.py').read_text(encoding='utf-8')
@@ -44,6 +45,14 @@ class DummyApp:
 def build_namespace(sync_function, connection=None):
     connection = connection or sqlite3.connect(':memory:', check_same_thread=False)
     connection.row_factory = sqlite3.Row
+    tracked_threads = []
+
+    class TrackingThread(threading.Thread):
+        def start(self):
+            tracked_threads.append(self)
+            return super().start()
+
+    thread_api = SimpleNamespace(Thread=TrackingThread, RLock=threading.RLock)
     connection.execute('''CREATE TABLE IF NOT EXISTS proventos_sync_queue_state (
       id INTEGER PRIMARY KEY CHECK(id=1), status TEXT NOT NULL DEFAULT 'idle',
       signature TEXT NOT NULL DEFAULT '', inputs_json TEXT NOT NULL DEFAULT '{}',
@@ -53,7 +62,7 @@ def build_namespace(sync_function, connection=None):
     connection.commit()
     namespace = {
         'app': DummyApp(),
-        'threading': threading,
+        'threading': thread_api,
         'time': time,
         'datetime': datetime,
         'TZ': timezone.utc,
@@ -74,7 +83,20 @@ def build_namespace(sync_function, connection=None):
     }
     exec(compile(ast.Module(body=FUNCTIONS, type_ignores=[]), '<proventos-sync-worker>', 'exec'), namespace)
     namespace['_test_connection'] = connection
+    namespace['_test_threads'] = tracked_threads
     return namespace
+
+
+def close_test_namespace(namespace):
+    # The worker commits its final state before returning. Join it before
+    # closing the shared in-memory/file-backed test connection.
+    for worker in namespace.get('_test_threads', []):
+        worker.join(timeout=5)
+        if worker.is_alive():
+            raise AssertionError('A thread de sincronização não terminou antes da limpeza do teste.')
+    connection = namespace.get('_test_connection')
+    if connection is not None:
+        connection.close()
 
 
 class ProventosBackgroundQueueTests(unittest.TestCase):
@@ -94,6 +116,7 @@ class ProventosBackgroundQueueTests(unittest.TestCase):
             return {'ok': True, 'importados': 2, 'mensagem': 'segunda'}
 
         ns = build_namespace(sync)
+        self.addCleanup(close_test_namespace, ns)
         started = time.monotonic()
         first = ns['_queue_proventos_sync'](
             force=False,
@@ -175,6 +198,7 @@ class ProventosBackgroundQueueTests(unittest.TestCase):
         connection = sqlite3.connect(database_path, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         ns = build_namespace(sync, connection)
+        self.addCleanup(close_test_namespace, ns)
 
         self.assertTrue(ns['_restore_proventos_sync_queue']())
         self.assertTrue(finished.wait(2))
@@ -220,6 +244,7 @@ class ProventosBackgroundQueueTests(unittest.TestCase):
         connection = sqlite3.connect(database_path, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         ns = build_namespace(sync, connection)
+        self.addCleanup(close_test_namespace, ns)
 
         self.assertTrue(ns['_restore_proventos_sync_queue']())
         self.assertTrue(finished.wait(2))

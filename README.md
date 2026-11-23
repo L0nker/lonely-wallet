@@ -1,4 +1,32 @@
-# Lonely Wallet v4.2.59
+# Lonely Wallet v4.2.60
+
+## Consistência financeira do ledger de recebimentos Pluggy
+- O ledger de recebimentos agora compara o valor gravado em `pluggy_imported_events.amount` com os valores documentados na transação de investimento persistida: `grossAmount`, `amount`, `netAmount` e a coluna `pluggy_investment_transactions.amount`.
+- Eventos cujo valor diverge de todos os valores da transação vinculada deixam de ser contabilizados como recebimentos, mesmo que ID externo, ticker e data coincidam.
+- Quando a transação contém `netAmount` positivo, o ledger apresenta o valor líquido efetivamente creditado, preservando o tratamento de JCP com retenção de imposto. Na ausência desse campo, mantém o valor validado do evento importado.
+- Mantida a exigência de evento Pluggy importado, transação persistida correspondente, ticker consistente, data de transação compatível e classificação de movimento elegível.
+- Adicionados cenários de regressão para divergência entre valor do evento e transação e para JCP com valor bruto de R$ 100,00 e líquido de R$ 85,00.
+
+## Cache e compatibilidade
+- Incrementado `DASHBOARD_CACHE_FORMAT` para 17, invalidando snapshots anteriores ao novo controle de valores do ledger.
+- Atualizada a versão do aplicativo e os metadados do pacote para `4.2.60`.
+- Preservados bancos SQLite, tokens, credenciais, histórico Pluggy e volume persistente `/DATA/AppData/lonely-wallet/data:/data`.
+- Nenhum banco, segredo ou credencial foi incluído no ZIP.
+
+## Validação desta versão
+- Teste direcionado do ledger: aprovado, incluindo valores incompatíveis e JCP bruto/líquido.
+- Corrigida a limpeza dos fixtures da fila de sincronização: as conexões SQLite de teste só são fechadas após o término confirmado das threads; suíte executada sem `ResourceWarning`.
+- 144 testes Python independentes aprovados. O módulo integrado `test_regressions.py` não pôde ser carregado porque Flask/Werkzeug não estão instalados; a rede indisponível impediu instalar essas dependências.
+- Cinco suítes JavaScript aprovadas e três blocos JavaScript inline do template verificados com `node --check`.
+- Compilação Python, validação YAML, metadados de versão/cache e integridade do ZIP extraído: aprovados.
+- Build Docker e sincronização real com a Pluggy não foram executados: Docker/Podman e dependências Flask não estão disponíveis neste ambiente. A validação de runtime em produção ainda requer o ZimaOS.
+- O Chart.js oficial permanece sem bundle de integridade verificada por indisponibilidade de rede; o renderer alternativo local continua disponível.
+
+**Base:** Lonely Wallet v4.2.59(1), pacote enviado para auditoria.
+
+**Versão:** 4.2.60.
+
+---
 
 ## Correções da conciliação e migração de proventos
 - A migração de status antigos só preserva `Pago` quando existe um evento Pluggy com ID externo válido, uma transação de investimento correspondente e um registro de provento de destino existente.

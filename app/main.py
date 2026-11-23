@@ -84,7 +84,7 @@ QUOTE_HISTORY_PATH = os.environ.get('QUOTE_HISTORY_PATH', '/data/quotes_last_val
 QUOTE_HISTORY_LOCK = threading.RLock()
 DASHBOARD_CACHE_PATH = os.environ.get('DASHBOARD_CACHE_PATH', '/data/dashboard_cache.json')
 DASHBOARD_CACHE_LOCK = threading.RLock()
-DASHBOARD_CACHE_FORMAT = 16
+DASHBOARD_CACHE_FORMAT = 17
 PORTFOLIO_HISTORY_CACHE, PORTFOLIO_HISTORY_TTL = {}, 1800
 PORTFOLIO_HISTORY_EMPTY_TTL = 120
 def _dashboard_cache_signature():
@@ -6291,6 +6291,7 @@ def _received_proventos_records(active_tickers=None):
                     pe.ticker AS confirmed_ticker,p.id,p.ticker,p.valor_total,p.data,
                     COALESCE(tx.movement_type,'') AS movement_type,
                     COALESCE(tx.description,'') AS movement_description,
+                    COALESCE(tx.amount,0) AS transaction_amount,
                     COALESCE(tx.raw_json,'{}') AS movement_raw
              FROM pluggy_imported_events pe
              JOIN proventos p ON p.id=pe.target_id
@@ -6322,6 +6323,31 @@ def _received_proventos_records(active_tickers=None):
             row.get('movement_type'), row.get('movement_description'), row.get('movement_raw')
         ):
             continue
+
+        # The imported-event amount is the value displayed in the receipt
+        # ledger. Require it to agree with a value actually present in the
+        # persisted Pluggy transaction (gross, amount, net, or stored amount).
+        # This protects the dashboard from a stale/corrupted event row linked
+        # to a valid transaction ID but carrying an unrelated financial value.
+        transaction_amounts = _pluggy_amount_candidates(
+            row.get('movement_raw'), fallback=row.get('transaction_amount')
+        )
+        if not transaction_amounts or not any(
+            abs(candidate - amount) <= _pluggy_match_tolerance(amount)
+            for candidate in transaction_amounts
+        ):
+            continue
+        try:
+            raw_movement_for_amount = row.get('movement_raw')
+            if isinstance(raw_movement_for_amount, str):
+                raw_movement_for_amount = json.loads(raw_movement_for_amount or '{}')
+            net_amount = abs(float(
+                raw_movement_for_amount.get('netAmount') or 0
+            )) if isinstance(raw_movement_for_amount, dict) else 0.0
+        except (TypeError, ValueError, json.JSONDecodeError):
+            net_amount = 0.0
+        if math.isfinite(net_amount) and net_amount > 0:
+            amount = round(net_amount, 2)
         try:
             if date.fromisoformat(payment_date[:10]) > datetime.now(TZ).date():
                 continue

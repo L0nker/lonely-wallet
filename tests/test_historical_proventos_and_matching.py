@@ -428,6 +428,10 @@ class ReceivedProventosLedgerTests(unittest.TestCase):
                            and node.name == '_is_pluggy_income_movement')
         category_node = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
                              and node.name == '_normalize_provento_category')
+        amount_node = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                           and node.name == '_pluggy_amount_candidates')
+        tolerance_node = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                              and node.name == '_pluggy_match_tolerance')
         connection = sqlite3.connect(':memory:')
         connection.row_factory = sqlite3.Row
         try:
@@ -438,7 +442,7 @@ class ReceivedProventosLedgerTests(unittest.TestCase):
                     ticker TEXT, target_id INTEGER, import_state TEXT
                 );
                 CREATE TABLE pluggy_investment_transactions(
-                    transaction_id TEXT, ticker TEXT, transaction_date TEXT,
+                    transaction_id TEXT, ticker TEXT, transaction_date TEXT, amount REAL,
                     description TEXT, movement_type TEXT, raw_json TEXT, import_state TEXT
                 );
                 INSERT INTO proventos(id,ticker,valor_total,data) VALUES
@@ -451,7 +455,9 @@ class ReceivedProventosLedgerTests(unittest.TestCase):
                     (7,'PETR4',70.00,'2026-01-15'),
                     (8,'PETR4',80.00,'2026-01-15'),
                     (9,'PETR4',90.00,'2026-01-15'),
-                    (10,'PETR4',100.00,'2026-01-15');
+                    (10,'PETR4',100.00,'2026-01-15'),
+                    (11,'PETR4',66.00,'2026-01-15'),
+                    (12,'PETR4',85.00,'2026-01-15');
                 INSERT INTO pluggy_imported_events VALUES
                     ('good','provento','2026-01-15',10.00,'PETR4',1,'imported'),
                     ('wrong-target','provento','2026-01-15',20.00,'PETR4',2,'imported'),
@@ -462,17 +468,21 @@ class ReceivedProventosLedgerTests(unittest.TestCase):
                     ('other-income','provento','2026-01-15',70.00,'PETR4',7,'imported'),
                     ('buy-not-income','provento','2026-01-15',80.00,'PETR4',8,'imported'),
                     ('not-imported','provento','2026-01-15',90.00,'PETR4',9,'imported'),
-                    ('amortization-interest','provento','2026-01-15',100.00,'PETR4',10,'imported');
+                    ('amortization-interest','provento','2026-01-15',100.00,'PETR4',10,'imported'),
+                    ('amount-mismatch','provento','2026-01-15',66.00,'PETR4',11,'imported'),
+                    ('jcp-gross-net','provento','2026-01-15',85.00,'PETR4',12,'imported');
                 INSERT INTO pluggy_investment_transactions VALUES
-                    ('good','PETR4','2026-01-15','Investment income','INTEREST','{"movementType":"JCP"}','imported_provento'),
-                    ('wrong-target','PETR4','2026-01-15','Dividend','DIVIDEND','{}','imported_provento'),
-                    ('wrong-date','PETR4','2026-02-15','Dividend','DIVIDEND','{}','imported_provento'),
-                    ('future','PETR4','2026-12-15','Dividend','DIVIDEND','{}','imported_provento'),
-                    ('amortization','PETR4','2026-01-15','Amortization','AMORTIZATION','{}','imported_provento'),
-                    ('other-income','PETR4','2026-01-15','Dividend payment','OTHER','{}','imported_provento'),
-                    ('buy-not-income','PETR4','2026-01-15','Dividend payment','BUY','{}','imported_provento'),
-                    ('not-imported','PETR4','2026-01-15','Dividend payment','DIVIDEND','{}','imported_only'),
-                    ('amortization-interest','PETR4','2026-01-15','Investment income','INTEREST','{"movementType":"AMORTIZATION"}','imported_provento');
+                    ('good','PETR4','2026-01-15',10.00,'Investment income','INTEREST','{"movementType":"JCP","amount":10.0}','imported_provento'),
+                    ('wrong-target','PETR4','2026-01-15',20.00,'Dividend','DIVIDEND','{"amount":20.0}','imported_provento'),
+                    ('wrong-date','PETR4','2026-02-15',30.00,'Dividend','DIVIDEND','{"amount":30.0}','imported_provento'),
+                    ('future','PETR4','2026-12-15',50.00,'Dividend','DIVIDEND','{"amount":50.0}','imported_provento'),
+                    ('amortization','PETR4','2026-01-15',60.00,'Amortization','AMORTIZATION','{"amount":60.0}','imported_provento'),
+                    ('other-income','PETR4','2026-01-15',70.00,'Dividend payment','OTHER','{"amount":70.0}','imported_provento'),
+                    ('buy-not-income','PETR4','2026-01-15',80.00,'Dividend payment','BUY','{"amount":80.0}','imported_provento'),
+                    ('not-imported','PETR4','2026-01-15',90.00,'Dividend payment','DIVIDEND','{"amount":90.0}','imported_only'),
+                    ('amortization-interest','PETR4','2026-01-15',100.00,'Investment income','INTEREST','{"movementType":"AMORTIZATION","amount":100.0}','imported_provento'),
+                    ('amount-mismatch','PETR4','2026-01-15',77.00,'Dividend payment','DIVIDEND','{"grossAmount":77.0,"netAmount":75.0}','imported_provento'),
+                    ('jcp-gross-net','PETR4','2026-01-15',100.00,'Investment income','INTEREST','{"movementType":"JCP","grossAmount":100.0,"amount":100.0,"netAmount":85.0}','imported_provento');
             ''')
             namespace = {
                 'db': lambda: connection,
@@ -487,11 +497,12 @@ class ReceivedProventosLedgerTests(unittest.TestCase):
                 '_is_income_event': lambda value: 'AMORTIZA' not in str(value or '').upper(),
                 'typesafe_asset_type': lambda ticker: 'fii' if str(ticker).upper().endswith('11') else 'acao',
             }
-            exec(compile(ast.Module(body=[category_node, income_node, node], type_ignores=[]), '<received-proventos>', 'exec'), namespace)
+            exec(compile(ast.Module(body=[amount_node, tolerance_node, category_node, income_node, node], type_ignores=[]), '<received-proventos>', 'exec'), namespace)
             rows = namespace['_received_proventos_records'](['PETR4'])
-            self.assertEqual([row['pluggy_transaction_id'] for row in rows], ['good', 'other-income'])
-            self.assertEqual([row['valor_total'] for row in rows], [10.0, 70.0])
+            self.assertEqual([row['pluggy_transaction_id'] for row in rows], ['good', 'jcp-gross-net', 'other-income'])
+            self.assertEqual([row['valor_total'] for row in rows], [10.0, 85.0, 70.0])
             self.assertEqual(rows[0]['tipo_evento'], 'JCP')
+            self.assertEqual(rows[1]['tipo_evento'], 'JCP')
         finally:
             connection.close()
 
