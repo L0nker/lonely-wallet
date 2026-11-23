@@ -4,6 +4,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        CHARTJS_DOWNLOAD_ATTEMPTS: "2"
     container_name: lonely-wallet
     restart: unless-stopped
     healthcheck:
@@ -32,7 +34,7 @@ services:
     volumes:
       - /DATA/AppData/lonely-wallet/data:/data
     labels:
-      icon: "/static/lonely-wallet-logo.png?v=4.2.46"
+      icon: "/static/lonely-wallet-logo.png?v=4.2.48"
     deploy:
       resources:
         limits:
@@ -52,7 +54,7 @@ x-casaos:
     pt_BR: Carteira pessoal para acompanhar investimentos, posições e proventos.
     en_US: Personal investment portfolio dashboard.
   developer: Lonely Wallet
-  icon: "/static/lonely-wallet-logo.png?v=4.2.46"
+  icon: "/static/lonely-wallet-logo.png?v=4.2.48"
   index: /
   is_uncontrolled: false
   main: lonely-wallet

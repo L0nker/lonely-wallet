@@ -1,5 +1,59 @@
-# Lonely Wallet v4.2.46
+# Lonely Wallet v4.2.48
 
+# Atualizações da versão 4.2.48
+
+## Retry-After padronizado em todos os provedores
+- Mantida a função compartilhada `_retry_after_seconds()` para interpretar `Retry-After` em segundos ou data HTTP.
+- Aplicado o mesmo parser aos fluxos BRAPI/HG Brasil, Pluggy e autenticação Pluggy, em respostas 429 e 503.
+- Datas HTTP são convertidas em UTC; cabeçalhos inválidos usam espera padrão conservadora.
+- Mantida espera mínima de segurança para respostas 429 e preservados períodos longos informados pelo provedor.
+
+## Chart.js 4.6.1: obtenção direta do bundle UMD
+- Ampliado o processo de build: após tentar os tarballs npm/Yarn/npmmirror, o instalador tenta baixar o bundle UMD pré-compilado diretamente pelo jsDelivr e cdnjs.
+- O bundle direto é aceito somente quando o SHA-384 coincide exatamente com o SRI fixado para Chart.js 4.6.1.
+- Os tarballs continuam exigindo correspondência exata do SHA-512 SRI publicado pelo npm.
+- O arquivo instalado recebe sidecar SHA-256 e a origem verificada é registrada em `chartjs-build-status.json`.
+- Respostas transitórias HTTP 408, 425, 429 e 5xx recebem novas tentativas; erros de integridade ou HTTP permanentes não são silenciosamente aceitos.
+- Se todos os registries e CDNs estiverem indisponíveis, o build mantém o renderer alternativo e sinaliza `mode=fallback`; não declara o Chart.js completo como verificado.
+- Referências públicas do SRI do bundle 4.6.1: https://www.jsdelivr.com/package/npm/chart.js?path=dist e https://plainjs.com/javascript/plugins/chart-js-5/.
+
+## Testes da versão 4.2.48
+- Adicionado teste de fallback do registry npm para o bundle UMD direto por CDN.
+- Adicionado teste para rejeitar bundle direto com SHA-384 divergente.
+- Mantidos testes de fallback offline, espelho de registry, retry HTTP 503 e SRI do tarball.
+- Mantidos testes de `Retry-After` com segundos inteiros/fracionários e data HTTP.
+- Executados 106 testes Python disponíveis, excluindo `test_regressions.py` por dependência Flask ausente.
+- Executadas cinco suítes JavaScript de runtime; compilação Python e YAML Docker Compose validados.
+- Build desta geração permaneceu em fallback devido à ausência de DNS externo no ambiente de empacotamento. O build no ZimaOS tentará registries e CDNs, validando o bundle antes de instalar.
+
+# Atualizações da versão 4.2.47
+
+## Respeito completo ao cabeçalho Retry-After
+- Implementada a interpretação de `Retry-After` nos dois formatos padronizados: segundos de espera e data HTTP.
+- Adicionada a função compartilhada `_retry_after_seconds()` para BRAPI, HG Brasil e Pluggy, incluindo autenticação Pluggy.
+- Datas HTTP são convertidas para segundos restantes em UTC; cabeçalhos inválidos usam o intervalo padrão conservador.
+- Mantido limite de espera de no mínimo 60 segundos para respostas 429, evitando tentativas antecipadas.
+- Removidos limites máximos curtos que poderiam reconsultar um provedor antes do horário indicado por um `Retry-After` longo.
+
+## Obtenção resiliente do Chart.js completo
+- O build tenta obter Chart.js 4.6.1 do registry npm e de dois mirrors de distribuição.
+- Implementadas tentativas repetidas para falhas transitórias de rede, HTTP 429 e HTTP 5xx.
+- Todos os mirrors precisam fornecer exatamente o tarball compatível com o SRI SHA-512 fixado; nenhum bundle é aceito apenas por tamanho ou nome.
+- Erros de integridade, pacote inválido e erros HTTP permanentes interrompem o build, sem fallback silencioso para artefato não confiável.
+- Quando todos os registries estão temporariamente inacessíveis, o build mantém o `chart-fallback.js` e registra o estado `degraded`.
+- Adicionado argumento Docker `CHARTJS_DOWNLOAD_ATTEMPTS` para ajustar o número de tentativas por registry.
+- O bundle completo não pôde ser baixado nesta geração porque o ambiente de criação estava sem resolução DNS/rede externa; o status do pacote permanece corretamente em `fallback`.
+- Foram executados 104 testes Python disponíveis (exceto `test_regressions.py`, que requer Flask ausente no ambiente) e cinco suítes JavaScript.
+
+## Testes da versão 4.2.47
+- Adicionados testes para `Retry-After` em segundos inteiros e fracionários.
+- Adicionados testes para `Retry-After` em formato de data HTTP, data expirada, cabeçalho inválido e limites de segurança.
+- Adicionados testes para confirmar que autenticação e requisições Pluggy, além dos provedores comuns, usam o parser compartilhado.
+- Incluído o tratamento de `Retry-After` também em respostas HTTP 503 quando o provedor fornece esse cabeçalho.
+- Adicionado teste de failover de registry npm para mirror com validação SRI.
+- Adicionado teste de nova tentativa após HTTP 503 transitório no download do Chart.js.
+- Adicionado teste de nova tentativa após HTTP 503 transitório.
+- Mantidos os testes de fallback offline e rejeição de pacote com integridade inválida.
 
 # Atualizações da versão 4.2.46
 
@@ -220,7 +274,7 @@ A aplicação preserva a interface, as regras financeiras, as integrações, os 
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.46 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.47 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
 - **Persistência:** SQLite, com bancos separados para ativos e tokens
 - **Porta:** `8085` no host e `8080` no container

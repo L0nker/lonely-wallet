@@ -3,6 +3,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 from datetime import date, datetime, time as clock_time, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from zoneinfo import ZoneInfo
 import requests
 from cryptography.fernet import Fernet, InvalidToken
@@ -523,6 +524,57 @@ def _cached_http_response(payload, url, status_code=200, stale=False):
     return response
 
 
+def _retry_after_seconds(value, default=60, minimum=60, maximum=2_147_483_647, now=None):
+    """Parse Retry-After as delay-seconds or an HTTP-date (RFC 7231).
+
+    Invalid/missing headers use a conservative default. Returned values are
+    whole seconds; a high safety ceiling prevents overflow without shortening
+    realistic provider-mandated retry windows.
+    """
+    try:
+        fallback = max(1, int(default))
+    except (TypeError, ValueError, OverflowError):
+        fallback = 60
+    try:
+        lower = max(1, int(minimum))
+    except (TypeError, ValueError, OverflowError):
+        lower = 1
+    try:
+        upper = max(lower, int(maximum))
+    except (TypeError, ValueError, OverflowError):
+        upper = max(lower, 21600)
+
+    if value is None:
+        return min(upper, max(lower, fallback))
+    raw = str(value).strip()
+    if not raw:
+        return min(upper, max(lower, fallback))
+
+    seconds = None
+    try:
+        numeric = float(raw)
+        if math.isfinite(numeric):
+            seconds = math.ceil(numeric)
+    except (TypeError, ValueError, OverflowError):
+        seconds = None
+
+    if seconds is None:
+        try:
+            retry_at = parsedate_to_datetime(raw)
+            if retry_at is None:
+                raise ValueError('data HTTP inválida')
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            current = now or datetime.now(timezone.utc)
+            if current.tzinfo is None:
+                current = current.replace(tzinfo=timezone.utc)
+            seconds = math.ceil((retry_at.astimezone(timezone.utc) - current.astimezone(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError, IndexError):
+            seconds = fallback
+
+    return min(upper, max(lower, int(seconds)))
+
+
 def _synthetic_api_response(status_code, message, url, retry_after=None):
     response = requests.Response()
     response.status_code = int(status_code)
@@ -628,11 +680,8 @@ def _provider_get(provider, url, params=None, headers=None, timeout=12, cache_tt
 
         _api_update_request_status(request_id, response.status_code)
         if response.status_code == 429:
-            retry_after = response.headers.get('Retry-After', '60')
-            try:
-                cooldown_seconds = min(6 * 3600, max(60, int(float(retry_after))))
-            except (TypeError, ValueError):
-                cooldown_seconds = 60
+            retry_after = response.headers.get('Retry-After')
+            cooldown_seconds = _retry_after_seconds(retry_after, default=60, minimum=60, maximum=2_147_483_647)
             try:
                 detail = response.json()
                 message = json.dumps(detail, ensure_ascii=False).lower()
@@ -659,7 +708,9 @@ def _provider_get(provider, url, params=None, headers=None, timeout=12, cache_tt
                 _api_cache_record_hit(provider, stale=True)
                 return _cached_http_response(cached['payload'], url, cached['status_code'], stale=True)
         elif response.status_code >= 500:
-            _provider_set_cooldown(provider, 30, response.status_code, 'upstream_5xx')
+            retry_header = response.headers.get('Retry-After')
+            cooldown_seconds = _retry_after_seconds(retry_header, default=30, minimum=1, maximum=2_147_483_647) if retry_header else 30
+            _provider_set_cooldown(provider, cooldown_seconds, response.status_code, 'upstream_5xx')
             if cached and cached['stale_until'] > now:
                 _api_cache_record_hit(provider, stale=True)
                 return _cached_http_response(cached['payload'], url, cached['status_code'], stale=True)
@@ -1719,13 +1770,12 @@ def _pluggy_api_key(force=False):
             raise
         _api_update_request_status(request_id, response.status_code)
         if response.status_code == 429:
-            try:
-                pause = min(3600, max(60, int(float(response.headers.get('Retry-After') or '60'))))
-            except (TypeError, ValueError):
-                pause = 60
+            pause = _retry_after_seconds(response.headers.get('Retry-After'), default=60, minimum=60, maximum=2_147_483_647)
             _provider_set_cooldown('pluggy', pause, 429, 'rate_limited')
         elif response.status_code >= 500:
-            _provider_set_cooldown('pluggy', 30, response.status_code, 'upstream_5xx')
+            retry_header = response.headers.get('Retry-After')
+            pause = _retry_after_seconds(retry_header, default=30, minimum=1, maximum=2_147_483_647) if retry_header else 30
+            _provider_set_cooldown('pluggy', pause, response.status_code, 'upstream_5xx')
         response.raise_for_status()
         api_key = str((response.json() or {}).get('apiKey') or '')
         if not api_key:
@@ -1753,13 +1803,12 @@ def _pluggy_request(method, path, params=None, force_auth=False):
                 raise
             _api_update_request_status(request_id, result.status_code)
             if result.status_code == 429:
-                try:
-                    pause = min(3600, max(60, int(float(result.headers.get('Retry-After') or '60'))))
-                except (TypeError, ValueError):
-                    pause = 60
+                pause = _retry_after_seconds(result.headers.get('Retry-After'), default=60, minimum=60, maximum=2_147_483_647)
                 _provider_set_cooldown('pluggy', pause, 429, 'rate_limited')
             elif result.status_code >= 500:
-                _provider_set_cooldown('pluggy', 30, result.status_code, 'upstream_5xx')
+                retry_header = result.headers.get('Retry-After')
+                pause = _retry_after_seconds(retry_header, default=30, minimum=1, maximum=2_147_483_647) if retry_header else 30
+                _provider_set_cooldown('pluggy', pause, result.status_code, 'upstream_5xx')
             return result
 
     response = perform(key)

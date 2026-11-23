@@ -8,8 +8,9 @@ RUN pip install --no-cache-dir --disable-pip-version-check -r requirements.txt \
 COPY app ./app
 COPY scripts ./scripts
 COPY VERSION README.md ./
-# Build-time vendoring: the running app serves Chart.js locally, without a browser CDN dependency.
-RUN python /srv/scripts/vendor_chartjs.py \
+ARG CHARTJS_DOWNLOAD_ATTEMPTS=2
+# Build-time vendoring: try npm plus integrity-pinned mirrors; never install an unverified bundle.
+RUN CHARTJS_DOWNLOAD_ATTEMPTS=${CHARTJS_DOWNLOAD_ATTEMPTS} python /srv/scripts/vendor_chartjs.py \
     && mkdir -p /data/backups \
     && chmod 755 /srv/scripts/entrypoint.py
 EXPOSE 8080
