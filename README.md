@@ -1,4 +1,33 @@
-# Lonely Wallet v4.2.41
+# Lonely Wallet v4.2.42
+
+
+# Atualizações da versão 4.2.42
+
+## Proventos recebidos sem Pluggy configurada
+- Quando não existem credenciais Pluggy válidas e item ativo conectado, os eventos de proventos registrados pelas APIs alternativas podem ser apresentados como recebimentos estimados.
+- Os recebimentos estimados são identificados na interface como `Pago · API`, com indicação de que não possuem confirmação Pluggy.
+- Para respeitar a regra temporal da carteira, somente eventos de meses já encerrados entram no total de recebidos; eventos do mês atual permanecem em `A receber` durante todo o mês, mesmo que o dia publicado de pagamento já tenha passado.
+- Lançamentos manuais e importações B3, isoladamente, nunca são promovidos a recebimentos estimados.
+- Quando a Pluggy possui credenciais válidas e um item ativo, somente transações Pluggy confirmadas são consideradas recebimentos. Falhas temporárias da Pluggy ou problemas ao descriptografar credenciais não ativam fallback estimado.
+- Previsões alternativas conciliadas com uma transação Pluggy não são contabilizadas duas vezes.
+
+## Compatibilidade do cache SQLite
+- Adicionado suporte à coluna legada obrigatória `cached_at` na tabela `api_response_cache`.
+- A gravação preenche `cached_at` e `fetched_at`, preservando compatibilidade com bancos implantados que exigem qualquer uma dessas colunas.
+- A migração sincroniza os timestamps legados e reconhece valores numéricos e ISO-8601 ao ler o cache.
+- Os registros existentes são preservados, sem recriação ou limpeza da tabela.
+
+## Agendador Pluggy
+- O HTTP 409 de uma sincronização já em andamento é tratado como concorrência esperada, sem marcar a execução como falha nem iniciar backoff indevido de cinco minutos.
+
+## Testes
+- Adicionado teste para eventos alternativos de meses anteriores quando a Pluggy não está configurada.
+- Adicionado teste para manter eventos com data de pagamento passada dentro do mês atual como `A receber`.
+- Adicionado teste para impedir recebimentos alternativos quando a Pluggy está operacionalmente configurada.
+- Adicionados testes para credenciais Pluggy ausentes, inválidas ou sem item ativo.
+- Adicionados testes para banco SQLite legado com `cached_at NOT NULL` e `payload_json NOT NULL`.
+- Adicionados testes para preservar pagamentos Pluggy distintos e a idempotência de reprocessamento.
+- Build Docker real e sincronização funcional com provedores externos ainda precisam ser validados no ambiente de produção.
 
 
 # Atualizações da versão 4.2.41
@@ -125,7 +154,7 @@ As consultas da brapi passam a usar cache persistente em SQLite, orçamento loca
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.41 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.42 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
 - **Persistência:** SQLite, com bancos separados para ativos e tokens
 - **Porta:** `8085` no host e `8080` no container
@@ -155,7 +184,7 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve apresentar `ok: true` e `version: 4.2.41`.
+O retorno deve apresentar `ok: true` e `version: 4.2.42`.
 
 **Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
 

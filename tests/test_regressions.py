@@ -104,6 +104,58 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(bytes(row[3] or b''), b'')
         legacy.close()
 
+    def test_api_response_cache_legacy_cached_at_not_null_can_be_migrated_and_written(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / 'legacy-cached-at.db')
+            legacy = sqlite3.connect(path)
+            legacy.execute('''CREATE TABLE api_response_cache (
+                cache_key TEXT PRIMARY KEY, provider TEXT NOT NULL,
+                endpoint TEXT NOT NULL DEFAULT '', payload_json TEXT NOT NULL DEFAULT '',
+                status_code INTEGER NOT NULL DEFAULT 200, cached_at REAL NOT NULL,
+                expires_at REAL NOT NULL DEFAULT 0, stale_until REAL NOT NULL DEFAULT 0
+            )''')
+            legacy.execute('INSERT INTO api_response_cache(cache_key,provider,payload_json,cached_at) VALUES(?,?,?,?)',
+                           ('cached-at-old', 'brapi', '{\"legacy\":true}', 123.0))
+            wallet._migrate_api_response_cache_schema(legacy)
+            legacy.commit()
+            legacy.close()
+            with patch.object(wallet, 'DB_PATH', path):
+                old_cached = wallet._api_cache_row('cached-at-old')
+                wallet._api_cache_store('cached-at-new', 'yahoo', '/quote', b'{"ok":true}', 200, 60, 300)
+                cached = wallet._api_cache_row('cached-at-new')
+            self.assertIsNotNone(old_cached)
+            self.assertEqual(old_cached['fetched_at'], 123.0)
+            self.assertEqual(old_cached['payload'], b'{"legacy":true}')
+            self.assertIsNotNone(cached)
+            self.assertEqual(cached['payload'], b'{"ok":true}')
+            self.assertGreater(cached['fetched_at'], 0)
+
+    def test_api_response_cache_iso_cached_at_legacy_timestamp_is_readable_and_writable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / 'legacy-iso-cache.db')
+            legacy = sqlite3.connect(path)
+            legacy.row_factory = sqlite3.Row
+            legacy.execute('''CREATE TABLE api_response_cache (
+                cache_key TEXT PRIMARY KEY, provider TEXT NOT NULL, cached_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL, status_code INTEGER NOT NULL DEFAULT 200
+            )''')
+            legacy.execute(
+                'INSERT INTO api_response_cache(cache_key,provider,cached_at,payload_json) VALUES(?,?,?,?)',
+                ('iso-cached-at', 'yahoo', '2026-11-23T11:00:00-03:00', '{"legacy":true}')
+            )
+            wallet._migrate_api_response_cache_schema(legacy)
+            legacy.commit()
+            legacy.close()
+            with patch.object(wallet, 'DB_PATH', path):
+                old_cached = wallet._api_cache_row('iso-cached-at')
+                wallet._api_cache_store('iso-cached-new', 'yahoo', '/quote', b'{"fresh":true}', 200, 60, 300)
+                new_cached = wallet._api_cache_row('iso-cached-new')
+            self.assertIsNotNone(old_cached)
+            self.assertGreater(old_cached['fetched_at'], 0)
+            self.assertEqual(old_cached['payload'], b'{"legacy":true}')
+            self.assertIsNotNone(new_cached)
+            self.assertEqual(new_cached['payload'], b'{"fresh":true}')
+
     def test_api_response_cache_legacy_payload_json_not_null_can_be_migrated_and_written(self):
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / 'legacy-cache.db')
@@ -466,18 +518,76 @@ class RegressionTests(unittest.TestCase):
             con.commit()
             self.assertTrue(wallet.sale_breaks_future_position('DELETEBUY4','2026-02-01',0.0,{int(purchase.lastrowid)}))
 
-    def test_paid_non_pluggy_api_events_are_not_counted_as_received(self):
+    def test_pluggy_requires_enabled_credentials_and_an_active_item_for_receipt_authority(self):
+        with wallet.app.app_context():
+            secrets_db = wallet.token_db()
+            secrets_db.execute("DELETE FROM api_credentials WHERE provider='pluggy'")
+            secrets_db.commit()
+            wallet.db().execute("INSERT OR REPLACE INTO pluggy_items(item_id,active,created_at,updated_at) VALUES(?,?,?,?)",
+                                ('stale-item-test',1,'2026-01-01','2026-01-01'))
+            wallet.db().commit()
+            self.assertFalse(wallet._pluggy_is_configured())
+            wallet.db().execute("DELETE FROM pluggy_items WHERE item_id='stale-item-test'")
+            wallet.db().commit()
+            secrets_db.execute('INSERT INTO api_credentials(provider,token_encrypted,enabled,updated_at) VALUES(?,?,?,?)',
+                               ('pluggy','encrypted-test',1,'2026-01-01'))
+            secrets_db.commit()
+            with patch.object(wallet, '_get_api_token', return_value='{"client_id":"id","client_secret":"secret"}'):
+                self.assertFalse(wallet._pluggy_is_configured())
+                wallet.db().execute("INSERT OR REPLACE INTO pluggy_items(item_id,active,created_at,updated_at) VALUES(?,?,?,?)",
+                                    ('active-item-test',1,'2026-01-01','2026-01-01'))
+                wallet.db().commit()
+                self.assertTrue(wallet._pluggy_is_configured())
+            secrets_db.execute("DELETE FROM api_credentials WHERE provider='pluggy'")
+            secrets_db.commit()
+            wallet.db().execute("DELETE FROM pluggy_items WHERE item_id='active-item-test'")
+            wallet.db().commit()
+
+    def test_alternative_api_past_payments_are_received_only_when_pluggy_is_unconfigured(self):
         with wallet.app.app_context():
             con = wallet.db()
             stamp = wallet.datetime.now(wallet.TZ).isoformat(timespec='seconds')
             con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        ('PROVTEST4:PAID','PROVTEST4','fii','Rendimento','2026-01-10','2026-01-11','2026-01-15',1.0,20,20.0,'Pago','BRAPI sem confirmação Pluggy',stamp))
+                        ('PROVTEST4:PAID','PROVTEST4','fii','Rendimento','2026-01-10','2026-01-11','2026-01-15',1.0,20,20.0,'A receber','BRAPI sem confirmação Pluggy',stamp))
             con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         ('PROVTEST4:FUTURE','PROVTEST4','fii','Rendimento','2026-12-10','2026-12-11','2026-12-15',1.0,20,20.0,'A receber','Teste',stamp))
+            con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        ('PROVTEST4:TODAY','PROVTEST4','fii','Rendimento','2026-11-22','2026-11-22','2026-11-23',1.0,20,20.0,'A receber','Teste pagamento hoje',stamp))
             con.execute('INSERT INTO proventos(ticker,valor_total,data) VALUES(?,?,?)',
                         ('PROVTEST4', 99.0, '2026-01-15'))
             con.commit()
-            records = wallet._received_proventos_records(['PROVTEST4'])
+            with patch.object(wallet, '_pluggy_is_configured', return_value=False):
+                records = wallet._received_proventos_records(['PROVTEST4'])
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]['valor_total'], 20.0)
+            self.assertEqual(records[0]['origem'], 'API alternativa (sem Pluggy)')
+            self.assertEqual(records[0]['confirmacao'], 'estimado_pela_data_de_pagamento_sem_confirmacao_pluggy')
+            self.assertEqual(records[0]['source_event_key'], 'PROVTEST4:PAID')
+
+    def test_alternative_api_payment_earlier_this_month_stays_pending_without_pluggy(self):
+        with wallet.app.app_context():
+            con = wallet.db()
+            today = wallet.datetime.now(wallet.TZ).date()
+            current_month_payment = today.replace(day=1).isoformat()
+            stamp = wallet.datetime.now(wallet.TZ).isoformat(timespec='seconds')
+            con.execute(
+                "INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ('CURRENTMONTH:PAST-DAY','CURRENTMONTH','fii','Rendimento',current_month_payment,current_month_payment,current_month_payment,1.0,10,10.0,'A receber','Pagamento publicado no mês atual',stamp)
+            )
+            con.commit()
+            with patch.object(wallet, '_pluggy_is_configured', return_value=False):
+                records = wallet._received_proventos_records(['CURRENTMONTH'])
+            self.assertEqual(records, [])
+
+    def test_alternative_api_received_are_disabled_when_pluggy_is_configured(self):
+        with wallet.app.app_context():
+            con = wallet.db()
+            stamp = wallet.datetime.now(wallet.TZ).isoformat(timespec='seconds')
+            con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        ('PROVTEST4:STRICT','PROVTEST4','fii','Rendimento','2026-01-10','2026-01-11','2026-01-15',1.0,20,20.0,'A receber','BRAPI',stamp))
+            con.commit()
+            with patch.object(wallet, '_pluggy_is_configured', return_value=True):
+                records = wallet._received_proventos_records(['PROVTEST4'])
             self.assertEqual(records, [])
 
     def test_only_pluggy_confirmed_proventos_are_received_and_distinct_ids_survive(self):
@@ -510,7 +620,8 @@ class RegressionTests(unittest.TestCase):
             con.execute('INSERT INTO proventos(ticker,valor_total,data) VALUES(?,?,?)',
                         ('ABCD4', 20.0, '2026-01-15'))
             con.commit()
-            records = wallet._received_proventos_records(['ABCD4'])
+            with patch.object(wallet, '_pluggy_is_configured', return_value=True):
+                records = wallet._received_proventos_records(['ABCD4'])
             self.assertEqual(len(records), 2)
             self.assertEqual([row['valor_total'] for row in records], [20.0, 20.0])
             self.assertEqual({row['data_pagamento'] for row in records}, {'2026-01-15'})
@@ -537,7 +648,8 @@ class RegressionTests(unittest.TestCase):
                         'quantity': 1, 'value': 20, 'amount': 20, 'description': 'Dividend'}
             wallet._pluggy_import_investment_transaction('item-test', investment, movement, now_text='2026-01-15T10:00:00-03:00')
             con.commit()
-            rows = wallet._received_proventos_records(['ABCD4'])
+            with patch.object(wallet, '_pluggy_is_configured', return_value=True):
+                rows = wallet._received_proventos_records(['ABCD4'])
             self.assertEqual(len(rows), 2)
             self.assertEqual({row['pluggy_transaction_id'] for row in rows},
                              {'pluggy-match-a', 'pluggy-match-b'})
