@@ -84,7 +84,7 @@ QUOTE_HISTORY_PATH = os.environ.get('QUOTE_HISTORY_PATH', '/data/quotes_last_val
 QUOTE_HISTORY_LOCK = threading.RLock()
 DASHBOARD_CACHE_PATH = os.environ.get('DASHBOARD_CACHE_PATH', '/data/dashboard_cache.json')
 DASHBOARD_CACHE_LOCK = threading.RLock()
-DASHBOARD_CACHE_FORMAT = 9
+DASHBOARD_CACHE_FORMAT = 10
 PORTFOLIO_HISTORY_CACHE, PORTFOLIO_HISTORY_TTL = {}, 1800
 PORTFOLIO_HISTORY_EMPTY_TTL = 120
 def _dashboard_cache_signature():
@@ -113,9 +113,9 @@ def _dashboard_cache_signature():
         records.append((QUOTE_HISTORY_PATH, int(quote_stat.st_mtime_ns), int(quote_stat.st_size)))
     except OSError:
         records.append((QUOTE_HISTORY_PATH, 0, 0))
-    # Payment status and overdue-day counters are date-dependent. Include the
-    # local calendar date so a dashboard snapshot is recomputed at the next
-    # local day boundary without forcing extra provider requests intraday.
+    # A pending payment is excluded after its scheduled date. Include the local
+    # calendar date so the dashboard snapshot drops expired forecasts at midnight
+    # without forcing extra provider requests intraday.
     records.append(('local_date', datetime.now(TZ).date().isoformat()))
     raw = json.dumps(records, separators=(',', ':'), ensure_ascii=True)
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()
@@ -6212,12 +6212,12 @@ def _confirmed_received_proventos_by_month(records, month_keys, as_of=None):
     return {month: round(value, 2) for month, value in totals.items()}
 
 
-def _filter_upcoming_proventos_by_month(upcoming, as_of=None):
-    """Validate pending events and classify elapsed payment dates as overdue.
+def _filter_current_future_proventos(upcoming, as_of=None):
+    """Keep only valid unpaid events whose payment date is today or later.
 
-    A payment date in the past is not proof of receipt. Keep it visible as
-    ``Atrasado`` until a Pluggy credit confirms it, or until the no-Pluggy
-    fallback can estimate a receipt after the payment month has closed.
+    An elapsed payment date without a matching receipt is not displayed as
+    expired and is not counted as a forecast. The source row remains persisted
+    in SQLite; only this dashboard projection is excluded.
     """
     today = as_of or datetime.now(TZ).date()
     filtered = []
@@ -6233,56 +6233,49 @@ def _filter_upcoming_proventos_by_month(upcoming, as_of=None):
             amount = float(row.get('valor_total') or 0)
         except (TypeError, ValueError):
             continue
+        if paid_on < today:
+            continue
         if not math.isfinite(amount) or amount <= 0:
             continue
         if not _is_income_event(row.get('tipo_evento') or row.get('tipo')):
             continue
         row['data_pagamento'] = paid_on.isoformat()
         row['valor_total'] = round(amount, 2)
-        if paid_on < today:
-            row['status'] = 'Atrasado'
-            row['dias_atraso'] = (today - paid_on).days
-            row['confirmacao'] = row.get('confirmacao') or 'aguardando_confirmacao_pagamento'
-            note = 'Data de pagamento informada pela fonte já passou; recebimento ainda não confirmado.'
-            row['remarks'] = (str(row.get('remarks') or '').strip() + ' ' + note).strip()
-        else:
-            row['status'] = 'A receber'
-            row.pop('dias_atraso', None)
+        row['status'] = 'A receber'
         filtered.append(row)
     return filtered
 
 
-def _build_proventos_monthly_values(month_keys, received_by_month, upcoming=None, overdue=None):
-    """Build the monthly dashboard payload without mixing receipt states.
-
-    ``recebido`` contains only canonical receipts (Pluggy-confirmed or valid
-    no-Pluggy estimates). ``a_receber`` and ``atrasado`` remain separate so
-    overdue, unconfirmed events can never inflate realized income.
-    """
+def _build_proventos_monthly_values(month_keys, received_by_month, upcoming=None, as_of=None):
+    """Build monthly totals using receipts and forecasts due today or later."""
+    today = as_of or datetime.now(TZ).date()
     allowed_months = {str(month) for month in (month_keys or [])}
-    pending_totals = {month: {'a_receber': 0.0, 'atrasado': 0.0} for month in allowed_months}
+    pending_totals = {month: 0.0 for month in allowed_months}
 
-    for status, rows in (('a_receber', upcoming or []), ('atrasado', overdue or [])):
-        for raw in rows:
-            row = dict(raw)
-            expected_status = 'a receber' if status == 'a_receber' else 'atrasado'
-            if str(row.get('status') or '').strip().casefold() != expected_status:
+    for raw in upcoming or []:
+        row = dict(raw)
+        if str(row.get('status') or '').strip().casefold() != 'a receber':
+            continue
+        payment_date = _api_date(row.get('data_pagamento'))
+        if not payment_date or len(payment_date) < 10:
+            continue
+        try:
+            if date.fromisoformat(payment_date[:10]) < today:
                 continue
-            payment_date = _api_date(row.get('data_pagamento'))
-            if not payment_date or len(payment_date) < 7:
-                continue
-            month = payment_date[:7]
-            if month not in allowed_months:
-                continue
-            if not _is_income_event(row.get('tipo_evento') or row.get('tipo')):
-                continue
-            try:
-                amount = float(row.get('valor_total') or 0)
-            except (TypeError, ValueError):
-                continue
-            if not math.isfinite(amount) or amount <= 0:
-                continue
-            pending_totals[month][status] += amount
+        except ValueError:
+            continue
+        month = payment_date[:7]
+        if month not in allowed_months:
+            continue
+        if not _is_income_event(row.get('tipo_evento') or row.get('tipo')):
+            continue
+        try:
+            amount = float(row.get('valor_total') or 0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(amount) or amount <= 0:
+            continue
+        pending_totals[month] += amount
 
     monthly_values = []
     for month in month_keys or []:
@@ -6294,14 +6287,12 @@ def _build_proventos_monthly_values(month_keys, received_by_month, upcoming=None
         if not math.isfinite(received_amount) or received_amount < 0:
             received_amount = 0.0
         received_amount = round(received_amount, 2)
-        upcoming_amount = round(pending_totals.get(month, {}).get('a_receber', 0.0), 2)
-        overdue_amount = round(pending_totals.get(month, {}).get('atrasado', 0.0), 2)
+        upcoming_amount = round(pending_totals.get(month, 0.0), 2)
         monthly_values.append({
             'mes': month,
             'recebido': received_amount,
             'a_receber': upcoming_amount,
-            'atrasado': overdue_amount,
-            'total': round(received_amount + upcoming_amount + overdue_amount, 2),
+            'total': round(received_amount + upcoming_amount, 2),
         })
     return monthly_values
 
@@ -7926,9 +7917,8 @@ def dashboard():
             if not payment_date:
                 continue
             payment_day = date.fromisoformat(payment_date)
-            # Keep elapsed events from the still-open month visible as overdue.
-            # Older months are handled by the persisted API calendar / receipt fallback.
-            if payment_day < today and payment_date[:7] < today.strftime('%Y-%m'):
+            # Payment-date forecasts that have already elapsed are ignored.
+            if payment_day < today:
                 continue
             try:
                 rate = float(event.get('rawRate') or event.get('rate') or event.get('value') or 0)
@@ -7977,16 +7967,13 @@ def dashboard():
             pending_keys.add(dedupe)
             pending_amount_keys.add((ticker, payment_date, round(quantity * rate, 2)))
 
-    # Separate future forecasts from elapsed, unconfirmed payment dates.
-    # Overdue amounts are neither received income nor future forecasts.
-    classified_pending = _filter_upcoming_proventos_by_month(upcoming, as_of=today)
-    overdue = [row for row in classified_pending if row.get('status') == 'Atrasado']
-    upcoming = [row for row in classified_pending if row.get('status') == 'A receber']
+    # Only today's and future unpaid forecasts are visible. Expired events
+    # remain stored in SQLite but are excluded from tables, charts and totals.
+    upcoming = _filter_current_future_proventos(upcoming, as_of=today)
 
-    # Mantém o contrato mensal do dashboard e separa recebidos, futuros e
-    # atrasados. A ausência desta variável derrubava /api/dashboard com NameError.
+    # Keep the monthly payload aligned with the two visible categories.
     monthly_values = _build_proventos_monthly_values(
-        month_keys, received_by_month, upcoming=upcoming, overdue=overdue
+        month_keys, received_by_month, upcoming=upcoming, as_of=today
     )
     total_12m = round(sum(received_by_month.get(month, 0.0) for month in month_keys), 2)
     total_confirmed_12m = _confirmed_proventos_total_12m(total_12m, upcoming, as_of=today)
@@ -8087,9 +8074,6 @@ def dashboard():
             'mensal':monthly_values,'total_12m':total_12m,'total_confirmado_12m':total_confirmed_12m,'media_mensal':round(total_12m/12,2),
             'total_carteira':portfolio_total,'recebidos':sorted(detailed,key=lambda x:x['data_pagamento'],reverse=True),
             'a_receber':sorted(upcoming,key=lambda x:x['data_pagamento']),
-            'atrasados':sorted(overdue,key=lambda x:x['data_pagamento']),
-            'total_atrasado':round(sum(float(x.get('valor_total') or 0) for x in overdue),2),
-            'quantidade_atrasados':len(overdue),
             'maiores_pagadores':top_paid_payers,
             'distribuicao':type_totals,'sincronizacao':sync_status
         })

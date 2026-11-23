@@ -1,4 +1,27 @@
-# Lonely Wallet v4.2.52
+# Lonely Wallet v4.2.53
+
+# Atualizações da versão 4.2.53
+
+## Exclusão de proventos não recebidos após a data prevista
+- Removida a categoria visual e lógica de proventos “Atrasado”.
+- Quando a data de pagamento passa e não existe confirmação de recebimento, o evento deixa de aparecer em “Meus proventos”, filtros, histórico, gráficos, distribuições e totais.
+- O evento continua preservado no banco SQLite, sem exclusão física ou alteração do registro importado. Se posteriormente houver uma transação de recebimento confirmada pela Pluggy, ela continuará podendo aparecer no histórico como recebida.
+- Pagamentos previstos para hoje permanecem em “A receber” até o fim do dia; previsões com data futura continuam normalmente.
+- A filtragem é aplicada no backend e reforçada no frontend para impedir que dados antigos em cache reapareçam.
+- O gráfico Evolução de Proventos voltou a ter somente duas séries: “Proventos recebidos” e “A receber”. Legenda, filtros de período, tabela e totais foram ajustados para refletir essa regra.
+- O payload mensal agora contém somente `recebido`, `a_receber` e `total`; não existe mais valor ou contador de proventos atrasados.
+- Incrementado `DASHBOARD_CACHE_FORMAT` para 10 para forçar a reconstrução do snapshot após a atualização.
+
+## Testes e validação da versão 4.2.53
+- Adicionados testes para descartar proventos não recebidos com data anterior ao dia local, preservando o registro original em memória e no banco.
+- Testados eventos com pagamento previsto para hoje, para o futuro, datas inválidas e amortizações.
+- Adicionada validação para que o resumo mensal ignore eventos com data de pagamento expirada.
+- Atualizado o teste de integração do `/api/dashboard` para verificar que um evento MXRF11 vencido não aparece como previsão, não é contabilizado e não cria campos de atraso.
+- Testado o contrato frontend para garantir ausência da terceira série, da legenda e dos filtros de atraso.
+- Executados 133 testes Python disponíveis, todos aprovados, excluindo `test_regressions.py` porque Flask/Werkzeug não estão instalados neste ambiente; a rede indisponível impediu instalar a dependência para rodar a suíte de integração.
+- Executadas cinco suítes JavaScript de runtime, todas aprovadas.
+- Compilação sintática dos arquivos Python aprovada. A validação de configuração Docker e o build real ainda precisam ser concluídos no ambiente Docker de destino.
+- O pacote foi atualizado para a versão 4.2.53; bancos de dados, tokens, credenciais, snapshots e registros de proventos não foram incluídos nem modificados no ZIP.
 
 # Atualizações da versão 4.2.52
 

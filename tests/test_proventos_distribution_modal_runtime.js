@@ -22,6 +22,11 @@ const nodes = {
   provDistributionDetailList: { innerHTML: '' },
 };
 const renderedCharts = [];
+const RealDate = Date;
+class FixedDate extends RealDate {
+  constructor(...args) { super(...(args.length ? args : ['2026-09-20T12:00:00'])); }
+  static now() { return new RealDate('2026-09-20T12:00:00').getTime(); }
+}
 const context = {
   document: { getElementById: (id) => nodes[id] || null },
   window: {},
@@ -40,6 +45,7 @@ const context = {
       a_receber: [
         { ticker: 'PETR4', tipo_ativo: 'acao', data_pagamento: '2026-09-25', valor_total: 20, tipo_evento: 'JCP' },
         { ticker: 'BBDC4', tipo_ativo: 'acao', data_pagamento: '2026-09-27', valor_total: 5, tipo_evento: 'JCP' },
+        { ticker: 'BBDC4', tipo_ativo: 'acao', data_pagamento: '2026-09-10', valor_total: 99, tipo_evento: 'JCP' },
       ],
     },
   },
@@ -52,6 +58,7 @@ const context = {
   escapeHTML: (value) => String(value),
   chart: (...args) => renderedCharts.push(args),
   Number,
+  Date: FixedDate,
 };
 
 vm.createContext(context);
@@ -65,7 +72,7 @@ assert.equal(context.provDistributionStatus, 'Consolidado');
 assert.deepEqual(
   Array.from(context.provDistributionData.ativo, (row) => [row.name, Number(row.value.toFixed(2))]),
   [['PETR4', 120], ['HGLG11', 63.61], ['BBDC4', 5]],
-  'asset distribution must include received and forecast payments for the whole month',
+  'asset distribution must include received and still-current forecasts for the whole month',
 );
 assert.deepEqual(
   Array.from(context.provDistributionData.tipo, (row) => [row.name, Number(row.value.toFixed(2))]),
