@@ -1,6 +1,15 @@
-# Lonely Wallet v4.2.50
+# Lonely Wallet v4.2.51
 
-# Atualizações da versão 4.2.50
+# Atualizações da versão 4.2.51
+
+## Correção da classificação de proventos com pagamento vencido (v4.2.51)
+- Eventos cuja data de pagamento já passou e que ainda não possuem confirmação não permanecem como `A receber`.
+- Esses eventos são apresentados separadamente como `Atrasado · aguardando confirmação`, com indicação de dias em atraso.
+- Proventos atrasados não são tratados como recebidos, não entram no lucro realizado e não integram a previsão futura.
+- Com Pluggy operacional, o evento só passa a `Pago` quando houver transação Pluggy conciliada; falhas temporárias da Pluggy não ativam o fallback.
+- Sem Pluggy operacional, APIs alternativas podem estimar recebimentos somente depois que o mês de pagamento termina; pagamentos vencidos dentro do mês atual continuam como atrasados até o fechamento do mês.
+- O gráfico Evolução de Proventos ganhou uma terceira série para pagamentos atrasados; filtros da tabela e período permitem consultar esses eventos separadamente.
+- A versão do cache de dashboard foi incrementada e a data local foi incluída na assinatura do snapshot. Assim, snapshots antigos são invalidados após a atualização e os status/dias de atraso são recalculados na virada de cada dia, sem novas chamadas externas apenas por esse motivo. O primeiro carregamento recalcula os dados e grava um novo snapshot; bancos e registros financeiros não são apagados.
 
 ## Correção do Retry-After nas chamadas diretas da Pluggy
 - Criada a função compartilhada `_pluggy_apply_retry_cooldown(response)` para aplicar cooldown persistente às chamadas diretas da Pluggy.
@@ -11,11 +20,11 @@
 - O cooldown é persistido em `api_provider_state`, evitando novas chamadas antecipadas de autenticação ou API.
 - Falhas transitórias não ativam o fallback de recebimentos nem alteram as regras de confirmação financeira da Pluggy.
 
-## Testes da versão 4.2.50
+## Testes da versão 4.2.51
 - Adicionados oito testes funcionais de cooldown Pluggy para HTTP 408, 425, 429, 500 e 503.
 - Testados `Retry-After` em segundos, HTTP-date, ausente e inválido.
 - Verificado que autenticação e consultas Pluggy utilizam o mecanismo compartilhado.
-- Executados 125 testes Python disponíveis, excluindo `test_regressions.py` por ausência de Flask/Werkzeug.
+- Executados 132 testes Python disponíveis, excluindo `test_regressions.py` por ausência de Flask/Werkzeug.
 - Executadas cinco suítes JavaScript de runtime.
 - Validada a compilação Python, YAML Docker Compose e integridade do ZIP.
 - Build Docker real e chamadas reais à API Pluggy não foram executados neste ambiente.
@@ -561,7 +570,7 @@ Os intervalos locais controlam somente o ritmo de envio. Não substituem as regr
 - O cooldown é persistido em `api_provider_state`, impedindo novas chamadas de autenticação ou API antes do prazo definido.
 - Falhas transitórias não ativam fallback de recebimentos nem alteram a regra de confirmação financeira Pluggy.
 
-## Testes da versão 4.2.50
+## Testes da versão 4.2.51
 - Adicionados testes funcionais para HTTP 408, 425, 429, 500 e 503 nas regras de cooldown Pluggy.
 - Testados `Retry-After` em segundos, HTTP-date, ausente e inválido.
 - Verificado que autenticação e consultas Pluggy chamam o mecanismo compartilhado.

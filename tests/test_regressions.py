@@ -666,18 +666,25 @@ class RegressionTests(unittest.TestCase):
             forecast = con.execute("SELECT status FROM proventos_api WHERE event_key='ABCD4:FORECAST'").fetchone()
             self.assertEqual(forecast['status'], 'Pago')
 
-    def test_upcoming_proventos_filter_keeps_current_and_future_months_only(self):
+    def test_upcoming_proventos_filter_classifies_elapsed_payments_as_overdue(self):
         as_of = datetime.date(2026, 11, 23)
         rows = [
             {'ticker':'OVERDUE11','status':'A receber','data_pagamento':'2026-10-31','valor_total':10.00,'tipo_evento':'DIVIDENDO'},
             {'ticker':'CURRENT11','status':'A receber','data_pagamento':'2026-11-02','valor_total':12.00,'tipo_evento':'DIVIDENDO'},
+            {'ticker':'TODAY11','status':'A receber','data_pagamento':'2026-11-23','valor_total':7.00,'tipo_evento':'DIVIDENDO'},
             {'ticker':'FUTURE11','status':'A receber','data_pagamento':'2026-12-15','valor_total':13.00,'tipo_evento':'JCP'},
             {'ticker':'PAID11','status':'Pago','data_pagamento':'2026-11-22','valor_total':14.00,'tipo_evento':'DIVIDENDO'},
             {'ticker':'AMORT11','status':'A receber','data_pagamento':'2026-12-01','valor_total':15.00,'tipo_evento':'AMORTIZAÇÃO'},
         ]
         filtered = wallet._filter_upcoming_proventos_by_month(rows, as_of=as_of)
-        self.assertEqual([row['ticker'] for row in filtered], ['CURRENT11', 'FUTURE11'])
-        self.assertEqual(sum(row['valor_total'] for row in filtered), 25.00)
+        self.assertEqual([row['ticker'] for row in filtered], ['OVERDUE11', 'CURRENT11', 'TODAY11', 'FUTURE11'])
+        by_ticker = {row['ticker']: row for row in filtered}
+        self.assertEqual(by_ticker['OVERDUE11']['status'], 'Atrasado')
+        self.assertEqual(by_ticker['OVERDUE11']['dias_atraso'], 23)
+        self.assertEqual(by_ticker['CURRENT11']['status'], 'Atrasado')
+        self.assertEqual(by_ticker['TODAY11']['status'], 'A receber')
+        self.assertEqual(by_ticker['FUTURE11']['status'], 'A receber')
+        self.assertEqual(sum(row['valor_total'] for row in filtered), 42.00)
 
     def test_confirmed_proventos_total_adds_only_announced_payments_within_next_12_months(self):
         as_of = datetime.date(2026, 11, 22)

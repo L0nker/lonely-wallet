@@ -26,7 +26,7 @@ class HealthcheckStrictModeTests(unittest.TestCase):
             'token_db': lambda: SimpleNamespace(execute=lambda *_: SimpleNamespace(fetchone=lambda: (1,))),
             '_chart_assets_status': lambda: {'status': chart_status},
             'request': SimpleNamespace(args={'strict': '1' if strict else ''}),
-            'APP_VERSION': '4.2.50',
+            'APP_VERSION': '4.2.51',
             'jsonify': lambda **kwargs: kwargs,
             'app': SimpleNamespace(logger=SimpleNamespace(exception=lambda *_: None)),
         }

@@ -84,7 +84,7 @@ QUOTE_HISTORY_PATH = os.environ.get('QUOTE_HISTORY_PATH', '/data/quotes_last_val
 QUOTE_HISTORY_LOCK = threading.RLock()
 DASHBOARD_CACHE_PATH = os.environ.get('DASHBOARD_CACHE_PATH', '/data/dashboard_cache.json')
 DASHBOARD_CACHE_LOCK = threading.RLock()
-DASHBOARD_CACHE_FORMAT = 7
+DASHBOARD_CACHE_FORMAT = 8
 PORTFOLIO_HISTORY_CACHE, PORTFOLIO_HISTORY_TTL = {}, 1800
 PORTFOLIO_HISTORY_EMPTY_TTL = 120
 def _dashboard_cache_signature():
@@ -113,6 +113,10 @@ def _dashboard_cache_signature():
         records.append((QUOTE_HISTORY_PATH, int(quote_stat.st_mtime_ns), int(quote_stat.st_size)))
     except OSError:
         records.append((QUOTE_HISTORY_PATH, 0, 0))
+    # Payment status and overdue-day counters are date-dependent. Include the
+    # local calendar date so a dashboard snapshot is recomputed at the next
+    # local day boundary without forcing extra provider requests intraday.
+    records.append(('local_date', datetime.now(TZ).date().isoformat()))
     raw = json.dumps(records, separators=(',', ':'), ensure_ascii=True)
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
@@ -6209,18 +6213,23 @@ def _confirmed_received_proventos_by_month(records, month_keys, as_of=None):
 
 
 def _filter_upcoming_proventos_by_month(upcoming, as_of=None):
-    """Keep announced payments in the current month or later, not overdue ones."""
+    """Validate pending events and classify elapsed payment dates as overdue.
+
+    A payment date in the past is not proof of receipt. Keep it visible as
+    ``Atrasado`` until a Pluggy credit confirms it, or until the no-Pluggy
+    fallback can estimate a receipt after the payment month has closed.
+    """
     today = as_of or datetime.now(TZ).date()
-    current_month = today.strftime('%Y-%m')
     filtered = []
     for raw in upcoming or []:
         row = dict(raw)
         if str(row.get('status') or '').strip().casefold() != 'a receber':
             continue
         payment_date = _api_date(row.get('data_pagamento'))
-        if not payment_date or payment_date[:7] < current_month:
+        if not payment_date:
             continue
         try:
+            paid_on = date.fromisoformat(payment_date[:10])
             amount = float(row.get('valor_total') or 0)
         except (TypeError, ValueError):
             continue
@@ -6228,8 +6237,17 @@ def _filter_upcoming_proventos_by_month(upcoming, as_of=None):
             continue
         if not _is_income_event(row.get('tipo_evento') or row.get('tipo')):
             continue
-        row['data_pagamento'] = payment_date[:10]
+        row['data_pagamento'] = paid_on.isoformat()
         row['valor_total'] = round(amount, 2)
+        if paid_on < today:
+            row['status'] = 'Atrasado'
+            row['dias_atraso'] = (today - paid_on).days
+            row['confirmacao'] = row.get('confirmacao') or 'aguardando_confirmacao_pagamento'
+            note = 'Data de pagamento informada pela fonte já passou; recebimento ainda não confirmado.'
+            row['remarks'] = (str(row.get('remarks') or '').strip() + ' ' + note).strip()
+        else:
+            row['status'] = 'A receber'
+            row.pop('dias_atraso', None)
         filtered.append(row)
     return filtered
 
@@ -7799,12 +7817,12 @@ def dashboard():
             for receipt in alternative_received
         ):
             continue
-        if payment_date and payment_date[:7] >= today.strftime('%Y-%m'):
+        if payment_date:
             upcoming.append({
                 'ticker':str(row['ticker']).upper(),'tipo':'Provento manual','tipo_ativo':typesafe_asset_type(row['ticker']),
                 'status':'A receber','data_com':None,'data_pagamento':payment_date,'quantidade':None,
                 'valor_por_ativo':None,'valor_total':float(row['valor_total'] or 0),'origem':'Manual',
-                'tipo_evento':'PROVENTO','remarks':'Data e valor informados manualmente.'
+                'tipo_evento':'PROVENTO','remarks':'Data e valor informados manualmente; pagamento sem confirmação automática.'
             })
     for row in pending_rows:
         row_payment_date = _api_date(row.get('data_pagamento'))
@@ -7851,7 +7869,12 @@ def dashboard():
         events = ((quote.get('dividendsData') or {}).get('cashDividends') or [])
         for event in events:
             payment_date = _api_date(event.get('paymentDate') or event.get('payment_date'))
-            if not payment_date or date.fromisoformat(payment_date) < today:
+            if not payment_date:
+                continue
+            payment_day = date.fromisoformat(payment_date)
+            # Keep elapsed events from the still-open month visible as overdue.
+            # Older months are handled by the persisted API calendar / receipt fallback.
+            if payment_day < today and payment_date[:7] < today.strftime('%Y-%m'):
                 continue
             try:
                 rate = float(event.get('rawRate') or event.get('rate') or event.get('value') or 0)
@@ -7900,10 +7923,12 @@ def dashboard():
             pending_keys.add(dedupe)
             pending_amount_keys.add((ticker, payment_date, round(quantity * rate, 2)))
 
-    # Pending forecasts are limited to the current month and future months.
-    upcoming = _filter_upcoming_proventos_by_month(upcoming, as_of=today)
+    # Separate future forecasts from elapsed, unconfirmed payment dates.
+    # Overdue amounts are neither received income nor future forecasts.
+    classified_pending = _filter_upcoming_proventos_by_month(upcoming, as_of=today)
+    overdue = [row for row in classified_pending if row.get('status') == 'Atrasado']
+    upcoming = [row for row in classified_pending if row.get('status') == 'A receber']
 
-    monthly_values = [{'mes':m,'recebido':round(received_by_month.get(m,0),2)} for m in month_keys]
     total_12m = round(sum(received_by_month.get(month, 0.0) for month in month_keys), 2)
     total_confirmed_12m = _confirmed_proventos_total_12m(total_12m, upcoming, as_of=today)
     portfolio_total = round(sum(float(x.get('valor_atual') or 0) for x in portfolio.get('itens', [])), 2)
@@ -8003,6 +8028,9 @@ def dashboard():
             'mensal':monthly_values,'total_12m':total_12m,'total_confirmado_12m':total_confirmed_12m,'media_mensal':round(total_12m/12,2),
             'total_carteira':portfolio_total,'recebidos':sorted(detailed,key=lambda x:x['data_pagamento'],reverse=True),
             'a_receber':sorted(upcoming,key=lambda x:x['data_pagamento']),
+            'atrasados':sorted(overdue,key=lambda x:x['data_pagamento']),
+            'total_atrasado':round(sum(float(x.get('valor_total') or 0) for x in overdue),2),
+            'quantidade_atrasados':len(overdue),
             'maiores_pagadores':top_paid_payers,
             'distribuicao':type_totals,'sincronizacao':sync_status
         })

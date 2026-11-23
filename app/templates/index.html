@@ -156,6 +156,7 @@ main{max-width:1500px;margin:26px auto;padding:0 4.5%}.pagehead{display:flex;jus
 .prov-summary .summary-label{font-size:11px;color:var(--muted)}
 .prov-status{display:inline-block;border-radius:20px;padding:4px 8px;font-size:10px;background:#173b32;color:#4bd6a0}
 .prov-status.pending{background:#26354b;color:#86baff}
+.prov-status.overdue{background:#4a351f;color:#f3bd70}
 @media(max-width:900px){.prov-charts{grid-template-columns:1fr}}
 
 /* v10 — resumo e posições no padrão de carteira */
@@ -511,7 +512,7 @@ body.light-theme .value-hint::after{box-shadow:0 10px 30px #26344a20}
 .earnings-chart-legend{display:flex;justify-content:center;gap:18px;color:var(--muted);font-size:11px;margin:6px 0 12px}
 .earnings-chart-legend span{display:flex;align-items:center;gap:6px}
 .earnings-chart-legend i{width:10px;height:10px;border-radius:3px;display:inline-block}
-.received-dot{background:#477bd0}.upcoming-dot{background:#b9c9e8}
+.received-dot{background:#477bd0}.upcoming-dot{background:#b9c9e8}.overdue-dot{background:#d99a3d}
 .earnings-main-chart{height:390px}
 .earnings-chart-note{text-align:center;color:var(--muted);font-size:11px;margin-top:10px}
 .earnings-history-head{gap:12px;flex-wrap:wrap}
@@ -2150,15 +2151,15 @@ body.light-theme .lw-select-option:hover,body.light-theme .lw-select-option.acti
     <select id="provTypeFilter" onchange="renderProventosDashboard()"><option value="todos">Tipo de ativo</option></select>
     <select id="provAssetFilter" onchange="renderProventosDashboard()"><option value="todos">Ativos</option></select>
    </div></div>
-   <div class="earnings-chart-legend"><span><i class="received-dot"></i> Proventos recebidos</span><span><i class="upcoming-dot"></i> Proventos a receber</span></div>
+   <div class="earnings-chart-legend"><span><i class="received-dot"></i> Proventos recebidos</span><span><i class="upcoming-dot"></i> A receber</span><span><i class="overdue-dot"></i> Pagamento atrasado</span></div>
    <div class="chartbox earnings-main-chart"><canvas id="provMonthlyChart"></canvas></div>
-   <div class="earnings-chart-note">Os valores recebidos e anunciados são apresentados separadamente.</div>
+   <div class="earnings-chart-note">Recebidos, previstos e pagamentos vencidos sem confirmação são apresentados separadamente.</div>
   </div>
  </div>
 </div>
 <div class="panel section"><div class="panelhead earnings-history-head"><h2>Histórico mensal</h2><div class="toolbar earnings-history-toolbar">
-<strong id="provHistoryTotal" class="green">Total R$ 0,00</strong><select id="provStatusFilter" class="hidden" aria-hidden="true"><option value="todos">Recebidos e Futuros</option><option value="Pago">Recebidos</option><option value="A receber">Futuros</option></select>
-<div class="prov-history-filter" id="provHistoryStatusWrap"><button type="button" class="prov-history-trigger" onclick="toggleProvHistoryMenu('status')" aria-haspopup="true" aria-expanded="false"><span id="provHistoryStatusLabel">Recebidos e Futuros</span><span class="prov-total-chevron">⌄</span></button><div class="prov-history-menu hidden" id="provHistoryStatusMenu"></div></div>
+<strong id="provHistoryTotal" class="green">Total R$ 0,00</strong><select id="provStatusFilter" class="hidden" aria-hidden="true"><option value="todos">Todos os status</option><option value="Pago">Recebidos</option><option value="A receber">Futuros</option><option value="Atrasado">Atrasados</option></select>
+<div class="prov-history-filter" id="provHistoryStatusWrap"><button type="button" class="prov-history-trigger" onclick="toggleProvHistoryMenu('status')" aria-haspopup="true" aria-expanded="false"><span id="provHistoryStatusLabel">Todos os status</span><span class="prov-total-chevron">⌄</span></button><div class="prov-history-menu hidden" id="provHistoryStatusMenu"></div></div>
 <div class="prov-history-filter" id="provHistoryTypeWrap"><button type="button" class="prov-history-trigger" onclick="toggleProvHistoryMenu('type')" aria-haspopup="true" aria-expanded="false"><span>Tipo de ativo</span><span class="prov-total-chevron">⌄</span></button><div class="prov-history-menu hidden" id="provHistoryTypeMenu"></div></div>
 <div class="prov-history-filter" id="provHistoryAssetWrap"><button type="button" class="prov-history-trigger" onclick="toggleProvHistoryMenu('asset')" aria-haspopup="true" aria-expanded="false"><span>Ativos</span><span class="prov-total-chevron">⌄</span></button><div class="prov-history-menu hidden prov-history-asset-menu" id="provHistoryAssetMenu"></div></div>
 </div></div><div class="tablewrap"><table class="data"><thead><tr><th>Ano</th><th>Jan</th><th>Fev</th><th>Mar</th><th>Abr</th><th>Mai</th><th>Jun</th><th>Jul</th><th>Ago</th><th>Set</th><th>Out</th><th>Nov</th><th>Dez</th><th>Total</th></tr></thead><tbody id="provMonthlyRows"></tbody></table></div></div>
@@ -3396,7 +3397,7 @@ function openProvDistributionForBar(key,mode){
  // The Investor10 monthly breakdown represents the whole month, not only the
  // stack segment that happened to receive the click. Combine paid and forecast
  // records so the chart, total and asset shares reconcile with the full column.
- const source=[...(d.recebidos||[]),...(d.a_receber||[])];
+ const source=[...(d.recebidos||[]),...(d.a_receber||[]),...(d.atrasados||[])];
  const records=source.filter(x=>{
   const date=String(x.data_pagamento||'');if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return false;
   const dt=new Date(date+'T12:00:00');
@@ -3456,7 +3457,7 @@ function renderProvChartPeriodMenu(availableYears){
  const menu=document.getElementById('provChartPeriodMenu'),label=document.getElementById('provChartPeriodLabel');
  if(!menu)return;
  const currentYear=new Date().getFullYear();
- const quick=[['ano_atual',`Ano atual ${currentYear}`],['12m','Últimos 12 meses'],['5a','Últimos 5 anos'],['futuros','Futuros'],['recebidos','Recebidos'],['todos','Recebidos e Futuros']];
+ const quick=[['ano_atual',`Ano atual ${currentYear}`],['12m','Últimos 12 meses'],['5a','Últimos 5 anos'],['futuros','Futuros'],['atrasados','Atrasados'],['recebidos','Recebidos'],['todos','Todos os status']];
  const years=[...new Set(availableYears||[])].filter(y=>/^\d{4}$/.test(String(y))).sort((a,b)=>Number(b)-Number(a));
  const yearValue=provChartRange.startsWith('ano:')?provChartRange.slice(4):'';
  const selectedLabel=quick.find(x=>x[0]===provChartRange)?.[1]||(yearValue?yearValue:'Últimos 12 meses');
@@ -3494,7 +3495,7 @@ document.addEventListener('click',event=>{
 function setProvHistoryStatus(value){
  provHistoryStatus=value;
  const legacyStatus=document.getElementById('provStatusFilter');if(legacyStatus)legacyStatus.value=value;
- const labels={todos:'Recebidos e Futuros',Pago:'Recebidos','A receber':'Futuros'};
+ const labels={todos:'Todos os status',Pago:'Recebidos','A receber':'Futuros',Atrasado:'Atrasados'};
  const label=document.getElementById('provHistoryStatusLabel');if(label)label.textContent=labels[value]||labels.todos;
  renderProventosDashboard();
 }
@@ -3506,7 +3507,7 @@ function setProvHistoryAllAssets(){setProvHistoryAsset('todos');}
 function renderProvHistoryFilters(rows,eventType){
  const statusMenu=document.getElementById('provHistoryStatusMenu');
  if(statusMenu){
-  const choices=[['todos','Recebidos e Futuros'],['Pago','Recebidos'],['A receber','Futuros']];
+  const choices=[['todos','Todos os status'],['Pago','Recebidos'],['A receber','Futuros'],['Atrasado','Atrasados']];
   statusMenu.innerHTML=choices.map(([value,label])=>`<button type="button" role="option" aria-selected="${provHistoryStatus===value}" class="native-dropdown-option ${provHistoryStatus===value?'active':''}" onclick='setProvHistoryStatus(${jsArg(value)})' >${label}</button>`).join('');
  }
  const typeMenu=document.getElementById('provHistoryTypeMenu');
@@ -3533,7 +3534,7 @@ function renderProvHistoryFilters(rows,eventType){
 
 function renderProventosDashboard(){
  const d=state.proventos_dashboard||{},r=state.resumo||{};
- const rows=[...(d.recebidos||[]),...(d.a_receber||[])];
+ const rows=[...(d.recebidos||[]),...(d.a_receber||[]),...(d.atrasados||[])];
  const received=(d.recebidos||[]).reduce((sum,x)=>sum+Number(x.valor_total||0),0);
  const upcoming=(d.a_receber||[]).reduce((sum,x)=>sum+Number(x.valor_total||0),0);
  const receivedRows=d.recebidos||[];
@@ -3604,25 +3605,29 @@ function renderProventosDashboard(){
  const validDate=value=>/^\d{4}-\d{2}-\d{2}$/.test(String(value||''));
  const keyFor=(value)=>{const date=new Date(value+'T12:00:00');return mode==='anual'?String(date.getFullYear()):`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}`};
  const chartRange=provChartRange||'12m';
- const currentMonthKey=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
- const isCurrentOrFuturePending=x=>x.status==='A receber'&&String(x.data_pagamento||'').slice(0,7)>=currentMonthKey;
+ const isCurrentOrFuturePending=x=>x.status==='A receber'&&String(x.data_pagamento||'')>=todayISO;
+ const isOverduePending=x=>x.status==='Atrasado'&&String(x.data_pagamento||'')<todayISO;
  const isConfirmedPaid=x=>x.status==='Pago'&&String(x.data_pagamento||'')<=todayISO;
+ const isAnyClassifiedEvent=x=>isConfirmedPaid(x)||isCurrentOrFuturePending(x)||isOverduePending(x);
  const allChartRows=rows.filter(x=>{
   const date=String(x.data_pagamento||'');if(!validDate(date))return false;
   const dt=new Date(date+'T12:00:00'),year=date.slice(0,4);
-  if(chartRange==='ano_atual')return (Number(year)===now.getFullYear()&&isConfirmedPaid(x))||isCurrentOrFuturePending(x);
-  if(chartRange==='12m'){const cutoff=new Date(first.getFullYear(),first.getMonth()-11,1);return dt>=cutoff&&(isConfirmedPaid(x)||isCurrentOrFuturePending(x));}
-  if(chartRange==='5a')return (Number(year)>=now.getFullYear()-4&&Number(year)<=now.getFullYear()&&isConfirmedPaid(x))||isCurrentOrFuturePending(x);
+  if(chartRange==='ano_atual')return (Number(year)===now.getFullYear()&&isConfirmedPaid(x))||(Number(year)===now.getFullYear()&&isOverduePending(x))||isCurrentOrFuturePending(x);
+  if(chartRange==='12m'){const cutoff=new Date(first.getFullYear(),first.getMonth()-11,1);return dt>=cutoff&&isAnyClassifiedEvent(x);}
+  if(chartRange==='5a')return ((Number(year)>=now.getFullYear()-4&&Number(year)<=now.getFullYear())&&(isConfirmedPaid(x)||isOverduePending(x)))||isCurrentOrFuturePending(x);
   if(chartRange==='futuros')return isCurrentOrFuturePending(x);
+  if(chartRange==='atrasados')return isOverduePending(x);
   if(chartRange==='recebidos')return isConfirmedPaid(x);
-  if(chartRange==='todos')return isConfirmedPaid(x)||isCurrentOrFuturePending(x);
-  if(chartRange.startsWith('ano:'))return (year===chartRange.slice(4)&&isConfirmedPaid(x))||isCurrentOrFuturePending(x);
-  return isConfirmedPaid(x)||isCurrentOrFuturePending(x);
+  if(chartRange==='todos')return isAnyClassifiedEvent(x);
+  if(chartRange.startsWith('ano:'))return (year===chartRange.slice(4)&&(isConfirmedPaid(x)||isOverduePending(x)))||isCurrentOrFuturePending(x);
+  return isAnyClassifiedEvent(x);
  });
  const sums={};
  allChartRows.forEach(x=>{
-  const key=keyFor(String(x.data_pagamento||''));if(!sums[key])sums[key]={recebido:0,a_receber:0};
-  if(x.status==='Pago')sums[key].recebido+=Number(x.valor_total||0);else sums[key].a_receber+=Number(x.valor_total||0);
+  const key=keyFor(String(x.data_pagamento||''));if(!sums[key])sums[key]={recebido:0,a_receber:0,atrasado:0};
+  if(x.status==='Pago')sums[key].recebido+=Number(x.valor_total||0);
+  else if(x.status==='Atrasado')sums[key].atrasado+=Number(x.valor_total||0);
+  else sums[key].a_receber+=Number(x.valor_total||0);
  });
  let keys=Object.keys(sums).sort();
  if(mode==='mensal'&&chartRange==='12m'){
@@ -3638,15 +3643,16 @@ function renderProventosDashboard(){
  const availableYears=[...new Set(rows.filter(x=>validDate(x.data_pagamento)).map(x=>String(x.data_pagamento).slice(0,4)))];
  renderProvChartPeriodMenu(availableYears);
  const labelsChart=keys.map(k=>mode==='anual'?k:`${k.slice(5,7)}/${k.slice(0,4)}`);
- const got=keys.map(k=>Number((sums[k]?.recebido||0).toFixed(2))),due=keys.map(k=>Number((sums[k]?.a_receber||0).toFixed(2)));
- chart('provMonthlyChart','bar',{labels:labelsChart,datasets:[{label:'Proventos recebidos',data:got,backgroundColor:'#477bd0',borderRadius:4,stack:'proventos'},{label:'Proventos a receber',data:due,backgroundColor:'#b9c9e8',borderRadius:4,stack:'proventos'}]},{interaction:{mode:'index',intersect:false},onClick:(event,elements)=>{if(!elements?.length)return;const hit=elements[0],index=hit.index;if(index>=0&&keys[index])openProvDistributionForBar(keys[index],mode);},onHover:(event,elements)=>{if(event?.native?.target)event.native.target.style.cursor=elements?.length?'pointer':'default';},plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false,sort:(a,b)=>b.datasetIndex-a.datasetIndex,displayColors:true,callbacks:{label:ctx=>`${ctx.dataset.label}: ${brl(ctx.raw||0)}`,title:items=>items?.length?labelsChart[items[0].dataIndex]:'',footer:items=>{const index=items?.[0]?.dataIndex;if(index===undefined)return '';return `Total: ${brl(Number(got[index]||0)+Number(due[index]||0))}`}}}},scales:{x:{stacked:true,ticks:{color:'#8f99a8'},grid:{display:false}},y:{stacked:true,beginAtZero:true,ticks:{color:'#8f99a8',callback:v=>'R$ '+Number(v).toLocaleString('pt-BR')},grid:{color:'#303541'}}}});
+ const got=keys.map(k=>Number((sums[k]?.recebido||0).toFixed(2))),due=keys.map(k=>Number((sums[k]?.a_receber||0).toFixed(2))),late=keys.map(k=>Number((sums[k]?.atrasado||0).toFixed(2)));
+ chart('provMonthlyChart','bar',{labels:labelsChart,datasets:[{label:'Proventos recebidos',data:got,backgroundColor:'#477bd0',borderRadius:4,stack:'proventos'},{label:'Proventos a receber',data:due,backgroundColor:'#b9c9e8',borderRadius:4,stack:'proventos'},{label:'Pagamentos atrasados',data:late,backgroundColor:'#d99a3d',borderRadius:4,stack:'proventos'}]},{interaction:{mode:'index',intersect:false},onClick:(event,elements)=>{if(!elements?.length)return;const hit=elements[0],index=hit.index;if(index>=0&&keys[index])openProvDistributionForBar(keys[index],mode);},onHover:(event,elements)=>{if(event?.native?.target)event.native.target.style.cursor=elements?.length?'pointer':'default';},plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false,sort:(a,b)=>b.datasetIndex-a.datasetIndex,displayColors:true,callbacks:{label:ctx=>`${ctx.dataset.label}: ${brl(ctx.raw||0)}`,title:items=>items?.length?labelsChart[items[0].dataIndex]:'',footer:items=>{const index=items?.[0]?.dataIndex;if(index===undefined)return '';return `Total: ${brl(Number(got[index]||0)+Number(due[index]||0)+Number(late[index]||0))}`}}}},scales:{x:{stacked:true,ticks:{color:'#8f99a8'},grid:{display:false}},y:{stacked:true,beginAtZero:true,ticks:{color:'#8f99a8',callback:v=>'R$ '+Number(v).toLocaleString('pt-BR')},grid:{color:'#303541'}}}});
  const totalReceived=got.reduce((a,b)=>a+b,0);
  const totalUpcoming=due.reduce((a,b)=>a+b,0);
- const totalFiltered=totalReceived+totalUpcoming;
+ const totalOverdue=late.reduce((a,b)=>a+b,0);
+ const totalFiltered=totalReceived+totalUpcoming+totalOverdue;
  const totalHeader=document.getElementById('provMonthlyTotal');
  if(totalHeader){
-  totalHeader.textContent=`Total no filtro: ${brl(totalFiltered)} · Recebidos: ${brl(totalReceived)} · A receber: ${brl(totalUpcoming)}`;
-  totalHeader.title='Soma dos proventos já pagos e dos pagamentos anunciados no período selecionado.';
+  totalHeader.textContent=`Total no filtro: ${brl(totalFiltered)} · Recebidos: ${brl(totalReceived)} · A receber: ${brl(totalUpcoming)} · Atrasados: ${brl(totalOverdue)}`;
+  totalHeader.title='Soma separada dos proventos recebidos, futuros e com data de pagamento vencida sem confirmação.';
  }
 
  const historyRows=rows.filter(x=>/^\d{4}-\d{2}-\d{2}$/.test(String(x.data_pagamento||'')));
@@ -3678,7 +3684,14 @@ function renderProventosDashboard(){
  myProvPage=Math.min(Math.max(1,myProvPage),totalPages);
  if(table){
   const start=(myProvPage-1)*pageSize,visible=myRows.slice(start,start+pageSize);
-  table.innerHTML=visible.length?visible.map(x=>`<tr><td class="ticker">${escapeHTML(x.ticker||'—')}${x.remarks?`<div class="mini">${escapeHTML(x.remarks)}</div>`:''}</td><td>${escapeHTML(x.tipo||'Provento')}</td><td><span class="prov-status ${x.status==='A receber'?'pending':''}" title="${x.confirmacao==='estimado_pela_data_de_pagamento_sem_confirmacao_pluggy'?'Estimado pela data de pagamento publicada por API alternativa; não confirmado via Pluggy.':''}">${escapeHTML(x.confirmacao==='estimado_pela_data_de_pagamento_sem_confirmacao_pluggy'?'Pago · API':(x.status||'—'))}</span></td><td>${x.data_com?new Date(x.data_com+'T12:00:00').toLocaleDateString('pt-BR'):'—'}</td><td>${x.data_pagamento?new Date(x.data_pagamento+'T12:00:00').toLocaleDateString('pt-BR'):'—'}</td><td>${x.quantidade??'—'}</td><td>${x.valor_por_ativo!==null&&x.valor_por_ativo!==undefined?brl(x.valor_por_ativo):'—'}</td><td class="${x.status==='Pago'?'green':'blue'}">${brl(x.valor_total)}</td></tr>`).join(''):rowEmpty(8,'Nenhum provento encontrado para os filtros selecionados.');
+  table.innerHTML=visible.length?visible.map(x=>{
+   const late=x.status==='Atrasado';
+   const statusText=x.confirmacao==='estimado_pela_data_de_pagamento_sem_confirmacao_pluggy'?'Pago · API':(late?'Atrasado · aguardando confirmação':(x.status||'—'));
+   const statusTitle=late?`Data de pagamento vencida há ${Number(x.dias_atraso||0)} dia(s). Ainda não há confirmação de crédito; não é contabilizado como recebido.`:x.confirmacao==='estimado_pela_data_de_pagamento_sem_confirmacao_pluggy'?'Estimado pela data de pagamento publicada por API alternativa; não confirmado via Pluggy.':'';
+   const statusClass=late?'overdue':(x.status==='A receber'?'pending':'');
+   const valueClass=x.status==='Pago'?'green':(late?'':'blue');
+   return `<tr><td class="ticker">${escapeHTML(x.ticker||'—')}${x.remarks?`<div class="mini">${escapeHTML(x.remarks)}</div>`:''}</td><td>${escapeHTML(x.tipo||'Provento')}</td><td><span class="prov-status ${statusClass}" title="${escapeHTML(statusTitle)}">${escapeHTML(statusText)}</span></td><td>${x.data_com?new Date(x.data_com+'T12:00:00').toLocaleDateString('pt-BR'):'—'}</td><td>${x.data_pagamento?new Date(x.data_pagamento+'T12:00:00').toLocaleDateString('pt-BR'):'—'}</td><td>${x.quantidade??'—'}</td><td>${x.valor_por_ativo!==null&&x.valor_por_ativo!==undefined?brl(x.valor_por_ativo):'—'}</td><td class="${valueClass}">${brl(x.valor_total)}</td></tr>`;
+  }).join(''):rowEmpty(8,'Nenhum provento encontrado para os filtros selecionados.');
  }
  if(pagination){
   if(totalPages<=1)pagination.innerHTML='';
@@ -3729,6 +3742,7 @@ function filterMyProvents(rows,eventType){
   else if(myProvPeriod==='mes_atual')inPeriod=dt>=startMonth&&dt<new Date(now.getFullYear(),now.getMonth()+1,1);
   else if(myProvPeriod==='proximo_mes'){const next=new Date(now.getFullYear(),now.getMonth()+1,1);inPeriod=dt.getFullYear()===next.getFullYear()&&dt.getMonth()===next.getMonth();}
   else if(myProvPeriod==='futuros')inPeriod=status==='A receber';
+  else if(myProvPeriod==='atrasados')inPeriod=status==='Atrasado';
   else if(myProvPeriod==='recebidos')inPeriod=status==='Pago';
   else if(myProvPeriod.startsWith('mes:')){const [,year,month]=myProvPeriod.split(':');inPeriod=dt.getFullYear()===Number(year)&&dt.getMonth()+1===Number(month);}
   return inPeriod&&(!myProvTypes.length||myProvTypes.includes(eventType(x)))&&(!myProvAssets.length||myProvAssets.includes(x.ticker));
@@ -3736,7 +3750,7 @@ function filterMyProvents(rows,eventType){
 }
 function renderMyProvFilters(rows,eventType){
  const menu=document.getElementById('myProvPeriodMenu'),label=document.getElementById('myProvPeriodLabel');
- const quick=[['ano_atual',`Ano atual ${new Date().getFullYear()}`],['30d','Últimos 30 dias'],['12m','Últimos 12 meses'],['5a','Últimos 5 anos'],['mes_atual','Mês atual'],['proximo_mes','Próximo mês'],['futuros','Futuros'],['recebidos','Recebidos'],['todos','Todos']];
+ const quick=[['ano_atual',`Ano atual ${new Date().getFullYear()}`],['30d','Últimos 30 dias'],['12m','Últimos 12 meses'],['5a','Últimos 5 anos'],['mes_atual','Mês atual'],['proximo_mes','Próximo mês'],['futuros','Futuros'],['atrasados','Atrasados'],['recebidos','Recebidos'],['todos','Todos']];
  const monthNames=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
  const quickLabel=quick.find(x=>x[0]===myProvPeriod)?.[1];
  if(label)label.textContent=quickLabel||(myProvPeriod.startsWith('mes:')?`${monthNames[Number(myProvPeriod.split(':')[2])-1]}/${myProvPeriod.split(':')[1]}`:'Ano atual');
@@ -6602,6 +6616,7 @@ body.light-theme #page-seguranca .security-panel .toolbar button.danger{backgrou
 body.light-theme #page-seguranca .security-panel .notice{background:#fff6e6!important;border-color:#efcf91!important;color:#67470f!important;}
 body.light-theme .prov-status{background:#dff5eb!important;color:#08764f!important;}
 body.light-theme .prov-status.pending{background:#e7effb!important;color:#245fa8!important;}
+body.light-theme .prov-status.overdue{background:#fff0d2!important;color:#8a5200!important;}
 body.light-theme .asset-category .buy-yes,body.light-theme .opportunity-table .buy-yes{background:#dff5eb!important;color:#08764f!important;}
 body.light-theme .asset-category .buy-no,body.light-theme .opportunity-table .buy-no{background:#e8edf4!important;color:#34445d!important;}
 body.light-theme .api-provider-desc,body.light-theme .api-provider-category,body.light-theme .api-provider-card .mini,
