@@ -35,7 +35,7 @@
     this._hits = [];
     this._boundClick = event => this._handleClick(event);
     this._boundMove = event => this._handleMove(event);
-    this._boundLeave = () => this._hideTooltip();
+    this._boundLeave = () => this._handleLeave();
     this._animationFrame = null;
     this._tooltipElement = null;
     if (canvas) {
@@ -188,6 +188,10 @@
       ctx.fillText(String(label), left - 8, yy);
     }
     const step = plotW / Math.max(1, labels.length);
+    if (Number.isInteger(this._hoverIndex) && this._hoverIndex >= 0 && this._hoverIndex < labels.length) {
+      ctx.fillStyle = 'rgba(120,183,245,.08)';
+      ctx.fillRect(left + step * this._hoverIndex, top, step, plotH);
+    }
     const stackPositive = Array(labels.length).fill(0);
     const groupWidth = Math.min(42, step * 0.72);
     if (this.type === 'bar') {
@@ -286,21 +290,28 @@
 
   Chart.prototype._tooltipLines = function (hit) {
     if (!hit) return [];
-    const dataset = (this.data.datasets || [])[hit.datasetIndex] || {};
-    const raw = hit.value !== undefined ? hit.value : numericValues(dataset)[hit.index];
-    const context = {
-      chart: this,
-      dataset,
-      datasetIndex: hit.datasetIndex,
-      dataIndex: hit.index,
-      index: hit.index,
-      label: hit.label !== undefined ? String(hit.label) : String(hit.index + 1),
-      raw,
-      parsed: { x: hit.index, y: raw },
-      formattedValue: Number.isFinite(Number(raw)) ? Number(raw).toLocaleString('pt-BR') : String(raw ?? ''),
-      type: this.type,
-    };
-    const callbacks = (((this.options || {}).plugins || {}).tooltip || {}).callbacks || {};
+    const datasets = this.data.datasets || [];
+    const tooltipOptions = (((this.options || {}).plugins || {}).tooltip || {});
+    const callbacks = tooltipOptions.callbacks || {};
+    const indexMode = ((this.options || {}).interaction || {}).mode === 'index' || tooltipOptions.mode === 'index';
+    const hits = indexMode ? this._hits.filter(item => item.index === hit.index) : [hit];
+    const contexts = hits.map(item => {
+      const dataset = datasets[item.datasetIndex] || {};
+      const raw = item.value !== undefined ? item.value : numericValues(dataset)[item.index];
+      return {
+        chart: this, dataset, datasetIndex: item.datasetIndex,
+        dataIndex: item.index, index: item.index,
+        label: item.label !== undefined ? String(item.label) : String(item.index + 1),
+        raw, parsed: { x: item.index, y: raw },
+        formattedValue: Number.isFinite(Number(raw)) ? Number(raw).toLocaleString('pt-BR') : String(raw ?? ''),
+        type: this.type,
+      };
+    });
+    if (typeof tooltipOptions.sort === 'function') {
+      contexts.sort((a, b) => {
+        try { return tooltipOptions.sort(a, b); } catch (_) { return 0; }
+      });
+    }
     const lines = [];
     const append = value => {
       if (value === undefined || value === null || value === false || value === '') return;
@@ -309,14 +320,15 @@
       });
     };
     try {
-      append(typeof callbacks.title === 'function' ? callbacks.title([context]) : context.label);
-      if (typeof callbacks.beforeBody === 'function') append(callbacks.beforeBody([context]));
-      append(typeof callbacks.label === 'function'
+      append(typeof callbacks.title === 'function' ? callbacks.title(contexts) : contexts[0]?.label);
+      if (typeof callbacks.beforeBody === 'function') append(callbacks.beforeBody(contexts));
+      contexts.forEach(context => append(typeof callbacks.label === 'function'
         ? callbacks.label(context)
-        : `${dataset.label ? dataset.label + ': ' : ''}${context.formattedValue}`);
-      if (typeof callbacks.afterBody === 'function') append(callbacks.afterBody([context]));
+        : `${context.dataset.label ? context.dataset.label + ': ' : ''}${context.formattedValue}`));
+      if (typeof callbacks.afterBody === 'function') append(callbacks.afterBody(contexts));
+      if (typeof callbacks.footer === 'function') append(callbacks.footer(contexts));
     } catch (error) {
-      append(`${dataset.label ? dataset.label + ': ' : ''}${context.formattedValue}`);
+      contexts.forEach(context => append(`${context.dataset.label ? context.dataset.label + ': ' : ''}${context.formattedValue}`));
     }
     return lines;
   };
@@ -366,13 +378,35 @@
     callback(event, hit ? [{ datasetIndex: hit.datasetIndex, index: hit.index }] : [], this);
   };
 
+  Chart.prototype._refreshHover = function () {
+    const animation = this.options.animation;
+    this.options.animation = false;
+    this.update();
+    this.options.animation = animation;
+  };
+
+  Chart.prototype._handleLeave = function () {
+    this._hideTooltip();
+    if (this._hoverIndex !== undefined) {
+      this._hoverIndex = undefined;
+      this._refreshHover();
+    }
+  };
+
   Chart.prototype._handleMove = function (event) {
     const hit = this._findHit(event);
+    const indexMode = ((this.options || {}).interaction || {}).mode === 'index' || (((this.options || {}).plugins || {}).tooltip || {}).mode === 'index';
+    const activeHits = hit && indexMode ? this._hits.filter(item => item.index === hit.index) : (hit ? [hit] : []);
+    const nextHoverIndex = hit && indexMode ? hit.index : undefined;
+    if (this._hoverIndex !== nextHoverIndex) {
+      this._hoverIndex = nextHoverIndex;
+      this._refreshHover();
+    }
     const callback = this.options.onHover;
     if (typeof callback === 'function') {
       const rect = this.canvas.getBoundingClientRect();
       const x = event.clientX - rect.left, y = event.clientY - rect.top;
-      callback({ native: { target: this.canvas }, x, y }, hit ? [{ datasetIndex: hit.datasetIndex, index: hit.index }] : [], this);
+      callback({ native: { target: this.canvas }, x, y }, activeHits.map(item => ({ datasetIndex: item.datasetIndex, index: item.index })), this);
     }
     this._showTooltip(hit, event);
   };

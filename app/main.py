@@ -5090,6 +5090,32 @@ def _confirmed_received_proventos_by_month(records, month_keys, as_of=None):
     return {month: round(value, 2) for month, value in totals.items()}
 
 
+def _filter_upcoming_proventos_by_month(upcoming, as_of=None):
+    """Keep announced payments in the current month or later, not overdue ones."""
+    today = as_of or datetime.now(TZ).date()
+    current_month = today.strftime('%Y-%m')
+    filtered = []
+    for raw in upcoming or []:
+        row = dict(raw)
+        if str(row.get('status') or '').strip().casefold() != 'a receber':
+            continue
+        payment_date = _api_date(row.get('data_pagamento'))
+        if not payment_date or payment_date[:7] < current_month:
+            continue
+        try:
+            amount = float(row.get('valor_total') or 0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(amount) or amount <= 0:
+            continue
+        if not _is_income_event(row.get('tipo_evento') or row.get('tipo')):
+            continue
+        row['data_pagamento'] = payment_date[:10]
+        row['valor_total'] = round(amount, 2)
+        filtered.append(row)
+    return filtered
+
+
 def _confirmed_proventos_total_12m(received_total, upcoming, as_of=None):
     """Sum receipts from the last 12 calendar months and announced payments in the next 12 months.
 
@@ -6346,6 +6372,9 @@ def dashboard():
             })
             pending_keys.add(dedupe)
             pending_amount_keys.add((ticker, payment_date, round(quantity * rate, 2)))
+
+    # Pending forecasts are limited to the current month and future months.
+    upcoming = _filter_upcoming_proventos_by_month(upcoming, as_of=today)
 
     monthly_values = [{'mes':m,'recebido':round(received_by_month.get(m,0),2)} for m in month_keys]
     total_12m = round(sum(received_by_month.get(month, 0.0) for month in month_keys), 2)

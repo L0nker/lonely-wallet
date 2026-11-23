@@ -314,6 +314,19 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(records[0]['valor_total'], 20.0)
             self.assertEqual(records[0]['status'], 'Pago')
 
+    def test_upcoming_proventos_filter_keeps_current_and_future_months_only(self):
+        as_of = datetime.date(2026, 11, 23)
+        rows = [
+            {'ticker':'OVERDUE11','status':'A receber','data_pagamento':'2026-10-31','valor_total':10.00,'tipo_evento':'DIVIDENDO'},
+            {'ticker':'CURRENT11','status':'A receber','data_pagamento':'2026-11-02','valor_total':12.00,'tipo_evento':'DIVIDENDO'},
+            {'ticker':'FUTURE11','status':'A receber','data_pagamento':'2026-12-15','valor_total':13.00,'tipo_evento':'JCP'},
+            {'ticker':'PAID11','status':'Pago','data_pagamento':'2026-11-22','valor_total':14.00,'tipo_evento':'DIVIDENDO'},
+            {'ticker':'AMORT11','status':'A receber','data_pagamento':'2026-12-01','valor_total':15.00,'tipo_evento':'AMORTIZAÇÃO'},
+        ]
+        filtered = wallet._filter_upcoming_proventos_by_month(rows, as_of=as_of)
+        self.assertEqual([row['ticker'] for row in filtered], ['CURRENT11', 'FUTURE11'])
+        self.assertEqual(sum(row['valor_total'] for row in filtered), 25.00)
+
     def test_confirmed_proventos_total_adds_only_announced_payments_within_next_12_months(self):
         as_of = datetime.date(2026, 11, 22)
         upcoming = [

@@ -1,4 +1,4 @@
-# Lonely Wallet v4.2.33
+# Lonely Wallet v4.2.34
 
 **Gerenciador pessoal de investimentos | Docker / ZimaOS | Português (Brasil)**
 
@@ -6,9 +6,17 @@ Esta versão parte da base estável v4.2.32. Mantém a interface, as regras fina
 
 As consultas da brapi passam a usar cache persistente em SQLite, orçamento local móvel de 30 dias, uma chamada por ticker, concorrência serializada e intervalo mínimo entre chamadas. As respostas recentes podem ser reutilizadas após reinicializações e, durante indisponibilidades temporárias, respostas anteriores dentro da janela de contingência podem ser reaproveitadas. A sincronização Pluggy para novas instalações passa a ter frequência padrão de quatro horas; preferências já salvas pelo usuário são preservadas.
 
+## Atualizações da versão 4.2.34
+
+- Proventos pendentes são considerados somente do mês atual em diante; eventos vencidos sem confirmação de pagamento deixam de compor previsões e totais.
+- O gráfico de evolução passa a exibir os meses atuais e futuros com previsões válidas.
+- Hover do gráfico seleciona a coluna mensal completa e apresenta tooltip consolidado com mês/ano, proventos a receber, recebidos e total.
+- O renderer alternativo offline também suporta tooltip combinado em modo por índice.
+
+
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.33 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.34 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
 - **Persistência:** SQLite, com bancos separados para ativos e tokens
 - **Porta:** `8085` no host e `8080` no container
@@ -38,7 +46,7 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve apresentar `ok: true` e `version: 4.2.33`.
+O retorno deve apresentar `ok: true` e `version: 4.2.34`.
 
 **Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
 

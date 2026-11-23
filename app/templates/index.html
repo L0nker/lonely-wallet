@@ -3563,17 +3563,20 @@ function renderProventosDashboard(){
  const validDate=value=>/^\d{4}-\d{2}-\d{2}$/.test(String(value||''));
  const keyFor=(value)=>{const date=new Date(value+'T12:00:00');return mode==='anual'?String(date.getFullYear()):`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}`};
  const chartRange=provChartRange||'12m';
+ const currentMonthKey=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+ const isCurrentOrFuturePending=x=>x.status==='A receber'&&String(x.data_pagamento||'').slice(0,7)>=currentMonthKey;
+ const isConfirmedPaid=x=>x.status==='Pago'&&String(x.data_pagamento||'')<=todayISO;
  const allChartRows=rows.filter(x=>{
   const date=String(x.data_pagamento||'');if(!validDate(date))return false;
-  const dt=new Date(date+'T12:00:00'),year=date.slice(0,4),dateKey=date.slice(0,7);
-  if(chartRange==='ano_atual')return Number(year)===now.getFullYear();
-  if(chartRange==='12m'){const cutoff=new Date(first.getFullYear(),first.getMonth()-11,1);return dt>=cutoff&&date<=todayISO;}
-  if(chartRange==='5a')return Number(year)>=now.getFullYear()-4&&Number(year)<=now.getFullYear();
-  if(chartRange==='futuros')return x.status==='A receber'&&date>=todayISO;
-  if(chartRange==='recebidos')return x.status==='Pago';
-  if(chartRange==='todos')return true;
-  if(chartRange.startsWith('ano:'))return year===chartRange.slice(4);
-  return true;
+  const dt=new Date(date+'T12:00:00'),year=date.slice(0,4);
+  if(chartRange==='ano_atual')return (Number(year)===now.getFullYear()&&isConfirmedPaid(x))||isCurrentOrFuturePending(x);
+  if(chartRange==='12m'){const cutoff=new Date(first.getFullYear(),first.getMonth()-11,1);return dt>=cutoff&&(isConfirmedPaid(x)||isCurrentOrFuturePending(x));}
+  if(chartRange==='5a')return (Number(year)>=now.getFullYear()-4&&Number(year)<=now.getFullYear()&&isConfirmedPaid(x))||isCurrentOrFuturePending(x);
+  if(chartRange==='futuros')return isCurrentOrFuturePending(x);
+  if(chartRange==='recebidos')return isConfirmedPaid(x);
+  if(chartRange==='todos')return isConfirmedPaid(x)||isCurrentOrFuturePending(x);
+  if(chartRange.startsWith('ano:'))return (year===chartRange.slice(4)&&isConfirmedPaid(x))||isCurrentOrFuturePending(x);
+  return isConfirmedPaid(x)||isCurrentOrFuturePending(x);
  });
  const sums={};
  allChartRows.forEach(x=>{
@@ -3595,7 +3598,7 @@ function renderProventosDashboard(){
  renderProvChartPeriodMenu(availableYears);
  const labelsChart=keys.map(k=>mode==='anual'?k:`${k.slice(5,7)}/${k.slice(0,4)}`);
  const got=keys.map(k=>Number((sums[k]?.recebido||0).toFixed(2))),due=keys.map(k=>Number((sums[k]?.a_receber||0).toFixed(2)));
- chart('provMonthlyChart','bar',{labels:labelsChart,datasets:[{label:'Proventos recebidos',data:got,backgroundColor:'#477bd0',borderRadius:4,stack:'proventos'},{label:'Proventos a receber',data:due,backgroundColor:'#b9c9e8',borderRadius:4,stack:'proventos'}]},{onClick:(event,elements)=>{if(!elements?.length)return;const hit=elements[0],index=hit.index;if(index>=0&&keys[index])openProvDistributionForBar(keys[index],mode,hit.datasetIndex===1?'A receber':'Pago');},onHover:(event,elements)=>{if(event?.native?.target)event.native.target.style.cursor=elements?.length?'pointer':'default';},plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${brl(ctx.raw||0)}`}}},scales:{x:{stacked:true,ticks:{color:'#8f99a8'},grid:{display:false}},y:{stacked:true,beginAtZero:true,ticks:{color:'#8f99a8',callback:v=>'R$ '+Number(v).toLocaleString('pt-BR')},grid:{color:'#303541'}}}});
+ chart('provMonthlyChart','bar',{labels:labelsChart,datasets:[{label:'Proventos recebidos',data:got,backgroundColor:'#477bd0',borderRadius:4,stack:'proventos'},{label:'Proventos a receber',data:due,backgroundColor:'#b9c9e8',borderRadius:4,stack:'proventos'}]},{interaction:{mode:'index',intersect:false},onClick:(event,elements)=>{if(!elements?.length)return;const hit=elements[0],index=hit.index;if(index>=0&&keys[index])openProvDistributionForBar(keys[index],mode,hit.datasetIndex===1?'A receber':'Pago');},onHover:(event,elements)=>{if(event?.native?.target)event.native.target.style.cursor=elements?.length?'pointer':'default';},plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false,sort:(a,b)=>b.datasetIndex-a.datasetIndex,displayColors:true,callbacks:{label:ctx=>`${ctx.dataset.label}: ${brl(ctx.raw||0)}`,title:items=>items?.length?labelsChart[items[0].dataIndex]:'',footer:items=>{const index=items?.[0]?.dataIndex;if(index===undefined)return '';return `Total: ${brl(Number(got[index]||0)+Number(due[index]||0))}`}}}},scales:{x:{stacked:true,ticks:{color:'#8f99a8'},grid:{display:false}},y:{stacked:true,beginAtZero:true,ticks:{color:'#8f99a8',callback:v=>'R$ '+Number(v).toLocaleString('pt-BR')},grid:{color:'#303541'}}}});
  const totalReceived=got.reduce((a,b)=>a+b,0);
  const totalUpcoming=due.reduce((a,b)=>a+b,0);
  const totalFiltered=totalReceived+totalUpcoming;

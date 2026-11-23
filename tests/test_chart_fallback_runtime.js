@@ -129,6 +129,33 @@ assert.ok(tooltipElements[0].textContent.includes('Valor formatado: 10'), 'toolt
 tooltipCanvas._handlers.mouseleave();
 assert.strictEqual(tooltipElements.length, 0, 'tooltip should hide when pointer leaves the canvas');
 
+const combinedTooltipCanvas = canvas('combined-tooltip-chart');
+const combinedTooltipChart = new window.Chart(combinedTooltipCanvas, {
+  type: 'bar',
+  data: { labels: ['11/2026'], datasets: [
+    { label: 'Proventos recebidos', data: [58.90], backgroundColor: '#477bd0' },
+    { label: 'Proventos a receber', data: [46.60], backgroundColor: '#b9c9e8' },
+  ] },
+  options: {
+    animation: false, interaction: { mode: 'index', intersect: false },
+    plugins: { tooltip: { mode: 'index', sort: (a,b) => b.datasetIndex-a.datasetIndex,
+      callbacks: { title: items => items[0].label,
+        label: context => `${context.dataset.label}: R$ ${context.raw.toFixed(2)}`,
+        footer: items => `Total: R$ ${items.reduce((sum,item)=>sum+Number(item.raw||0),0).toFixed(2)}` } }
+    },
+  },
+});
+flushAnimations();
+const receivedSegment = combinedTooltipChart._hits.find(hit => hit.datasetIndex === 0);
+combinedTooltipCanvas._handlers.mousemove({ clientX: receivedSegment.x + 2, clientY: receivedSegment.y + Math.max(2, receivedSegment.height / 2) });
+assert.ok(tooltipElements[0].textContent.includes('11/2026'), 'index-mode tooltip should show the month title');
+assert.ok(tooltipElements[0].textContent.includes('Proventos a receber: R$ 46.60'), 'index-mode tooltip should include the pending stack segment first');
+assert.ok(tooltipElements[0].textContent.includes('Proventos recebidos: R$ 58.90'), 'index-mode tooltip should include received amount');
+assert.ok(tooltipElements[0].textContent.includes('Total: R$ 105.50'), 'index-mode tooltip should show combined monthly total');
+assert.strictEqual(combinedTooltipChart._hoverIndex, 0, 'index-mode hover should mark the whole monthly column as active');
+combinedTooltipCanvas._handlers.mouseleave();
+assert.strictEqual(combinedTooltipChart._hoverIndex, undefined, 'leaving the chart should clear whole-column hover state');
+
 const donut = new window.Chart(canvas('donut'), {
   type: 'doughnut',
   data: { labels: ['Ações', 'FIIs'], datasets: [{ data: [60, 40], backgroundColor: ['#20bd82', '#78b7f5'] }] },
@@ -144,4 +171,4 @@ assert.strictEqual(successWindow.Chart, existingChart, 'fallback must not replac
 
 bar.destroy();
 assert.strictEqual(window.Chart.instances['stacked-bar'], undefined);
-console.log('Chart loader + fallback runtime: 9 verificações aprovadas.');
+console.log('Chart loader + fallback runtime: verificações aprovadas.');
