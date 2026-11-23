@@ -33,11 +33,9 @@
     this.options = this.config.options || {};
     this.id = canvas && (canvas.id || ('chart-' + Object.keys(instances).length));
     this._hits = [];
-    this._hoverIndex = null;
-    this._skipAnimationOnce = false;
     this._boundClick = event => this._handleClick(event);
     this._boundMove = event => this._handleMove(event);
-    this._boundLeave = () => this._handleLeave();
+    this._boundLeave = () => this._hideTooltip();
     this._animationFrame = null;
     this._tooltipElement = null;
     if (canvas) {
@@ -105,8 +103,7 @@
       global.cancelAnimationFrame(this._animationFrame);
       this._animationFrame = null;
     }
-    const animation = this._skipAnimationOnce ? false : this.options.animation;
-    this._skipAnimationOnce = false;
+    const animation = this.options.animation;
     const duration = animation === false ? 0 :
       (animation && typeof animation === 'object' && Number.isFinite(Number(animation.duration))
         ? Math.max(0, Number(animation.duration)) : 260);
@@ -213,13 +210,7 @@
             yTop = y(value);
           }
           const barY = Math.min(yBase, yTop), barH = Math.max(1, Math.abs(yBase - yTop));
-          const indexHover = this._hoverIndex === index && (
-            ((this.options.hover || {}).mode === 'index') ||
-            ((this.options.interaction || {}).mode === 'index')
-          );
-          ctx.fillStyle = indexHover && dataset.hoverBackgroundColor
-            ? cssColor(dataset.hoverBackgroundColor, asColor(dataset, index))
-            : asColor(dataset, index);
+          ctx.fillStyle = asColor(dataset, index);
           const radius = Math.min(4, barW / 3);
           ctx.beginPath();
           if (typeof ctx.roundRect === 'function') ctx.roundRect(barX, barY, barW, barH, [radius, radius, 0, 0]);
@@ -293,10 +284,11 @@
     }) || null;
   };
 
-  Chart.prototype._contextForHit = function (hit) {
+  Chart.prototype._tooltipLines = function (hit) {
+    if (!hit) return [];
     const dataset = (this.data.datasets || [])[hit.datasetIndex] || {};
     const raw = hit.value !== undefined ? hit.value : numericValues(dataset)[hit.index];
-    return {
+    const context = {
       chart: this,
       dataset,
       datasetIndex: hit.datasetIndex,
@@ -308,34 +300,7 @@
       formattedValue: Number.isFinite(Number(raw)) ? Number(raw).toLocaleString('pt-BR') : String(raw ?? ''),
       type: this.type,
     };
-  };
-
-  Chart.prototype._hitsForEvent = function (event) {
-    const hit = this._findHit(event);
-    if (!hit) return [];
-    const tooltipOptions = (((this.options || {}).plugins || {}).tooltip || {});
-    const hoverOptions = this.options.hover || {};
-    const interactionOptions = this.options.interaction || {};
-    const mode = tooltipOptions.mode || hoverOptions.mode || interactionOptions.mode;
-    if (this.type === 'bar' && mode === 'index') {
-      const grouped = this._hits.filter(item => item.index === hit.index);
-      const itemSort = tooltipOptions.itemSort;
-      if (typeof itemSort === 'function') {
-        const contexts = new Map(grouped.map(item => [item, this._contextForHit(item)]));
-        grouped.sort((a, b) => itemSort(contexts.get(a), contexts.get(b)));
-      } else {
-        grouped.sort((a, b) => a.datasetIndex - b.datasetIndex);
-      }
-      return grouped;
-    }
-    return [hit];
-  };
-
-  Chart.prototype._tooltipLines = function (hits) {
-    if (!Array.isArray(hits) || !hits.length) return [];
-    const tooltipOptions = (((this.options || {}).plugins || {}).tooltip || {});
-    const callbacks = tooltipOptions.callbacks || {};
-    const contexts = hits.map(hit => this._contextForHit(hit));
+    const callbacks = (((this.options || {}).plugins || {}).tooltip || {}).callbacks || {};
     const lines = [];
     const append = value => {
       if (value === undefined || value === null || value === false || value === '') return;
@@ -344,27 +309,25 @@
       });
     };
     try {
-      append(typeof callbacks.title === 'function' ? callbacks.title(contexts) : contexts[0].label);
-      if (typeof callbacks.beforeBody === 'function') append(callbacks.beforeBody(contexts));
-      contexts.forEach(context => {
-        append(typeof callbacks.label === 'function'
-          ? callbacks.label(context)
-          : `${context.dataset.label ? context.dataset.label + ': ' : ''}${context.formattedValue}`);
-      });
-      if (typeof callbacks.afterBody === 'function') append(callbacks.afterBody(contexts));
+      append(typeof callbacks.title === 'function' ? callbacks.title([context]) : context.label);
+      if (typeof callbacks.beforeBody === 'function') append(callbacks.beforeBody([context]));
+      append(typeof callbacks.label === 'function'
+        ? callbacks.label(context)
+        : `${dataset.label ? dataset.label + ': ' : ''}${context.formattedValue}`);
+      if (typeof callbacks.afterBody === 'function') append(callbacks.afterBody([context]));
     } catch (error) {
-      contexts.forEach(context => append(`${context.dataset.label ? context.dataset.label + ': ' : ''}${context.formattedValue}`));
+      append(`${dataset.label ? dataset.label + ': ' : ''}${context.formattedValue}`);
     }
     return lines;
   };
 
-  Chart.prototype._showTooltip = function (hits, event) {
+  Chart.prototype._showTooltip = function (hit, event) {
     const tooltipOptions = (((this.options || {}).plugins || {}).tooltip || {});
-    if (tooltipOptions.enabled === false || !Array.isArray(hits) || !hits.length || typeof document === 'undefined' || !document.body) {
+    if (tooltipOptions.enabled === false || !hit || typeof document === 'undefined' || !document.body) {
       this._hideTooltip();
       return;
     }
-    const lines = this._tooltipLines(hits);
+    const lines = this._tooltipLines(hit);
     if (!lines.length) { this._hideTooltip(); return; }
     if (!this._tooltipElement) {
       this._tooltipElement = document.createElement('div');
@@ -399,47 +362,21 @@
   Chart.prototype._handleClick = function (event) {
     const callback = this.options.onClick;
     if (typeof callback !== 'function') return;
-    const hits = this._hitsForEvent(event);
-    callback(event, hits.map(hit => ({ datasetIndex: hit.datasetIndex, index: hit.index })), this);
+    const hit = this._findHit(event);
+    callback(event, hit ? [{ datasetIndex: hit.datasetIndex, index: hit.index }] : [], this);
   };
 
   Chart.prototype._handleMove = function (event) {
-    const hits = this._hitsForEvent(event);
-    const hoverMode = (this.options.hover || {}).mode || (this.options.interaction || {}).mode;
-    const nextIndex = this.type === 'bar' && hoverMode === 'index' && hits.length ? hits[0].index : null;
-    if (nextIndex !== this._hoverIndex) {
-      this._hoverIndex = nextIndex;
-      this._skipAnimationOnce = true;
-      this.update();
-      // update() rebuilds the hit records; resolve the active column again.
-      if (nextIndex !== null) {
-        const refreshed = this._hits.filter(item => item.index === nextIndex);
-        const tooltipOptions = (((this.options || {}).plugins || {}).tooltip || {});
-        const itemSort = tooltipOptions.itemSort;
-        if (typeof itemSort === 'function') {
-          const contexts = new Map(refreshed.map(item => [item, this._contextForHit(item)]));
-          refreshed.sort((a, b) => itemSort(contexts.get(a), contexts.get(b)));
-        }
-        hits.splice(0, hits.length, ...refreshed);
-      }
-    }
+    const hit = this._findHit(event);
     const callback = this.options.onHover;
     if (typeof callback === 'function') {
       const rect = this.canvas.getBoundingClientRect();
       const x = event.clientX - rect.left, y = event.clientY - rect.top;
-      callback({ native: { target: this.canvas }, x, y }, hits.map(hit => ({ datasetIndex: hit.datasetIndex, index: hit.index })), this);
+      callback({ native: { target: this.canvas }, x, y }, hit ? [{ datasetIndex: hit.datasetIndex, index: hit.index }] : [], this);
     }
-    this._showTooltip(hits, event);
+    this._showTooltip(hit, event);
   };
 
-  Chart.prototype._handleLeave = function () {
-    if (this._hoverIndex !== null) {
-      this._hoverIndex = null;
-      this._skipAnimationOnce = true;
-      this.update();
-    }
-    this._hideTooltip();
-  };
 
   global.Chart = Chart;
 })(window);
