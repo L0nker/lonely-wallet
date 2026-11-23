@@ -1,5 +1,31 @@
-# Lonely Wallet v4.2.44
+# Lonely Wallet v4.2.45
 
+
+# Atualizações da versão 4.2.45
+
+## Healthcheck e estado degradado dos gráficos
+- O endpoint `/api/health` mantém HTTP 200 quando o renderer alternativo está disponível e informa `status=degraded` no JSON.
+- O modo estrito `/api/health?strict=1` retorna HTTP 503 quando o Chart.js completo não está disponível ou validado.
+- O healthcheck do Docker utiliza `scripts/healthcheck.py` e o modo estrito, de modo que um build offline com renderer alternativo seja identificado como degradado pelo Docker, sem impedir o acesso normal à aplicação.
+- O comando de healthcheck registra o estado, o renderer e o motivo da degradação nos logs de saúde do container.
+- Quando o Chart.js completo passa pela validação de integridade, o endpoint estrito retorna HTTP 200.
+
+## Persistência e recuperação da fila de proventos
+- Criada a tabela `proventos_sync_queue_state` no banco `ativos.db` para persistir a execução atual, a solicitação pendente, os parâmetros, o resultado e os erros.
+- A solicitação atual é gravada no SQLite antes de iniciar a thread de sincronização.
+- Uma nova solicitação com universo de ativos diferente fica persistida como pendente, mantendo apenas a atualização pendente mais recente.
+- Ao reiniciar o container ou o processo Gunicorn, uma sincronização que estava `running` é recuperada automaticamente.
+- A recuperação reexecuta a sincronização usando as chaves idempotentes `event_key` dos eventos BRAPI, evitando duplicações.
+- A execução atual é concluída antes da execução pendente, preservando a serialização das chamadas aos provedores.
+- Estados e resultados permanecem disponíveis depois da reinicialização.
+- A configuração Docker suportada continua usando um worker Gunicorn para garantir um único proprietário da fila em memória.
+
+## Testes da versão 4.2.45
+- Testada a persistência da execução atual e da solicitação pendente.
+- Testada a recuperação automática de uma execução interrompida após reinicialização simulada.
+- Testada a retomada sequencial da execução atual e da execução pendente.
+- Testado o modo normal e estrito do endpoint de saúde para renderer `degraded` e Chart.js `ready`.
+- Build Docker real e validação de uma reinicialização efetiva do container ainda precisam ser realizados no ZimaOS.
 
 # Atualizações da versão 4.2.44
 
@@ -182,7 +208,7 @@ A aplicação preserva a interface, as regras financeiras, as integrações, os 
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.44 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.45 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
 - **Persistência:** SQLite, com bancos separados para ativos e tokens
 - **Porta:** `8085` no host e `8080` no container
@@ -210,9 +236,10 @@ docker compose up -d --build
 
 ```bash
 curl http://IP_DO_SERVIDOR:8085/api/health
+curl -i http://IP_DO_SERVIDOR:8085/api/health?strict=1
 ```
 
-O retorno deve apresentar `ok: true` e `version: 4.2.44`.
+O endpoint normal informa `status=healthy` ou `status=degraded`. O endpoint estrito retorna HTTP 503 quando o bundle Chart.js completo não está disponível/validado; isso faz o healthcheck Docker identificar a degradação dos gráficos. O renderer alternativo continua permitindo o acesso à aplicação.
 
 **Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
 
@@ -319,9 +346,12 @@ Consulte:
 ```bash
 docker compose logs --tail=200 lonely-wallet
 curl http://IP_DO_SERVIDOR:8085/api/health
+curl -i http://IP_DO_SERVIDOR:8085/api/health?strict=1
 ```
 
-Verifique se a porta `8085` está livre e se o UID/GID `10001` possui acesso ao volume persistente.
+Se o status for `degraded` e o renderer for `fallback`, a aplicação continua acessível, mas o healthcheck Docker marca o container como degradado porque o Chart.js completo não foi validado. Reconstrua com acesso ao registry npm para obter Chart.js 4.6.1. Se o status for `unhealthy`, verifique banco SQLite, logs e permissões do volume. O healthcheck é executado por `scripts/healthcheck.py` e registra o estado/renderer nos logs de saúde.
+
+Verifique também se a porta `8085` está livre e se o UID/GID `10001` possui acesso ao volume persistente.
 
 ### A importação B3 retorna HTTP 413
 
@@ -438,6 +468,9 @@ Os intervalos locais controlam somente o ritmo de envio. Não substituem as regr
 - O andamento e o resultado podem ser consultados em `GET /api/proventos/sincronizar/status`.
 - Execuções concorrentes para a mesma carteira são consolidadas; mudanças no universo de tickers geram uma execução pendente após a atual.
 - Erros são registrados no estado da tarefa, sem bloquear o carregamento do dashboard.
+- A execução atual e uma execução pendente são persistidas na tabela `proventos_sync_queue_state` do banco `ativos.db`.
+- Ao reiniciar o container, uma execução interrompida é retomada automaticamente; eventos já gravados são reaplicados de forma idempotente pela chave `event_key`.
+- A configuração Docker suportada utiliza um único worker Gunicorn para manter um único proprietário da fila em memória.
 
 ### Histórico patrimonial em segundo plano
 

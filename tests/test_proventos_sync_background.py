@@ -1,24 +1,35 @@
-"""Focused runtime tests for the background proventos synchronization queue."""
+"""Runtime tests for durable background proventos synchronization."""
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
+import sqlite3
 import threading
 import time
+import tempfile
 import unittest
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / 'app' / 'main.py').read_text(encoding='utf-8')
 TREE = ast.parse(SOURCE)
-NAMES = {'_proventos_sync_signature', '_proventos_sync_worker', '_queue_proventos_sync', '_proventos_sync_status'}
+NAMES = {
+    '_proventos_sync_signature', '_proventos_sync_persist_state',
+    '_start_proventos_sync_worker', '_proventos_sync_worker',
+    '_queue_proventos_sync', '_restore_proventos_sync_queue',
+    '_proventos_sync_status',
+}
 FUNCTIONS = [node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name in NAMES]
 
 
 class DummyLogger:
     def exception(self, *args, **kwargs):
+        pass
+
+    def info(self, *args, **kwargs):
         pass
 
 
@@ -30,21 +41,31 @@ class DummyApp:
         yield self
 
 
-def build_namespace(sync_function):
+def build_namespace(sync_function, connection=None):
+    connection = connection or sqlite3.connect(':memory:', check_same_thread=False)
+    connection.row_factory = sqlite3.Row
+    connection.execute('''CREATE TABLE IF NOT EXISTS proventos_sync_queue_state (
+      id INTEGER PRIMARY KEY CHECK(id=1), status TEXT NOT NULL DEFAULT 'idle',
+      signature TEXT NOT NULL DEFAULT '', inputs_json TEXT NOT NULL DEFAULT '{}',
+      pending_signature TEXT NOT NULL DEFAULT '', pending_inputs_json TEXT NOT NULL DEFAULT '{}',
+      result_json TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''
+    )''')
+    connection.commit()
     namespace = {
         'app': DummyApp(),
         'threading': threading,
         'time': time,
         'datetime': datetime,
         'TZ': timezone.utc,
-        'hashlib': __import__('hashlib'),
-        'json': __import__('json'),
+        'hashlib': hashlib,
+        'json': json,
+        'db': lambda: connection,
         'PROVENTOS_SYNC_CACHE': {'time': 0, 'result': None, 'signature': None},
         'PROVENTOS_SYNC_TTL': 3600,
         'PROVENTOS_SYNC_LOCK': threading.RLock(),
         'PROVENTOS_SYNC_STATE': {
             'status': 'idle', 'signature': '', 'pending_signature': '',
-            'result': None, 'error': '', 'updated_at': ''
+            'result': None, 'error': '', 'updated_at': '', 'inputs': None
         },
         'PROVENTOS_SYNC_PENDING_INPUTS': None,
         '_asset_type_map': lambda: {},
@@ -52,11 +73,12 @@ def build_namespace(sync_function):
         'safe_error_text': lambda exc, limit=300: str(exc)[:limit],
     }
     exec(compile(ast.Module(body=FUNCTIONS, type_ignores=[]), '<proventos-sync-worker>', 'exec'), namespace)
+    namespace['_test_connection'] = connection
     return namespace
 
 
 class ProventosBackgroundQueueTests(unittest.TestCase):
-    def test_queue_returns_immediately_and_serializes_new_asset_signature(self):
+    def test_queue_returns_immediately_persists_current_and_pending(self):
         first_started = threading.Event()
         release_first = threading.Event()
         second_finished = threading.Event()
@@ -72,39 +94,137 @@ class ProventosBackgroundQueueTests(unittest.TestCase):
             return {'ok': True, 'importados': 2, 'mensagem': 'segunda'}
 
         ns = build_namespace(sync)
-        with patch.object(threading, 'Thread', wraps=threading.Thread):
-            started = time.monotonic()
-            first = ns['_queue_proventos_sync'](
-                force=False,
-                quote_items=[{'ticker': 'AAA3', 'tipo': 'acao'}],
-                active_items=[{'ticker': 'AAA3', 'tipo': 'acao'}],
-            )
-            self.assertLess(time.monotonic() - started, 0.5)
-            self.assertEqual(first['status'], 'running')
-            self.assertTrue(first_started.wait(2))
+        started = time.monotonic()
+        first = ns['_queue_proventos_sync'](
+            force=False,
+            quote_items=[{'ticker': 'AAA3', 'tipo': 'acao'}],
+            active_items=[{'ticker': 'AAA3', 'tipo': 'acao'}],
+        )
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertEqual(first['status'], 'running')
+        self.assertTrue(first_started.wait(2))
 
-            same = ns['_queue_proventos_sync'](
-                force=True,
-                quote_items=[{'ticker': 'AAA3', 'tipo': 'acao'}],
-                active_items=[{'ticker': 'AAA3', 'tipo': 'acao'}],
-            )
-            self.assertEqual(same['status'], 'running')
+        row = ns['_test_connection'].execute('SELECT * FROM proventos_sync_queue_state WHERE id=1').fetchone()
+        self.assertEqual(row['status'], 'running')
+        self.assertEqual(json.loads(row['inputs_json'])['active_items'][0]['ticker'], 'AAA3')
 
-            queued = ns['_queue_proventos_sync'](
-                force=False,
-                quote_items=[{'ticker': 'BBB4', 'tipo': 'acao'}],
-                active_items=[{'ticker': 'BBB4', 'tipo': 'acao'}],
-            )
-            self.assertEqual(queued['status'], 'queued')
-            release_first.set()
-            self.assertTrue(second_finished.wait(3))
+        same = ns['_queue_proventos_sync'](
+            force=True,
+            quote_items=[{'ticker': 'AAA3', 'tipo': 'acao'}],
+            active_items=[{'ticker': 'AAA3', 'tipo': 'acao'}],
+        )
+        self.assertEqual(same['status'], 'running')
 
-            deadline = time.monotonic() + 3
-            while ns['PROVENTOS_SYNC_STATE']['status'] == 'running' and time.monotonic() < deadline:
-                time.sleep(0.01)
-            self.assertEqual(len(calls), 2)
-            self.assertEqual(ns['PROVENTOS_SYNC_STATE']['status'], 'completed')
-            self.assertEqual(ns['PROVENTOS_SYNC_STATE']['result']['mensagem'], 'segunda')
+        queued = ns['_queue_proventos_sync'](
+            force=False,
+            quote_items=[{'ticker': 'BBB4', 'tipo': 'acao'}],
+            active_items=[{'ticker': 'BBB4', 'tipo': 'acao'}],
+        )
+        self.assertEqual(queued['status'], 'queued')
+        row = ns['_test_connection'].execute('SELECT * FROM proventos_sync_queue_state WHERE id=1').fetchone()
+        self.assertEqual(row['pending_signature'], queued['signature'])
+        self.assertEqual(json.loads(row['pending_inputs_json'])['active_items'][0]['ticker'], 'BBB4')
+
+        release_first.set()
+        self.assertTrue(second_finished.wait(3))
+        deadline = time.monotonic() + 3
+        while not (ns['PROVENTOS_SYNC_STATE']['status'] == 'completed'
+                   and ns['PROVENTOS_SYNC_STATE']['signature'] == queued['signature']) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(ns['PROVENTOS_SYNC_STATE']['status'], 'completed')
+        self.assertEqual(ns['PROVENTOS_SYNC_STATE']['result']['mensagem'], 'segunda')
+        row = ns['_test_connection'].execute('SELECT * FROM proventos_sync_queue_state WHERE id=1').fetchone()
+        self.assertEqual(row['status'], 'completed')
+        self.assertEqual(row['pending_signature'], '')
+        self.assertEqual(json.loads(row['inputs_json'])['active_items'][0]['ticker'], 'BBB4')
+
+    def test_interrupted_running_job_is_restored_after_restart(self):
+        finished = threading.Event()
+        calls = []
+
+        def sync(**kwargs):
+            calls.append(kwargs)
+            finished.set()
+            return {'ok': True, 'importados': 3, 'mensagem': 'recuperada'}
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        database_path = str(Path(temporary.name) / 'assets.db')
+        connection = sqlite3.connect(database_path, check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        ns = build_namespace(sync, connection)
+        inputs = {'force': True, 'quote_items': [{'ticker': 'ITSA4', 'tipo': 'acao'}],
+                  'active_items': [{'ticker': 'ITSA4', 'tipo': 'acao'}]}
+        signature = 'persisted-signature'
+        connection.execute(
+            '''INSERT INTO proventos_sync_queue_state
+               (id,status,signature,inputs_json,pending_signature,pending_inputs_json,result_json,error,updated_at)
+               VALUES(1,'running',?,?, '', '{}', '{}', '', ?)''',
+            (signature, json.dumps(inputs), datetime.now(timezone.utc).isoformat())
+        )
+        connection.commit()
+        connection.close()
+        # A new connection simulates a new app process opening the same mounted DB.
+        connection = sqlite3.connect(database_path, check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        ns = build_namespace(sync, connection)
+
+        self.assertTrue(ns['_restore_proventos_sync_queue']())
+        self.assertTrue(finished.wait(2))
+        deadline = time.monotonic() + 2
+        while ns['PROVENTOS_SYNC_STATE']['status'] == 'running' and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]['active_items'][0]['ticker'], 'ITSA4')
+        self.assertEqual(ns['PROVENTOS_SYNC_STATE']['status'], 'completed')
+        row = connection.execute('SELECT status,result_json FROM proventos_sync_queue_state WHERE id=1').fetchone()
+        self.assertEqual(row['status'], 'completed')
+        self.assertEqual(json.loads(row['result_json'])['mensagem'], 'recuperada')
+
+    def test_interrupted_current_and_pending_jobs_are_both_restored(self):
+        calls = []
+        finished = threading.Event()
+
+        def sync(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 2:
+                finished.set()
+            return {'ok': True, 'mensagem': kwargs['active_items'][0]['ticker']}
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        database_path = str(Path(temporary.name) / 'assets.db')
+        connection = sqlite3.connect(database_path, check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        ns = build_namespace(sync, connection)
+        current = {'force': True, 'quote_items': [{'ticker': 'AAA3', 'tipo': 'acao'}],
+                   'active_items': [{'ticker': 'AAA3', 'tipo': 'acao'}]}
+        pending = {'force': False, 'quote_items': [{'ticker': 'BBB4', 'tipo': 'acao'}],
+                   'active_items': [{'ticker': 'BBB4', 'tipo': 'acao'}]}
+        connection.execute(
+            "INSERT INTO proventos_sync_queue_state"
+            "(id,status,signature,inputs_json,pending_signature,pending_inputs_json,result_json,error,updated_at) "
+            "VALUES(1,'running',?,?,?,?,'{}','',?)",
+            ('sig-current', json.dumps(current), 'sig-pending', json.dumps(pending), datetime.now(timezone.utc).isoformat())
+        )
+        connection.commit()
+        connection.close()
+        connection = sqlite3.connect(database_path, check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        ns = build_namespace(sync, connection)
+
+        self.assertTrue(ns['_restore_proventos_sync_queue']())
+        self.assertTrue(finished.wait(2))
+        deadline = time.monotonic() + 2
+        while ns['PROVENTOS_SYNC_STATE']['status'] == 'running' and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual([call['active_items'][0]['ticker'] for call in calls], ['AAA3', 'BBB4'])
+        row = connection.execute('SELECT status,signature,pending_signature FROM proventos_sync_queue_state WHERE id=1').fetchone()
+        self.assertEqual(row['status'], 'completed')
+        self.assertEqual(row['signature'], 'sig-pending')
+        self.assertEqual(row['pending_signature'], '')
 
     def test_dashboard_and_manual_route_use_background_queue(self):
         dashboard = SOURCE[SOURCE.index("@app.route('/api/dashboard')"):SOURCE.index("@app.route('/api/ativos/busca')")]

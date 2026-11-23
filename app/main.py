@@ -202,7 +202,7 @@ PROVENTOS_SYNC_TTL = 3600
 PROVENTOS_SYNC_LOCK = threading.RLock()
 PROVENTOS_SYNC_STATE = {
     'status': 'idle', 'signature': '', 'pending_signature': '',
-    'result': None, 'error': '', 'updated_at': ''
+    'result': None, 'error': '', 'updated_at': '', 'inputs': None
 }
 PROVENTOS_SYNC_PENDING_INPUTS = None
 SGS_CACHE = {}
@@ -1105,6 +1105,17 @@ def init_db():
       operacoes INTEGER NOT NULL DEFAULT 0, proventos INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+    CREATE TABLE IF NOT EXISTS proventos_sync_queue_state (
+      id INTEGER PRIMARY KEY CHECK(id=1),
+      status TEXT NOT NULL DEFAULT 'idle',
+      signature TEXT NOT NULL DEFAULT '',
+      inputs_json TEXT NOT NULL DEFAULT '{}',
+      pending_signature TEXT NOT NULL DEFAULT '',
+      pending_inputs_json TEXT NOT NULL DEFAULT '{}',
+      result_json TEXT NOT NULL DEFAULT '{}',
+      error TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT ''
+    );
     CREATE TABLE IF NOT EXISTS pluggy_items (
       item_id TEXT PRIMARY KEY,
       label TEXT NOT NULL DEFAULT '',
@@ -4163,12 +4174,17 @@ def health():
                 charts=charts,
             ), 503
         overall_status = 'degraded' if charts['status'] == 'degraded' else 'healthy'
+        # Keep the public endpoint backward-compatible (HTTP 200 for a usable
+        # fallback renderer), but provide a strict mode for Docker healthchecks.
+        strict = str(request.args.get('strict') or '').strip().lower() in ('1', 'true', 'yes')
+        http_status = 503 if strict and overall_status != 'healthy' else 200
         return jsonify(
-            ok=True,
+            ok=(http_status == 200),
             status=overall_status,
             version=APP_VERSION,
             charts=charts,
-        ), 200
+            healthcheck_mode='strict' if strict else 'normal',
+        ), http_status
     except Exception:
         app.logger.exception('Healthcheck failed')
         return jsonify(ok=False, status='unhealthy', version=APP_VERSION), 503
@@ -5632,8 +5648,45 @@ def _proventos_sync_signature(quote_items=None, active_items=None):
     return tuple(sorted(types.items()))
 
 
+def _proventos_sync_persist_state():
+    """Persist the active and pending proventos jobs before returning to HTTP."""
+    state = PROVENTOS_SYNC_STATE
+    current_inputs = state.get('inputs') if isinstance(state.get('inputs'), dict) else {}
+    pending = PROVENTOS_SYNC_PENDING_INPUTS if isinstance(PROVENTOS_SYNC_PENDING_INPUTS, dict) else None
+    db().execute(
+      'INSERT INTO proventos_sync_queue_state '
+      '(id,status,signature,inputs_json,pending_signature,pending_inputs_json,result_json,error,updated_at) '
+      'VALUES(1,?,?,?,?,?,?,?,?) '
+      'ON CONFLICT(id) DO UPDATE SET '
+      'status=excluded.status,signature=excluded.signature,inputs_json=excluded.inputs_json,'
+      'pending_signature=excluded.pending_signature,pending_inputs_json=excluded.pending_inputs_json,'
+      'result_json=excluded.result_json,error=excluded.error,updated_at=excluded.updated_at',
+      (
+        str(state.get('status') or 'idle'),
+        str(state.get('signature') or ''),
+        json.dumps(current_inputs, ensure_ascii=False, separators=(',', ':')),
+        str(state.get('pending_signature') or ''),
+        json.dumps(pending.get('inputs', {}), ensure_ascii=False, separators=(',', ':')) if pending else '{}',
+        json.dumps(state.get('result') or {}, ensure_ascii=False, separators=(',', ':'), default=str),
+        str(state.get('error') or '')[:1000],
+        str(state.get('updated_at') or datetime.now(TZ).isoformat(timespec='seconds')),
+      )
+    )
+    db().commit()
+
+
+def _start_proventos_sync_worker(inputs, signature):
+    """Start exactly one in-process worker after its job has been persisted."""
+    thread = threading.Thread(
+        target=_proventos_sync_worker, args=(inputs, signature),
+        name='proventos-api-sync', daemon=True
+    )
+    thread.start()
+    return thread
+
+
 def _proventos_sync_worker(inputs, signature):
-    """Run dividend API synchronization outside any HTTP request thread."""
+    """Run durable queued jobs serially; unfinished jobs are recovered at startup."""
     global PROVENTOS_SYNC_PENDING_INPUTS
     current_inputs = inputs
     current_signature = signature
@@ -5651,31 +5704,48 @@ def _proventos_sync_worker(inputs, signature):
             if error:
                 PROVENTOS_SYNC_STATE.update({
                     'status': 'failed', 'signature': current_signature,
-                    'result': None, 'error': error,
+                    'inputs': current_inputs, 'result': None, 'error': error,
                     'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
                 })
             else:
                 PROVENTOS_SYNC_STATE.update({
                     'status': 'completed', 'signature': current_signature,
-                    'result': result or {}, 'error': '',
+                    'inputs': current_inputs, 'result': result or {}, 'error': '',
                     'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
                 })
+
             pending = PROVENTOS_SYNC_PENDING_INPUTS
             PROVENTOS_SYNC_PENDING_INPUTS = None
             if not pending:
                 PROVENTOS_SYNC_STATE['pending_signature'] = ''
+                try:
+                    with app.app_context():
+                        _proventos_sync_persist_state()
+                except Exception:
+                    app.logger.exception('Não foi possível persistir o estado final da sincronização de proventos.')
                 return
+
             current_inputs = pending['inputs']
             current_signature = pending['signature']
             PROVENTOS_SYNC_STATE.update({
                 'status': 'running', 'signature': current_signature,
-                'pending_signature': '', 'result': None, 'error': '',
+                'inputs': current_inputs, 'pending_signature': '',
+                'result': None, 'error': '',
                 'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
             })
+            try:
+                with app.app_context():
+                    _proventos_sync_persist_state()
+            except Exception:
+                # Keep the request queued in memory if SQLite is temporarily busy.
+                PROVENTOS_SYNC_PENDING_INPUTS = pending
+                PROVENTOS_SYNC_STATE['pending_signature'] = current_signature
+                app.logger.exception('Não foi possível promover a próxima sincronização persistida.')
+                return
 
 
 def _queue_proventos_sync(force=False, quote_items=None, active_items=None):
-    """Queue API proventos synchronization; never wait for provider network calls."""
+    """Persist API proventos sync request and start/append to the durable queue."""
     global PROVENTOS_SYNC_PENDING_INPUTS
     quote_copy = [dict(item) for item in (quote_items or []) if isinstance(item, dict)]
     active_copy = [dict(item) for item in (active_items or []) if isinstance(item, dict)]
@@ -5697,31 +5767,118 @@ def _queue_proventos_sync(force=False, quote_items=None, active_items=None):
                         'mensagem': 'Atualização de proventos aguardando a execução atual.'}
             PROVENTOS_SYNC_PENDING_INPUTS = {'inputs': inputs, 'signature': signature}
             PROVENTOS_SYNC_STATE['pending_signature'] = signature
+            PROVENTOS_SYNC_STATE['updated_at'] = datetime.now(TZ).isoformat(timespec='seconds')
+            _proventos_sync_persist_state()
             return {'ok': True, 'status': 'queued', 'signature': signature,
-                    'mensagem': 'Atualização de proventos enfileirada em segundo plano.'}
+                    'mensagem': 'Atualização de proventos enfileirada e salva para recuperação automática.'}
 
         if (not force and PROVENTOS_SYNC_CACHE.get('result')
                 and PROVENTOS_SYNC_CACHE.get('signature') == cache_signature
                 and now - float(PROVENTOS_SYNC_CACHE.get('time') or 0) < PROVENTOS_SYNC_TTL):
             cached_result = dict(PROVENTOS_SYNC_CACHE['result'])
             PROVENTOS_SYNC_STATE.update({
-                'status': 'completed', 'signature': signature, 'result': cached_result,
-                'error': '', 'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
+                'status': 'completed', 'signature': signature, 'inputs': inputs,
+                'result': cached_result, 'error': '',
+                'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
             })
+            PROVENTOS_SYNC_PENDING_INPUTS = None
+            _proventos_sync_persist_state()
             return {'ok': True, 'status': 'completed', 'signature': signature, **cached_result}
 
         PROVENTOS_SYNC_STATE.update({
-            'status': 'running', 'signature': signature,
+            'status': 'running', 'signature': signature, 'inputs': inputs,
             'pending_signature': '', 'result': None, 'error': '',
             'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
         })
-        thread = threading.Thread(
-            target=_proventos_sync_worker, args=(inputs, signature),
-            name='proventos-api-sync', daemon=True
-        )
-        thread.start()
+        PROVENTOS_SYNC_PENDING_INPUTS = None
+        # Persist before starting: an interrupted daemon job is recovered at startup.
+        _proventos_sync_persist_state()
+        try:
+            _start_proventos_sync_worker(inputs, signature)
+        except Exception as exc:
+            PROVENTOS_SYNC_STATE.update({
+                'status': 'failed', 'error': safe_error_text(exc, 300),
+                'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
+            })
+            _proventos_sync_persist_state()
+            raise
     return {'ok': True, 'status': 'running', 'signature': signature,
-            'mensagem': 'Sincronização de proventos iniciada em segundo plano.'}
+            'mensagem': 'Sincronização de proventos iniciada e persistida em segundo plano.'}
+
+
+def _restore_proventos_sync_queue():
+    """Resume a sync interrupted by a container or Gunicorn process restart."""
+    global PROVENTOS_SYNC_PENDING_INPUTS
+    with app.app_context():
+        row = db().execute('SELECT * FROM proventos_sync_queue_state WHERE id=1').fetchone()
+        if not row:
+            return False
+        record = dict(row)
+        status = str(record.get('status') or 'idle')
+        try:
+            current_inputs = json.loads(record.get('inputs_json') or '{}')
+        except (TypeError, ValueError):
+            current_inputs = {}
+        try:
+            pending_inputs = json.loads(record.get('pending_inputs_json') or '{}')
+        except (TypeError, ValueError):
+            pending_inputs = {}
+        if not isinstance(current_inputs, dict):
+            current_inputs = {}
+        if not isinstance(pending_inputs, dict):
+            pending_inputs = {}
+        try:
+            result = json.loads(record.get('result_json') or '{}')
+        except (TypeError, ValueError):
+            result = {}
+        if not isinstance(result, dict):
+            result = {}
+
+        with PROVENTOS_SYNC_LOCK:
+            PROVENTOS_SYNC_STATE.update({
+                'status': status,
+                'signature': str(record.get('signature') or ''),
+                'pending_signature': str(record.get('pending_signature') or ''),
+                'inputs': current_inputs,
+                'result': result if status == 'completed' else None,
+                'error': str(record.get('error') or ''),
+                'updated_at': str(record.get('updated_at') or ''),
+            })
+            pending_signature = str(record.get('pending_signature') or '')
+            PROVENTOS_SYNC_PENDING_INPUTS = (
+                {'inputs': pending_inputs, 'signature': pending_signature}
+                if pending_signature and pending_inputs else None
+            )
+            # A persisted running row belongs to the previous process: its daemon
+            # thread died at shutdown, so safely retry the idempotent API upsert.
+            if status in ('running', 'queued'):
+                signature = str(record.get('signature') or '')
+                valid_inputs = (
+                    bool(signature) and isinstance(current_inputs, dict)
+                    and isinstance(current_inputs.get('quote_items', []), list)
+                    and isinstance(current_inputs.get('active_items', []), list)
+                )
+                if not valid_inputs:
+                    PROVENTOS_SYNC_STATE.update({
+                        'status': 'failed',
+                        'error': 'Registro persistido da sincronização inválido; solicite uma nova sincronização.',
+                        'pending_signature': '',
+                        'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
+                    })
+                    PROVENTOS_SYNC_PENDING_INPUTS = None
+                    _proventos_sync_persist_state()
+                    app.logger.error('Registro persistido de sincronização de proventos inválido; recuperação automática ignorada.')
+                    return False
+                PROVENTOS_SYNC_STATE.update({
+                    'status': 'running',
+                    'updated_at': datetime.now(TZ).isoformat(timespec='seconds'),
+                    'error': '',
+                })
+                _proventos_sync_persist_state()
+                _start_proventos_sync_worker(current_inputs, signature)
+                app.logger.info('Sincronização de proventos interrompida recuperada automaticamente após reinicialização.')
+                return True
+        return False
 
 
 def _proventos_sync_status(signature=None):
@@ -5744,6 +5901,8 @@ def _proventos_sync_status(signature=None):
             payload.update(result)
             if state.get('status') == 'running':
                 payload['mensagem'] = 'Sincronização de proventos em andamento.'
+            elif state.get('status') == 'queued':
+                payload['mensagem'] = 'Sincronização de proventos aguardando execução.'
             elif state.get('status') == 'completed':
                 payload['mensagem'] = result.get('mensagem') or 'Histórico de proventos atualizado.'
         return payload
@@ -8101,6 +8260,15 @@ def darf_item(darf_id):
 
 @app.route('/api/ativo/<ticker>')
 def ativo(ticker): return jsonify(cotacao(ticker.upper()))
+
+
+# Recover the last durable proventos sync after module/database initialization.
+# The supported Docker command uses one Gunicorn worker, so only one process
+# owns this in-process worker while the queue state itself remains persistent.
+try:
+    _restore_proventos_sync_queue()
+except Exception:
+    app.logger.exception('Não foi possível recuperar a fila persistente de proventos na inicialização.')
 
 
 if __name__ == '__main__': app.run(host='0.0.0.0',port=8080)
