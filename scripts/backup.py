@@ -42,7 +42,7 @@ def main() -> int:
     staging = Path(tempfile.mkdtemp(prefix='.lonely-wallet-staging-', dir=backup_root))
     try:
         copied = []
-        for name in ('ativos.db', 'carteira.db', 'tokens.db'):
+        for name in ('ativos.db', 'carteira.db', 'tokens.db', 'api_state.db'):
             source = data_dir / name
             if source.exists():
                 backup_database(source, staging / name)

@@ -1879,6 +1879,7 @@ body.light-theme .my-provents-toolbar .my-prov-month-nav{background:#f3f5f8!impo
 .api-status.ok{color:var(--green)}.api-status.error{color:var(--red)}
 .api-provider-links{display:flex;gap:14px;font-size:11px}
 .api-provider-links a{color:var(--blue);text-decoration:none}.api-provider-links a:hover{text-decoration:underline}
+.api-usage-panel{margin:0 0 18px;padding:14px 16px}.api-usage-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:14px 0}.api-usage-grid>div{display:flex;flex-direction:column;gap:4px;min-width:0}.api-usage-grid strong{font-size:19px;font-variant-numeric:tabular-nums}.api-usage-grid strong small{font-size:11px;color:var(--muted);font-weight:500}.api-usage-meter{height:7px;border-radius:10px;background:var(--panel2);overflow:hidden;margin:9px 0}.api-usage-meter span{display:block;height:100%;background:var(--blue);border-radius:inherit;transition:width .2s}@media(max-width:620px){.api-usage-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .api-security-note{padding:13px 15px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);color:var(--muted);font-size:12px;line-height:1.5;margin-bottom:16px}
 .api-status-pill{font-size:10px;border-radius:99px;padding:4px 8px;background:#343b48;color:#aeb8c8;white-space:nowrap}
 .api-status-pill.configured{background:#123c32;color:#31d5a0}
@@ -2193,7 +2194,7 @@ body.light-theme .lw-select-option:hover,body.light-theme .lw-select-option.acti
 <div class="panel section"><div class="panelhead"><h2>Consolidação mensal</h2><span id="launchConsolidationTotal" class="mini"></span></div><div class="tablewrap"><table class="data"><thead><tr><th>Período</th><th>Compras</th><th>Vendas</th><th>Aportes líquidos</th></tr></thead><tbody id="launchConsolidationRows"></tbody></table></div></div>
 <div class="panel section"><div class="panelhead"><h2>Lançamentos por tipo de ativo</h2><span class="mini">Cada classe tem sua própria tabela. Os registros originais foram preservados.</span></div><div id="operationGroups" class="operation-groups"></div></div>
 </section>
-<div id="goalRows" class="hidden"></div><section id="page-apis" class="page hidden"><div class="pagehead"><div><h1>Integrações e APIs</h1><div class="sub">Gerencie fontes de cotações, séries históricas, proventos e indicadores econômicos.</div></div><button class="ghost" type="button" onclick="loadAPIProviders()">↻ Atualizar status</button></div><div class="api-security-note"><b>Segurança:</b> os tokens cadastrados são enviados somente ao servidor e armazenados criptografados no volume local do aplicativo. Eles nunca são devolvidos à interface em texto aberto. Não informe senha de corretora, código de autenticação ou credenciais bancárias nesta página. Como o app não possui login próprio, mantenha-o restrito à sua rede confiável ou atrás de uma camada de autenticação; não exponha a porta diretamente à internet.</div><h2 class="api-section-title">Open Finance · Pluggy</h2><div class="mini" style="margin:-3px 0 10px">Integração bancária e de investimentos. Gerencie as credenciais e conexões independentemente das fontes de cotações.</div><div id="apiPluggyGrid" class="api-grid"><div class="panel">Carregando Pluggy…</div></div><h2 class="api-section-title">APIs de mercado e indicadores</h2><div id="apiProvidersGrid" class="api-grid"><div class="panel">Carregando provedores…</div></div></section>
+<div id="goalRows" class="hidden"></div><section id="page-apis" class="page hidden"><div class="pagehead"><div><h1>Integrações e APIs</h1><div class="sub">Gerencie fontes de cotações, séries históricas, proventos e indicadores econômicos.</div></div><button class="ghost" type="button" onclick="loadAPIProviders()">↻ Atualizar status</button></div><div class="api-security-note"><b>Segurança:</b> os tokens cadastrados são enviados somente ao servidor e armazenados criptografados no volume local do aplicativo. Eles nunca são devolvidos à interface em texto aberto. Não informe senha de corretora, código de autenticação ou credenciais bancárias nesta página. Como o app não possui login próprio, mantenha-o restrito à sua rede confiável ou atrás de uma camada de autenticação; não exponha a porta diretamente à internet.</div><div id="apiUsagePanel" class="panel api-usage-panel" aria-live="polite"><div class="mini">Carregando consumo local das APIs…</div></div><h2 class="api-section-title">Open Finance · Pluggy</h2><div class="mini" style="margin:-3px 0 10px">Integração bancária e de investimentos. Gerencie as credenciais e conexões independentemente das fontes de cotações.</div><div id="apiPluggyGrid" class="api-grid"><div class="panel">Carregando Pluggy…</div></div><h2 class="api-section-title">APIs de mercado e indicadores</h2><div id="apiProvidersGrid" class="api-grid"><div class="panel">Carregando provedores…</div></div></section>
 <section id="page-seguranca" class="page hidden"><div class="pagehead"><div><h1>Segurança</h1><div class="sub">Gerencie o PIN de acesso e o bloqueio automático da sua carteira.</div></div><button class="ghost" type="button" onclick="loadSecuritySettings()">↻ Atualizar</button></div><div class="panel security-panel"><div class="panelhead"><h2>Proteção por PIN</h2><span id="securityPinStatus" class="badge">Verificando…</span></div><p class="mini" id="securityPinDescription">O PIN ajuda a impedir que outras pessoas abram sua carteira.</p><div id="securityPinActions" class="formgrid" style="max-width:560px"><div class="field full"><label for="securityCurrentPin">PIN atual</label><input id="securityCurrentPin" type="password" inputmode="numeric" autocomplete="current-password" maxlength="12" placeholder="Digite seu PIN atual"></div><div class="field"><label for="securityNewPin">Novo PIN (6 a 12 números)</label><input id="securityNewPin" type="password" inputmode="numeric" autocomplete="new-password" minlength="6" maxlength="12" placeholder="Novo PIN"></div><div class="field"><label for="securityConfirmPin">Confirmar novo PIN</label><input id="securityConfirmPin" type="password" inputmode="numeric" autocomplete="new-password" minlength="6" maxlength="12" placeholder="Repita o novo PIN"></div><div class="toolbar full"><button class="primary" type="button" id="securitySavePin" onclick="saveSecurityPin()">Salvar PIN</button><button class="danger" type="button" id="securityDisablePin" onclick="disableSecurityPin()">Desabilitar PIN</button><button class="ghost" type="button" onclick="securityLogout()">Bloquear agora</button></div></div><div id="securityPinMessage" class="mini" role="status" style="margin-top:12px"></div><div class="notice" style="margin-top:18px"><b>Bloqueio automático:</b> com PIN ativado, a sessão será encerrada após 30 minutos sem atividade. Ao reiniciar o Docker, todos os acessos anteriores serão invalidados e o PIN será solicitado novamente. Se o PIN estiver desativado, a carteira abrirá sem solicitar código.</div></div></section>
 
 
@@ -2826,7 +2827,7 @@ function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
   }],
   ['quantidade','Quant.',i=>`<td data-col="quantidade">${Number(i.quantidade).toLocaleString('pt-BR',{maximumFractionDigits:4})}</td>`],
   ['preco_medio','Preço Médio',i=>`<td data-col="preco_medio">${brl(i.preco_medio)}</td>`],
-  ['preco_atual','Preço Atual',i=>{const hasReference=Boolean(i.cotacao_referencia_disponivel||i.cotacao_disponivel);const priceText=hasReference&&Number(i.preco_atual)>0?`<span class="price-update-tooltip-trigger" data-hint="${escapeHTML(quoteUpdatedHint(i.cotacao_ultima_atualizacao))}" aria-label="${escapeHTML(quoteUpdatedHint(i.cotacao_ultima_atualizacao))}" onmouseenter="showVariationMoneyTooltip(event,this)" onmousemove="moveVariationMoneyTooltip(event,this)" onmouseleave="hideVariationMoneyTooltip()" onfocus="showVariationMoneyTooltip(event,this)" onblur="hideVariationMoneyTooltip()" tabindex="0">${brl(i.preco_atual)}</span>`:(i.tipo==='renda_fixa'?(i.aviso_calculo==='Indexador ou taxa não informado'?'Informe o indexador':'Cálculo indisponível'):'Sem cotação');return `<td data-col="preco_atual">${priceText}${i.tipo==='renda_fixa'&&i.cotacao_disponivel?`<div class="mini">${i.valor_atual_origem==='Indexador'?'Calculado pelo indexador':i.valor_atual_origem==='Saldo atual informado pela instituição'?'Saldo informado pela instituição':''}</div>`:''}</td>`;}],
+  ['preco_atual','Preço Atual',i=>{const hasReference=Boolean(i.cotacao_referencia_disponivel||i.cotacao_disponivel);const priceText=hasReference&&Number(i.preco_atual)>0?`<span class="price-update-tooltip-trigger" data-hint="${escapeHTML(quoteUpdatedHint(i.cotacao_ultima_atualizacao,i.cotacao_desatualizada))}" aria-label="${escapeHTML(quoteUpdatedHint(i.cotacao_ultima_atualizacao,i.cotacao_desatualizada))}" onmouseenter="showVariationMoneyTooltip(event,this)" onmousemove="moveVariationMoneyTooltip(event,this)" onmouseleave="hideVariationMoneyTooltip()" onfocus="showVariationMoneyTooltip(event,this)" onblur="hideVariationMoneyTooltip()" tabindex="0">${brl(i.preco_atual)}</span>`:(i.tipo==='renda_fixa'?(i.aviso_calculo==='Indexador ou taxa não informado'?'Informe o indexador':'Cálculo indisponível'):'Sem cotação');return `<td data-col="preco_atual">${priceText}${i.tipo==='renda_fixa'&&i.cotacao_disponivel?`<div class="mini">${i.valor_atual_origem==='Indexador'?'Calculado pelo indexador':i.valor_atual_origem==='Saldo atual informado pela instituição'?'Saldo informado pela instituição':''}</div>`:''}</td>`;}],
   ['preco_alvo','Meu Preço-Alvo',i=>`<td data-col="preco_alvo">—</td>`],
   ['preco_graham','Preço Justo (Graham)',i=>`<td data-col="preco_graham">—</td>`],
   ['preco_teto_bazin','Preço-teto (Bazin)',i=>`<td data-col="preco_teto_bazin">${i.preco_teto_bazin?brl(i.preco_teto_bazin):'—'}</td>`],
@@ -2958,15 +2959,19 @@ function moveIdealBalanceTooltip(event,el){
  if(tip && document.activeElement!==el)showIdealBalanceTooltip(event,el);
 }
 
-function quoteUpdatedHint(value){
- if(!value)return 'Data da última atualização não disponível';
- const raw=String(value);
- // Datas de candles diários são datas de pregão, não horários locais.
- const dayOnly=raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
- if(dayOnly)return `Última atualização: ${dayOnly[3]}/${dayOnly[2]}/${dayOnly[1]}`;
- const parsed=new Date(raw);
- if(Number.isNaN(parsed.getTime()))return 'Data da última atualização não disponível';
- return `Última atualização: ${parsed.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'})}`;
+function quoteUpdatedHint(value,isStale=false){
+ let updated='Data da última atualização não disponível';
+ if(value){
+  const raw=String(value);
+  // Datas de candles diários são datas de pregão, não horários locais.
+  const dayOnly=raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(dayOnly)updated=`Última atualização real: ${dayOnly[3]}/${dayOnly[2]}/${dayOnly[1]}`;
+  else{
+   const parsed=new Date(raw);
+   if(!Number.isNaN(parsed.getTime()))updated=`Última atualização real: ${parsed.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'})}`;
+  }
+ }
+ return isStale?`⚠ Cotação antiga reutilizada de cache/último valor válido. Não foi confirmada nesta atualização. ${updated}`:updated;
 }
 
 function variationMoneyHint(item,change){
@@ -3543,8 +3548,9 @@ function renderProventosDashboard(){
   const imported=Number(sync.importados||0);
   const ignored=Number(sync.ignorados||0);
   const errors=Array.isArray(sync.erros)?sync.erros:[];
+  const staleWarning=sync.dados_desatualizados?`<span class="prov-sync-stale">⚠ ${escapeHTML(sync.aviso_cache||'Parte dos dados foi reutilizada de cache antigo. Confira a última consulta real da fonte.')} (${Number(sync.fontes_de_cache_antigo||0)} fonte(s), ${Number(sync.eventos_de_cache_antigo||0)} evento(s))</span>`:'';
   const errorDetails=errors.length?`<details class="prov-sync-details"><summary>Detalhes técnicos (${errors.length})</summary><div>${errors.map(error=>`<p>${escapeHTML(String(error))}</p>`).join('')}</div></details>`:'';
-  syncStatus.innerHTML=`<span class="prov-sync-summary">${imported} evento(s) novo(s) · ${ignored} ignorado(s) · Atualizado: ${escapeHTML(when)}</span>${errorDetails}`;
+  syncStatus.innerHTML=`<span class="prov-sync-summary">${imported} evento(s) novo(s) · ${ignored} ignorado(s) · Última consulta real: ${escapeHTML(when)}</span>${staleWarning}${errorDetails}`;
  }
  const distNames=Object.keys(distribution).sort((a,b)=>distribution[b]-distribution[a]);
  const distValues=distNames.map(k=>distribution[k]);
@@ -4293,9 +4299,11 @@ function renderRentabilidadePage(){
   const missingAssets=Array.isArray(performance.ativos_sem_historico)?performance.ativos_sem_historico:[];
   const coveredAssets=Number(performance.ativos_com_historico||0),assetTotal=Number(performance.total_ativos||0);
   const coverageText=(assetTotal?` Cobertura de histórico: ${coveredAssets}/${assetTotal} ativos.`:'')+(missingAssets.length?' Sem histórico: '+missingAssets.join(', ')+'.':'');
+  const staleHistory=Object.entries(performance.fontes_historico||{}).filter(([,meta])=>meta?.dados_desatualizados).map(([ticker])=>ticker);
+  const staleHistoryText=staleHistory.length?' Histórico reutilizado de cache antigo: '+staleHistory.join(', ')+'. Confira a última consulta real da fonte.':'';
   note.textContent=allTypesSelected
-   ?(chartRows.length?'A linha da carteira utiliza movimentações Pluggy/B3 e preços históricos disponíveis. Os índices são exibidos independentemente da cobertura histórica dos ativos. ':'Ainda não há histórico de preços suficiente para a carteira. Os índices são exibidos conforme a disponibilidade das fontes. ')+coverageText
-   :'Série histórica da classe selecionada, calculada somente com os ativos que possuem histórico disponível. Dados ausentes não são interpolados.'+coverageText+ipcaInfo+(activeSources.length?' Fontes: '+activeSources.join(' | '):'');
+   ?(chartRows.length?'A linha da carteira utiliza movimentações Pluggy/B3 e preços históricos disponíveis. Os índices são exibidos independentemente da cobertura histórica dos ativos. ':'Ainda não há histórico de preços suficiente para a carteira. Os índices são exibidos conforme a disponibilidade das fontes. ')+coverageText+staleHistoryText
+   :'Série histórica da classe selecionada, calculada somente com os ativos que possuem histórico disponível. Dados ausentes não são interpolados.'+coverageText+staleHistoryText+ipcaInfo+(activeSources.length?' Fontes: '+activeSources.join(' | '):'');
  }
  // A ausência temporária de dados não deve bloquear a interação da legenda.
  const datasets=[];
@@ -4606,8 +4614,24 @@ const API_PROVIDER_FALLBACK=[
  {id:'dadosb3',name:'Dados B3 · Índices históricos',connected:true,category:'Brasil · índices de retorno total',description:'Séries diárias de IBOV, IFIX, SMLL e IDIV, com retorno total. Sem chave, a API libera apenas os últimos 30 pregões; a chave grátis libera a série completa (200 consultas/dia). Serviço independente que organiza dados públicos da B3, não é a API oficial da B3.',auth:true,url:'https://dadosb3.com/chave-gratis?de=api',docs:'https://dadosb3.com/api'}
 ];
 let apiProviders=[];
+async function loadAPIUsage(){
+ const host=document.getElementById('apiUsagePanel');if(!host)return;
+ host.innerHTML='<div class="mini">Carregando consumo local das APIs…</div>';
+ try{
+  const payload=await api('/api/integracoes/consumo',{skipAutoRefresh:true});
+  const item=payload.brapi||{},used=Number(item.requests_last_30_days||0),budget=Number(item.local_budget||0);
+  const remaining=item.budget_enabled?Math.max(0,Number(item.remaining_local_budget||0)):null;
+  const percent=item.budget_enabled&&budget>0?Math.min(100,used/budget*100):0;
+  const last=item.last_request_epoch?new Date(Number(item.last_request_epoch)*1000).toLocaleString('pt-BR'):'Nenhuma chamada registrada';
+  const labels={pluggy:'Pluggy',hgbrasil:'HG Brasil',dadosb3:'Dados B3',fred:'FRED',yahoo:'Yahoo Finance'};
+  const otherUsage=Object.entries(item.providers||{}).filter(([name])=>name!=='brapi').map(([name,stats])=>`${escapeHTML(labels[name]||name)}: ${Number(stats.requests_last_30_days||0).toLocaleString('pt-BR')}`).join(' · ');
+  const otherBudgets=Object.entries(item.provider_budgets||{}).filter(([name])=>name!=='brapi').map(([name,row])=>{const daily=`${Number(row.requests||0).toLocaleString('pt-BR')}/${row.enabled?Number(row.local_budget||0).toLocaleString('pt-BR'):'sem limite local'} em ${Number(row.window_hours||24)}h`;const monthly=Number.isFinite(Number(row.local_budget_30d))?` · 30d ${Number(row.requests_30d||0).toLocaleString('pt-BR')}/${Number(row.local_budget_30d||0).toLocaleString('pt-BR')}`:'';return `${escapeHTML(labels[name]||name)}: ${daily}${monthly}`;}).join(' · ');
+  host.innerHTML=`<div class="panelhead"><div><h3 style="margin:0">Consumo local das APIs</h3><div class="mini">Estatísticas desta instalação. A consulta não consome cota externa.</div></div><button class="ghost" type="button" onclick="loadAPIUsage()">↻ Atualizar</button></div><div class="api-usage-grid"><div><span class="mini">brapi · chamadas / 30 dias</span><strong>${used.toLocaleString('pt-BR')}</strong></div><div><span class="mini">Orçamento interno brapi</span><strong>${item.budget_enabled?budget.toLocaleString('pt-BR'):'Sem limite local'}</strong></div><div><span class="mini">Saldo do orçamento</span><strong>${remaining===null?'—':remaining.toLocaleString('pt-BR')}</strong></div><div><span class="mini">Cache brapi reutilizado</span><strong>${Number(item.cache_hits||0).toLocaleString('pt-BR')} <small>· antigo ${Number(item.stale_cache_hits||0).toLocaleString('pt-BR')}</small></strong></div></div>${item.budget_enabled?`<div class="api-usage-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent.toFixed(1)}"><span style="width:${percent.toFixed(1)}%"></span></div>`:''}<div class="mini">Última chamada brapi: ${escapeHTML(last)}. ${escapeHTML(item.note||'')}</div>${otherBudgets?`<div class="mini" style="margin-top:7px"><b>Orçamentos locais · uso e limite:</b> ${otherBudgets}</div>`:''}${otherUsage?`<div class="mini" style="margin-top:7px"><b>Outras fontes · chamadas nos últimos 30 dias:</b> ${otherUsage}</div>`:''}`;
+ }catch(error){host.innerHTML=`<div class="mini">Não foi possível carregar o consumo local: ${escapeHTML(error.message||'erro desconhecido')}</div>`;}
+}
 async function loadAPIProviders(){
  const host=document.getElementById('apiProvidersGrid');if(!host)return;
+ loadAPIUsage();
  try{const data=await api('/api/integracoes',{skipAutoRefresh:true});apiProviders=data.providers||API_PROVIDER_FALLBACK;}
  catch(error){apiProviders=API_PROVIDER_FALLBACK.map(p=>({...p,configured:false,enabled:false,masked:''}));}
  renderAPIProviders();
@@ -4632,7 +4656,7 @@ function renderAPIProviders(){
     <div class="pluggy-manager-header"><div><h3 id="pluggyManagerTitle">Gerenciar API Pluggy</h3><div class="mini">Sincronização automática e exclusão de dados importados</div></div><button class="ghost" type="button" onclick="closePluggyManager()" aria-label="Fechar">✕</button></div>
     <div class="pluggy-manager-content">
      <section class="pluggy-manager-section pluggy-sync-section">
-      <label class="mini pluggy-auto-sync-control" for="pluggyAutoSyncInterval"><span>Sincronizar automaticamente</span><select id="pluggyAutoSyncInterval" aria-label="Intervalo de sincronização automática" onchange="savePluggyAutoSyncInterval(this)"><option value="0">Desativado</option><option value="15">A cada 15 minutos</option><option value="30" selected>A cada 30 minutos</option><option value="60">A cada hora</option><option value="240">A cada 4 horas</option><option value="720">A cada 12 horas</option><option value="1440">Uma vez ao dia</option></select></label>
+      <label class="mini pluggy-auto-sync-control" for="pluggyAutoSyncInterval"><span>Sincronizar automaticamente</span><select id="pluggyAutoSyncInterval" aria-label="Intervalo de sincronização automática" onchange="savePluggyAutoSyncInterval(this)"><option value="0">Desativado</option><option value="15">A cada 15 minutos</option><option value="30">A cada 30 minutos</option><option value="60">A cada hora</option><option value="240" selected>A cada 4 horas</option><option value="720">A cada 12 horas</option><option value="1440">Uma vez ao dia</option></select></label>
      </section>
      <section class="pluggy-manager-section pluggy-clear-section">
       <div class="pluggy-clear-copy"><h4>Excluir dados importados</h4><div class="mini">Escolha uma conexão específica ou todas as conexões para remover os dados importados.</div></div>
@@ -4708,7 +4732,7 @@ function closePluggyManager(){
 }
 let pluggyAutoSyncTimer=null;
 let pluggyAutoSyncRunning=false;
-let pluggyAutoSyncIntervalMinutes=30;
+let pluggyAutoSyncIntervalMinutes=240;
 const PLUGGY_SYNC_INTERVAL_KEY='lonelyWalletPluggySyncInterval';
 let pluggyAutoSyncSettingsLoaded=false;
 async function loadPluggyAutoSyncSettings(){
@@ -6096,6 +6120,7 @@ body.light-theme .prov-chart-period-menu .period-section{color:#202633!important
 
 
 .prov-sync-summary{display:block;color:var(--muted,#8f9bad);font-size:11px;line-height:1.45;margin-top:5px}
+.prov-sync-stale{display:block;color:var(--warning,#e8aa45);font-size:11px;line-height:1.45;margin-top:4px}
 .prov-sync-details{margin-top:4px;font-size:11px;color:var(--muted,#8f9bad)}
 .prov-sync-details summary{cursor:pointer;display:inline-block;color:var(--muted,#8f9bad)}
 .prov-sync-details>div{max-height:180px;overflow:auto;margin-top:6px;padding:8px 10px;border:1px solid var(--border,#343b49);border-radius:8px;background:var(--panel,#20242d)}
