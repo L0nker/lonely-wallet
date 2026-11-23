@@ -58,6 +58,47 @@ class RegressionTests(unittest.TestCase):
             count = wallet.db().execute('SELECT COUNT(*) FROM saldos_importados').fetchone()[0]
             self.assertEqual(count, 0)
 
+    def test_dashboard_route_returns_monthly_values_and_overdue_separately(self):
+        today = wallet.datetime.now(wallet.TZ).date()
+        payment_date = (today - datetime.timedelta(days=7)).isoformat()
+        month_key = payment_date[:7]
+        with wallet.app.app_context():
+            con = wallet.db()
+            con.execute(
+                '''INSERT INTO proventos_api(
+                    event_key,ticker,tipo_ativo,tipo_evento,data_com,data_pagamento,
+                    valor_por_ativo,quantidade,valor_total,status,sincronizado_em
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)''',
+                ('dashboard-overdue-fixture', 'MXRF11', 'fii', 'RENDIMENTO',
+                 (today - datetime.timedelta(days=24)).isoformat(), payment_date,
+                 0.10, 86.4, 8.64, 'A receber', wallet.datetime.now(wallet.TZ).isoformat())
+            )
+            con.commit()
+
+        portfolio = {
+            'itens': [{'ticker': 'MXRF11', 'tipo': 'fii', 'valor_atual': 100.0}],
+            'resumo': {}
+        }
+        with patch.object(wallet, '_read_dashboard_snapshot', return_value=None), \
+             patch.object(wallet, 'carteira', side_effect=lambda **kwargs: wallet.jsonify(**portfolio)), \
+             patch.object(wallet, '_received_proventos_records', return_value=[]), \
+             patch.object(wallet, '_pluggy_is_configured', return_value=False), \
+             patch.object(wallet, 'cotacao', return_value={}), \
+             patch.object(wallet, 'snapshot_date_for', return_value=None), \
+             patch.object(wallet, '_write_dashboard_snapshot', return_value=wallet.datetime.now(wallet.TZ).isoformat()):
+            response = self.client.get('/api/dashboard?full=1&current_only=1&refresh_quotes=0')
+
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        payload = response.get_json()
+        dashboard = payload['proventos_dashboard']
+        self.assertEqual(len(dashboard['atrasados']), 1)
+        self.assertEqual(dashboard['atrasados'][0]['ticker'], 'MXRF11')
+        self.assertEqual(dashboard['atrasados'][0]['status'], 'Atrasado')
+        monthly = next(row for row in dashboard['mensal'] if row['mes'] == month_key)
+        self.assertEqual(monthly['recebido'], 0.0)
+        self.assertEqual(monthly['a_receber'], 0.0)
+        self.assertEqual(monthly['atrasado'], 8.64)
+
     def test_pluggy_sync_interval_persists_after_new_request(self):
         saved = self.client.post('/api/pluggy/settings', json={'interval_minutes': 15})
         self.assertEqual(saved.status_code, 200)

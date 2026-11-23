@@ -1,8 +1,15 @@
-# Lonely Wallet v4.2.51
+# Lonely Wallet v4.2.52
 
-# Atualizações da versão 4.2.51
+# Atualizações da versão 4.2.52
 
-## Correção da classificação de proventos com pagamento vencido (v4.2.51)
+## Correção crítica do endpoint `/api/dashboard` (v4.2.52)
+- Corrigido `NameError: monthly_values is not defined`, que fazia a rota `/api/dashboard` retornar HTTP 500 ao montar a resposta de proventos.
+- Reintroduzida a construção mensal antes da serialização do dashboard, agora com as três categorias separadas: `recebido`, `a_receber` e `atrasado`.
+- Adicionado total mensal consolidado sem misturar pagamentos atrasados com recebimentos efetivos.
+- Incrementado `DASHBOARD_CACHE_FORMAT` para 9, invalidando snapshots antigos que poderiam não conter a nova estrutura mensal.
+- Adicionados testes unitários de agregação mensal, validação de status e teste de regressão da rota Flask `/api/dashboard` com um pagamento vencido de MXRF11.
+
+## Correção da classificação de proventos com pagamento vencido (v4.2.52)
 - Eventos cuja data de pagamento já passou e que ainda não possuem confirmação não permanecem como `A receber`.
 - Esses eventos são apresentados separadamente como `Atrasado · aguardando confirmação`, com indicação de dias em atraso.
 - Proventos atrasados não são tratados como recebidos, não entram no lucro realizado e não integram a previsão futura.
@@ -20,11 +27,12 @@
 - O cooldown é persistido em `api_provider_state`, evitando novas chamadas antecipadas de autenticação ou API.
 - Falhas transitórias não ativam o fallback de recebimentos nem alteram as regras de confirmação financeira da Pluggy.
 
-## Testes da versão 4.2.51
+## Testes da versão 4.2.52
 - Adicionados oito testes funcionais de cooldown Pluggy para HTTP 408, 425, 429, 500 e 503.
 - Testados `Retry-After` em segundos, HTTP-date, ausente e inválido.
 - Verificado que autenticação e consultas Pluggy utilizam o mecanismo compartilhado.
-- Executados 132 testes Python disponíveis, excluindo `test_regressions.py` por ausência de Flask/Werkzeug.
+- Executados 136 testes Python disponíveis, todos aprovados, excluindo o módulo `test_regressions.py` porque Flask/Werkzeug não estão instalados no ambiente de validação.
+- Incluído em `test_regressions.py` um teste de integração da rota `/api/dashboard` com um pagamento MXRF11 vencido; esse teste requer Flask e permanece pendente de execução no build com dependências.
 - Executadas cinco suítes JavaScript de runtime.
 - Validada a compilação Python, YAML Docker Compose e integridade do ZIP.
 - Build Docker real e chamadas reais à API Pluggy não foram executados neste ambiente.
@@ -570,7 +578,7 @@ Os intervalos locais controlam somente o ritmo de envio. Não substituem as regr
 - O cooldown é persistido em `api_provider_state`, impedindo novas chamadas de autenticação ou API antes do prazo definido.
 - Falhas transitórias não ativam fallback de recebimentos nem alteram a regra de confirmação financeira Pluggy.
 
-## Testes da versão 4.2.51
+## Testes da versão 4.2.52
 - Adicionados testes funcionais para HTTP 408, 425, 429, 500 e 503 nas regras de cooldown Pluggy.
 - Testados `Retry-After` em segundos, HTTP-date, ausente e inválido.
 - Verificado que autenticação e consultas Pluggy chamam o mecanismo compartilhado.

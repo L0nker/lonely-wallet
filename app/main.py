@@ -84,7 +84,7 @@ QUOTE_HISTORY_PATH = os.environ.get('QUOTE_HISTORY_PATH', '/data/quotes_last_val
 QUOTE_HISTORY_LOCK = threading.RLock()
 DASHBOARD_CACHE_PATH = os.environ.get('DASHBOARD_CACHE_PATH', '/data/dashboard_cache.json')
 DASHBOARD_CACHE_LOCK = threading.RLock()
-DASHBOARD_CACHE_FORMAT = 8
+DASHBOARD_CACHE_FORMAT = 9
 PORTFOLIO_HISTORY_CACHE, PORTFOLIO_HISTORY_TTL = {}, 1800
 PORTFOLIO_HISTORY_EMPTY_TTL = 120
 def _dashboard_cache_signature():
@@ -6252,6 +6252,60 @@ def _filter_upcoming_proventos_by_month(upcoming, as_of=None):
     return filtered
 
 
+def _build_proventos_monthly_values(month_keys, received_by_month, upcoming=None, overdue=None):
+    """Build the monthly dashboard payload without mixing receipt states.
+
+    ``recebido`` contains only canonical receipts (Pluggy-confirmed or valid
+    no-Pluggy estimates). ``a_receber`` and ``atrasado`` remain separate so
+    overdue, unconfirmed events can never inflate realized income.
+    """
+    allowed_months = {str(month) for month in (month_keys or [])}
+    pending_totals = {month: {'a_receber': 0.0, 'atrasado': 0.0} for month in allowed_months}
+
+    for status, rows in (('a_receber', upcoming or []), ('atrasado', overdue or [])):
+        for raw in rows:
+            row = dict(raw)
+            expected_status = 'a receber' if status == 'a_receber' else 'atrasado'
+            if str(row.get('status') or '').strip().casefold() != expected_status:
+                continue
+            payment_date = _api_date(row.get('data_pagamento'))
+            if not payment_date or len(payment_date) < 7:
+                continue
+            month = payment_date[:7]
+            if month not in allowed_months:
+                continue
+            if not _is_income_event(row.get('tipo_evento') or row.get('tipo')):
+                continue
+            try:
+                amount = float(row.get('valor_total') or 0)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(amount) or amount <= 0:
+                continue
+            pending_totals[month][status] += amount
+
+    monthly_values = []
+    for month in month_keys or []:
+        month = str(month)
+        try:
+            received_amount = float((received_by_month or {}).get(month, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            received_amount = 0.0
+        if not math.isfinite(received_amount) or received_amount < 0:
+            received_amount = 0.0
+        received_amount = round(received_amount, 2)
+        upcoming_amount = round(pending_totals.get(month, {}).get('a_receber', 0.0), 2)
+        overdue_amount = round(pending_totals.get(month, {}).get('atrasado', 0.0), 2)
+        monthly_values.append({
+            'mes': month,
+            'recebido': received_amount,
+            'a_receber': upcoming_amount,
+            'atrasado': overdue_amount,
+            'total': round(received_amount + upcoming_amount + overdue_amount, 2),
+        })
+    return monthly_values
+
+
 def _confirmed_proventos_total_12m(received_total, upcoming, as_of=None):
     """Sum receipts from the last 12 calendar months and announced payments in the next 12 months.
 
@@ -7929,6 +7983,11 @@ def dashboard():
     overdue = [row for row in classified_pending if row.get('status') == 'Atrasado']
     upcoming = [row for row in classified_pending if row.get('status') == 'A receber']
 
+    # Mantém o contrato mensal do dashboard e separa recebidos, futuros e
+    # atrasados. A ausência desta variável derrubava /api/dashboard com NameError.
+    monthly_values = _build_proventos_monthly_values(
+        month_keys, received_by_month, upcoming=upcoming, overdue=overdue
+    )
     total_12m = round(sum(received_by_month.get(month, 0.0) for month in month_keys), 2)
     total_confirmed_12m = _confirmed_proventos_total_12m(total_12m, upcoming, as_of=today)
     portfolio_total = round(sum(float(x.get('valor_atual') or 0) for x in portfolio.get('itens', [])), 2)
