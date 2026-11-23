@@ -192,6 +192,9 @@ PROVENTOS_SYNC_CACHE = {'time': 0, 'result': None, 'signature': None}
 PROVENTOS_SYNC_TTL = 3600
 SGS_CACHE = {}
 SGS_CACHE_TTL = 12 * 3600
+SGS_CACHE_PATH = os.environ.get('SGS_CACHE_PATH', '/data/sgs_cache.json')
+SGS_CACHE_LOCK = threading.RLock()
+SGS_CACHE_LOADED = False
 BENCHMARK_CACHE = {'time': 0, 'data': {}}
 BENCHMARK_CACHE_TTL = 6 * 3600
 
@@ -280,24 +283,43 @@ def _api_response_cache_key(provider, url, params=None, headers=None):
     return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
 
 
+def _cache_payload_bytes(value):
+    if value is None:
+        return b''
+    if isinstance(value, memoryview):
+        return value.tobytes()
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    if isinstance(value, str):
+        return value.encode('utf-8')
+    return str(value).encode('utf-8')
+
+
 def _api_cache_row(cache_key):
     connection = None
     try:
         connection = _api_cache_connection()
-        row = connection.execute(
-            'SELECT payload,status_code,fetched_at,expires_at,stale_until FROM api_response_cache WHERE cache_key=?',
-            (cache_key,)
-        ).fetchone()
+        cursor = connection.execute('SELECT * FROM api_response_cache WHERE cache_key=?', (cache_key,))
+        row = cursor.fetchone()
         if not row:
             return None
-        payload = bytes(row[0] or b'')
-        # Older installations may gain the payload column through migration.
-        # Rows created with the empty migration default are not usable cache hits.
+        values = dict(zip((item[0] for item in cursor.description), row))
+        # Older production databases use payload_json TEXT NOT NULL. Newer builds
+        # use payload BLOB. Read either column, preferring the binary canonical one.
+        payload = _cache_payload_bytes(values.get('payload'))
+        if not payload:
+            for legacy_name in ('payload_json', 'response_json', 'response_body', 'body'):
+                payload = _cache_payload_bytes(values.get(legacy_name))
+                if payload:
+                    break
         if not payload:
             return None
         return {
-            'payload': payload, 'status_code': int(row[1]), 'fetched_at': float(row[2]),
-            'expires_at': float(row[3]), 'stale_until': float(row[4])
+            'payload': payload,
+            'status_code': int(values.get('status_code') or 200),
+            'fetched_at': float(values.get('fetched_at') or 0),
+            'expires_at': float(values.get('expires_at') or 0),
+            'stale_until': float(values.get('stale_until') or 0),
         }
     except (sqlite3.Error, TypeError, ValueError, OSError):
         return None
@@ -355,20 +377,42 @@ def _provider_wait_for_gap(provider):
 
 
 def _api_cache_store(cache_key, provider, endpoint, payload, status_code, ttl, stale_ttl):
-    if not isinstance(payload, (bytes, bytearray)) or len(payload) > _API_CACHE_MAX_BODY:
+    if not isinstance(payload, (bytes, bytearray)) or not payload or len(payload) > _API_CACHE_MAX_BODY:
         return
     now = time.time()
     connection = None
     try:
         connection = _api_cache_connection()
-        connection.execute(
-            '''INSERT INTO api_response_cache(cache_key,provider,endpoint,payload,status_code,fetched_at,expires_at,stale_until)
-               VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET
-               provider=excluded.provider,endpoint=excluded.endpoint,payload=excluded.payload,
-               status_code=excluded.status_code,fetched_at=excluded.fetched_at,
-               expires_at=excluded.expires_at,stale_until=excluded.stale_until''',
-            (cache_key, provider, endpoint, sqlite3.Binary(payload), int(status_code), now, now + ttl, now + max(ttl, stale_ttl))
-        )
+        columns = connection.execute('PRAGMA table_info(api_response_cache)').fetchall()
+        present = {row[1] for row in columns}
+        payload_bytes = bytes(payload)
+        payload_text = payload_bytes.decode('utf-8', errors='replace')
+        values = {
+            'cache_key': cache_key, 'provider': provider, 'endpoint': endpoint,
+            'payload': sqlite3.Binary(payload_bytes), 'payload_json': payload_text,
+            'response_json': payload_text, 'response_body': sqlite3.Binary(payload_bytes),
+            'body': sqlite3.Binary(payload_bytes), 'status_code': int(status_code),
+            'fetched_at': now, 'expires_at': now + ttl,
+            'stale_until': now + max(ttl, stale_ttl), 'created_at': now, 'updated_at': now,
+            'method': 'GET', 'content_type': 'application/json',
+        }
+        insert_columns = [row[1] for row in columns if row[1] in values]
+        # Do not silently lose a cache write if a legacy table has another
+        # mandatory column unknown to this version. Keep the request working,
+        # but make the incompatible schema visible in the log.
+        missing_required = [row[1] for row in columns
+                            if row[3] and row[4] is None and not row[5] and row[1] not in values]
+        if missing_required:
+            raise sqlite3.OperationalError(
+                'schema api_response_cache possui colunas obrigatórias não reconhecidas: '
+                + ', '.join(missing_required)
+            )
+        placeholders = ','.join('?' for _ in insert_columns)
+        updates = [name for name in insert_columns if name != 'cache_key']
+        update_sql = ','.join(f'{name}=excluded.{name}' for name in updates)
+        sql = (f"INSERT INTO api_response_cache({','.join(insert_columns)}) "
+               f"VALUES({placeholders}) ON CONFLICT(cache_key) DO UPDATE SET {update_sql}")
+        connection.execute(sql, [values[name] for name in insert_columns])
         connection.commit()
     except sqlite3.Error as exc:
         app.logger.warning('Não foi possível persistir o cache da API %s: %s', provider, exc)
@@ -872,15 +916,17 @@ def migrate_api_credentials():
 
 
 def _migrate_api_response_cache_schema(connection):
-    """Add cache columns missing from older persistent SQLite databases.
+    """Migrate both current and legacy cache layouts without dropping rows.
 
-    ALTER TABLE preserves existing rows. Empty payload defaults are treated as
-    cache misses by _api_cache_row, so they are naturally repopulated on demand.
+    Some deployed databases have ``payload_json TEXT NOT NULL`` while newer
+    code writes ``payload BLOB``. Keep both representations synchronized so
+    legacy NOT NULL constraints are satisfied and either layout remains readable.
     """
     columns = {row[1] for row in connection.execute('PRAGMA table_info(api_response_cache)').fetchall()}
     additions = {
         'endpoint': "TEXT NOT NULL DEFAULT ''",
         'payload': "BLOB NOT NULL DEFAULT X''",
+        'payload_json': "TEXT NOT NULL DEFAULT ''",
         'status_code': 'INTEGER NOT NULL DEFAULT 200',
         'fetched_at': 'REAL NOT NULL DEFAULT 0',
         'expires_at': 'REAL NOT NULL DEFAULT 0',
@@ -890,7 +936,38 @@ def _migrate_api_response_cache_schema(connection):
         if name not in columns:
             connection.execute(f'ALTER TABLE api_response_cache ADD COLUMN {name} {definition}')
             columns.add(name)
+    # Backfill the newly-added representation both ways. Existing rows remain
+    # valid cache candidates when they contain a legacy JSON response body.
+    connection.execute("""UPDATE api_response_cache
+        SET payload=CAST(payload_json AS BLOB)
+        WHERE (payload IS NULL OR length(payload)=0)
+          AND payload_json IS NOT NULL AND payload_json<>''""")
+    connection.execute("""UPDATE api_response_cache
+        SET payload_json=CAST(payload AS TEXT)
+        WHERE (payload_json IS NULL OR payload_json='')
+          AND payload IS NOT NULL AND length(payload)>0""")
     return columns
+
+
+
+def _migrate_unconfirmed_proventos_api_status(connection):
+    """Reset legacy auto-paid API forecasts unless a Pluggy event confirms them."""
+    cursor = connection.execute(
+        """UPDATE proventos_api AS api
+           SET status='A receber'
+           WHERE lower(trim(COALESCE(api.status,'')))='pago'
+             AND NOT EXISTS (
+               SELECT 1
+               FROM pluggy_imported_events pe
+               WHERE pe.event_type='provento'
+                 AND pe.target_id IS NOT NULL
+                 AND COALESCE(pe.import_state,'') IN ('imported','matched_existing')
+                 AND UPPER(pe.ticker)=UPPER(api.ticker)
+                 AND date(pe.event_date) BETWEEN date(api.data_pagamento,'-3 day') AND date(api.data_pagamento,'+3 day')
+                 AND ABS(pe.amount-api.valor_total)<=MAX(0.05,api.valor_total*0.01)
+             )"""
+    )
+    return int(cursor.rowcount or 0)
 
 
 def init_db():
@@ -975,8 +1052,10 @@ def init_db():
     );
     CREATE TABLE IF NOT EXISTS api_response_cache (
       cache_key TEXT PRIMARY KEY, provider TEXT NOT NULL, endpoint TEXT NOT NULL,
-      payload BLOB NOT NULL, status_code INTEGER NOT NULL DEFAULT 200,
-      fetched_at REAL NOT NULL, expires_at REAL NOT NULL, stale_until REAL NOT NULL
+      payload BLOB NOT NULL DEFAULT X'', payload_json TEXT NOT NULL DEFAULT '',
+      status_code INTEGER NOT NULL DEFAULT 200,
+      fetched_at REAL NOT NULL DEFAULT 0, expires_at REAL NOT NULL DEFAULT 0,
+      stale_until REAL NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_api_response_cache_expiry ON api_response_cache(provider, expires_at, stale_until);
     CREATE TABLE IF NOT EXISTS api_request_log (
@@ -1209,6 +1288,7 @@ def init_db():
 
     # Upgrade older persistent installations without discarding their API cache.
     _migrate_api_response_cache_schema(con)
+    _migrate_unconfirmed_proventos_api_status(con)
     request_columns = {row[1] for row in con.execute('PRAGMA table_info(api_request_log)').fetchall()}
     if 'endpoint' not in request_columns:
         con.execute("ALTER TABLE api_request_log ADD COLUMN endpoint TEXT NOT NULL DEFAULT ''")
@@ -2031,34 +2111,65 @@ def _pluggy_import_investment_transaction(item_id, investment, movement, now_tex
     )
     if (is_income_movement or is_income_description) and ticker and trade_date and amount > 0:
         already_imported = db().execute(
-            'SELECT external_id FROM pluggy_imported_events WHERE external_id=?', (external_id,)
+            'SELECT external_id,target_id,import_state FROM pluggy_imported_events WHERE external_id=?',
+            (external_id,)
         ).fetchone()
-        duplicate = db().execute(
-            """SELECT id FROM proventos WHERE UPPER(ticker)=?
-               AND date(data) BETWEEN date(?,'-3 day') AND date(?,'+3 day')
-               AND ABS(valor_total-?)<=MAX(0.05,?*0.01) LIMIT 1""",
-            (ticker, trade_date, trade_date, amount, amount)
-        ).fetchone()
-        api_duplicate = db().execute(
-            """SELECT event_key FROM proventos_api WHERE UPPER(ticker)=?
-               AND date(data_pagamento) BETWEEN date(?,'-3 day') AND date(?,'+3 day')
-               AND ABS(valor_total-?)<=MAX(0.05,?*0.01) LIMIT 1""",
-            (ticker, trade_date, trade_date, amount, amount)
-        ).fetchone()
-        if already_imported or duplicate or api_duplicate:
-            state = 'provento_duplicado_ignorado'
+        target_id = int(already_imported['target_id']) if already_imported and already_imported['target_id'] else None
+
+        if target_id is None:
+            # Reconcile one pre-existing manual/B3 row, but never reuse a row
+            # already assigned to another Pluggy transaction ID. Distinct Pluggy
+            # IDs remain distinct receipts even when ticker/date/amount match.
+            matched = db().execute(
+                """SELECT p.id FROM proventos p
+                   WHERE UPPER(p.ticker)=?
+                     AND date(p.data) BETWEEN date(?,'-3 day') AND date(?,'+3 day')
+                     AND ABS(p.valor_total-?)<=MAX(0.05,?*0.01)
+                     AND NOT EXISTS (
+                       SELECT 1 FROM pluggy_imported_events pe
+                       WHERE pe.event_type='provento' AND pe.target_id=p.id
+                     )
+                   ORDER BY ABS(julianday(p.data)-julianday(?)), p.id
+                   LIMIT 1""",
+                (ticker, trade_date, trade_date, amount, amount, trade_date)
+            ).fetchone()
+            if matched:
+                target_id = int(matched['id'])
+                state = 'matched_existing'
+            else:
+                cursor = db().execute(
+                    'INSERT INTO proventos(ticker,valor_total,data) VALUES(?,?,?)',
+                    (ticker, amount, trade_date)
+                )
+                target_id = int(cursor.lastrowid)
+                state = 'imported_provento'
+
+            if already_imported:
+                db().execute(
+                    """UPDATE pluggy_imported_events
+                       SET ticker=?,event_date=?,amount=?,target_id=?,import_state='imported'
+                       WHERE external_id=?""",
+                    (ticker, trade_date, amount, target_id, external_id)
+                )
+            else:
+                db().execute(
+                    """INSERT INTO pluggy_imported_events
+                       (external_id,event_type,ticker,event_date,amount,target_id,import_state,created_at)
+                       VALUES(?,?,?,?,?,?,?,?)""",
+                    (external_id, 'provento', ticker, trade_date, amount, target_id, 'imported', now_text)
+                )
         else:
-            cursor = db().execute(
-                'INSERT INTO proventos(ticker,valor_total,data) VALUES(?,?,?)',
-                (ticker, amount, trade_date)
-            )
-            db().execute(
-                """INSERT OR IGNORE INTO pluggy_imported_events
-                   (external_id,event_type,ticker,event_date,amount,target_id,import_state,created_at)
-                   VALUES(?,?,?,?,?,?,?,?)""",
-                (external_id, 'provento', ticker, trade_date, amount, int(cursor.lastrowid), 'imported', now_text)
-            )
             state = 'imported_provento'
+
+        # A forecast from BRAPI becomes paid only after the matching Pluggy
+        # transaction has been persisted. It is not itself used as proof.
+        db().execute(
+            """UPDATE proventos_api SET status='Pago'
+               WHERE UPPER(ticker)=?
+                 AND date(data_pagamento) BETWEEN date(?,'-3 day') AND date(?,'+3 day')
+                 AND ABS(valor_total-?)<=MAX(0.05,?*0.01)""",
+            (ticker, trade_date, trade_date, amount, amount)
+        )
 
     db().execute(
         """INSERT INTO pluggy_investment_transactions
@@ -2070,7 +2181,7 @@ def _pluggy_import_investment_transaction(item_id, investment, movement, now_tex
              transaction_date=excluded.transaction_date, description=excluded.description,
              movement_type=excluded.movement_type, quantity=excluded.quantity, unit_value=excluded.unit_value,
              amount=excluded.amount, import_state=CASE
-               WHEN pluggy_investment_transactions.import_state IN ('imported_operation','imported_provento','matched_existing','provento_duplicado_ignorado')
+               WHEN pluggy_investment_transactions.import_state IN ('imported_operation','imported_provento','matched_existing')
                THEN pluggy_investment_transactions.import_state ELSE excluded.import_state END,
              imported_operation_id=COALESCE(pluggy_investment_transactions.imported_operation_id,excluded.imported_operation_id),
              raw_json=excluded.raw_json, updated_at=excluded.updated_at""",
@@ -3001,6 +3112,88 @@ def _fallback_market_quote(ticker):
     return {}
 
 
+
+def _load_sgs_cache_from_disk():
+    """Load validated SGS series from the persistent /data cache once per process."""
+    global SGS_CACHE_LOADED
+    with SGS_CACHE_LOCK:
+        if SGS_CACHE_LOADED:
+            return
+        SGS_CACHE_LOADED = True
+        try:
+            if not os.path.isfile(SGS_CACHE_PATH) or os.path.getsize(SGS_CACHE_PATH) > 12 * 1024 * 1024:
+                return
+            with open(SGS_CACHE_PATH, 'r', encoding='utf-8') as handle:
+                raw = json.load(handle)
+            entries = raw.get('series', {}) if isinstance(raw, dict) else {}
+            if not isinstance(entries, dict):
+                return
+            for cache_key, record in entries.items():
+                try:
+                    parts = str(cache_key).split('|')
+                    if len(parts) != 3 or not isinstance(record, dict):
+                        continue
+                    key = (int(parts[0]), date.fromisoformat(parts[1]).isoformat(), date.fromisoformat(parts[2]).isoformat())
+                    cached_at = float(record.get('cached_at') or 0)
+                    raw_points = record.get('points') or []
+                    points = []
+                    if cached_at <= 0 or not isinstance(raw_points, list):
+                        continue
+                    for point in raw_points:
+                        if not isinstance(point, (list, tuple)) or len(point) != 2:
+                            continue
+                        point_date = date.fromisoformat(str(point[0])[:10])
+                        point_value = float(point[1])
+                        if math.isfinite(point_value):
+                            points.append((point_date, point_value))
+                    if points:
+                        points.sort(key=lambda item: item[0])
+                        SGS_CACHE[key] = (cached_at, points)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+        except (OSError, ValueError, TypeError) as exc:
+            app.logger.warning('Não foi possível carregar o cache persistente SGS: %s', type(exc).__name__)
+
+
+def _persist_sgs_cache():
+    """Persist the bounded in-memory SGS cache using an atomic, private file."""
+    with SGS_CACHE_LOCK:
+        entries = {}
+        now = time.time()
+        for key, record in list(SGS_CACHE.items())[-120:]:
+            try:
+                cached_at, points = record
+                if now - float(cached_at) > 8 * 86400:
+                    continue
+                serialized_points = [[point_day.isoformat(), float(value)]
+                                     for point_day, value in points if math.isfinite(float(value))]
+                if not serialized_points:
+                    continue
+                entries[f'{int(key[0])}|{key[1]}|{key[2]}'] = {
+                    'cached_at': float(cached_at), 'points': serialized_points
+                }
+            except (TypeError, ValueError, IndexError):
+                continue
+        payload = json.dumps({'version': 1, 'series': entries}, ensure_ascii=False, separators=(',', ':'))
+        directory = os.path.dirname(SGS_CACHE_PATH) or '.'
+        os.makedirs(directory, exist_ok=True)
+        tmp_path = SGS_CACHE_PATH + f'.tmp-{os.getpid()}-{threading.get_ident()}'
+        try:
+            with open(tmp_path, 'w', encoding='utf-8') as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(tmp_path, 0o600)
+            os.replace(tmp_path, SGS_CACHE_PATH)
+        except OSError as exc:
+            app.logger.warning('Não foi possível persistir o cache SGS: %s', type(exc).__name__)
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+
+
 def _sgs_series(series_id, start_date, end_date):
     """Busca séries oficiais SGS com retry e fallback de cache recente."""
     start = date.fromisoformat(str(start_date)[:10])
@@ -3008,6 +3201,7 @@ def _sgs_series(series_id, start_date, end_date):
     if end < start:
         return []
     key = (int(series_id), start.isoformat(), end.isoformat())
+    _load_sgs_cache_from_disk()
     cached = SGS_CACHE.get(key)
     cached_age = (time.time() - cached[0]) if cached else None
     if cached and cached_age < SGS_CACHE_TTL:
@@ -3064,7 +3258,9 @@ def _sgs_series(series_id, start_date, end_date):
                 continue
         cursor = chunk_end + timedelta(days=1)
     points.sort(key=lambda item: item[0])
-    SGS_CACHE[key] = (time.time(), points)
+    with SGS_CACHE_LOCK:
+        SGS_CACHE[key] = (time.time(), points)
+    _persist_sgs_cache()
     return points
 
 
@@ -4994,6 +5190,32 @@ def _fetch_brapi_dividend_events(asset_type, symbols, start_date):
 
 
 
+
+def _pluggy_confirmed_provento_exists(ticker, payment_date, amount):
+    """Return True only when a Pluggy event ID confirms this forecast payment."""
+    symbol = str(ticker or '').strip().upper()
+    day = _api_date(payment_date)
+    try:
+        value = float(amount or 0)
+    except (TypeError, ValueError):
+        return False
+    if not symbol or not day or not math.isfinite(value) or value <= 0:
+        return False
+    row = db().execute(
+        """SELECT 1
+           FROM pluggy_imported_events pe
+           WHERE pe.event_type='provento'
+             AND pe.target_id IS NOT NULL
+             AND COALESCE(pe.import_state,'') IN ('imported','matched_existing')
+             AND UPPER(pe.ticker)=?
+             AND date(pe.event_date) BETWEEN date(?,'-3 day') AND date(?,'+3 day')
+             AND ABS(pe.amount-?)<=MAX(0.05,?*0.01)
+           LIMIT 1""",
+        (symbol, day, day, value, value)
+    ).fetchone()
+    return row is not None
+
+
 def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
     """Sincroniza proventos apenas para posições atualmente mantidas. Idempotente e limitada por cache."""
     now_ts = time.time()
@@ -5062,7 +5284,6 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
         for event in ((quote.get('dividendsData') or {}).get('cashDividends') or []):
             fetched.append(({**event, 'symbol': ticker}, 'fii' if kind in {'fii','fiis','fundo_imobiliario','fundos_imobiliarios'} else 'acao'))
 
-    today = datetime.now(TZ).date()
     imported = ignored = 0
     conn = db()
     for event, source_type in fetched:
@@ -5109,7 +5330,9 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
             continue
         raw_label = str(event.get('label') or ('RENDIMENTO' if source_type == 'fii' else 'PROVENTO')).strip().upper()
         label = 'JCP' if 'JCP' in raw_label or 'INTEREST' in raw_label else ('RENDIMENTO' if 'REND' in raw_label else 'DIVIDENDO')
-        status = 'Pago' if payment_date and date.fromisoformat(payment_date) < today else 'A receber'
+        # A data de pagamento passada não comprova recebimento. Somente um
+        # evento individual confirmado pela Pluggy pode promover a previsão.
+        status = 'Pago' if _pluggy_confirmed_provento_exists(ticker, payment_date, total) else 'A receber'
         # Data de pagamento pode ser corrigida pela fonte; não faz parte da chave.
         event_anchor = record_date or payment_date or approved_date or 'sem-data'
         event_key = '|'.join((ticker, label, event_anchor, f'{rate:.10f}'))
@@ -5148,89 +5371,59 @@ def _is_income_event(event_type):
 
 
 def _received_proventos_records(active_tickers=None):
-    """Return paid receipts only, combining manual/B3/Pluggy records and paid API events."""
+    """Return only Pluggy-confirmed income, preserving each external transaction ID."""
     active_set = None if active_tickers is None else {str(t).upper() for t in active_tickers}
     if active_set is not None and not active_set:
         return []
-    today = datetime.now(TZ).date()
-    pluggy_ids = {int(r['target_id']) for r in db().execute(
-        "SELECT target_id FROM pluggy_imported_events WHERE event_type='provento' AND target_id IS NOT NULL"
-    ).fetchall()}
-    b3_ids = {int(r['registro_id']) for r in db().execute(
-        "SELECT registro_id FROM b3_importados WHERE lower(categoria)='provento' AND registro_id IS NOT NULL"
-    ).fetchall()}
-    origin_by_id = {ident: 'Pluggy' for ident in pluggy_ids}
-    for ident in b3_ids:
-        origin_by_id.setdefault(ident, 'B3')
-
+    sql = """SELECT pe.external_id,pe.event_date AS confirmed_date,pe.amount AS confirmed_amount,
+                    pe.ticker AS confirmed_ticker,p.id,p.ticker,p.valor_total,p.data,
+                    COALESCE(tx.movement_type,'') AS movement_type,
+                    COALESCE(tx.description,'') AS movement_description,
+                    COALESCE(tx.raw_json,'{}') AS movement_raw
+             FROM pluggy_imported_events pe
+             JOIN proventos p ON p.id=pe.target_id
+             LEFT JOIN pluggy_investment_transactions tx ON tx.transaction_id=pe.external_id
+             WHERE pe.event_type='provento' AND pe.target_id IS NOT NULL
+               AND COALESCE(pe.import_state,'') IN ('imported','matched_existing')
+             ORDER BY pe.event_date,pe.external_id"""
+    rows = db().execute(sql).fetchall()
     records = []
-    seen_fingerprints = set()
-    rows = db().execute('SELECT id,ticker,valor_total,data FROM proventos ORDER BY data,id').fetchall()
     for raw in rows:
         row = dict(raw)
-        payment_date = _api_date(row.get('data'))
+        ticker = str(row.get('confirmed_ticker') or row.get('ticker') or '').strip().upper()
+        if not ticker or (active_set is not None and ticker not in active_set):
+            continue
+        payment_date = _api_date(row.get('confirmed_date') or row.get('data'))
         if not payment_date:
             continue
+        amount = row.get('confirmed_amount')
         try:
-            if date.fromisoformat(payment_date[:10]) > today:
+            amount = float(amount if amount is not None else row.get('valor_total') or 0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(amount) or amount <= 0 or not _is_income_event(row.get('movement_type') or 'PROVENTO'):
+            continue
+        try:
+            if date.fromisoformat(payment_date[:10]) > datetime.now(TZ).date():
                 continue
         except ValueError:
             continue
-        ticker = str(row.get('ticker') or '').upper()
-        if active_set is not None and ticker not in active_set:
-            continue
-        amount = round(float(row.get('valor_total') or 0), 2)
-        if not math.isfinite(amount) or amount <= 0:
-            continue
-        key = (ticker, payment_date[:10], amount)
-        origin = origin_by_id.get(int(row['id']), 'Manual')
-        # Exact same payment imported from multiple origins is counted once.
-        if key in seen_fingerprints:
-            continue
-        seen_fingerprints.add(key)
+        movement_type = str(row.get('movement_type') or '').upper()
+        description = str(row.get('movement_description') or '').upper()
+        if movement_type in ('JCP', 'INTEREST_ON_EQUITY') or 'JCP' in description:
+            event_type = 'JCP'
+        elif movement_type in ('INTEREST', 'DISTRIBUTION') or typesafe_asset_type(ticker) == 'fii' or 'RENDIMENTO' in description:
+            event_type = 'RENDIMENTO'
+        else:
+            event_type = 'DIVIDENDO'
         records.append({
             'ticker': ticker, 'tipo': 'Provento', 'tipo_ativo': typesafe_asset_type(ticker),
             'status': 'Pago', 'data_com': None, 'data_pagamento': payment_date[:10],
-            'quantidade': None, 'valor_por_ativo': None, 'valor_total': amount,
-            'origem': origin, 'tipo_evento': 'PROVENTO'
+            'quantidade': None, 'valor_por_ativo': None, 'valor_total': round(amount, 2),
+            'origem': 'Pluggy', 'tipo_evento': event_type,
+            'pluggy_transaction_id': str(row.get('external_id') or '')
         })
-
-    api_rows = db().execute(
-        "SELECT event_key,ticker,tipo_ativo,tipo_evento,data_com,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks "
-        "FROM proventos_api WHERE lower(trim(status))='pago' ORDER BY data_pagamento,event_key"
-    ).fetchall()
-    for raw in api_rows:
-        row = dict(raw)
-        payment_date = _api_date(row.get('data_pagamento'))
-        if not payment_date:
-            continue
-        try:
-            if date.fromisoformat(payment_date[:10]) > today:
-                continue
-        except ValueError:
-            continue
-        ticker = str(row.get('ticker') or '').upper()
-        if not ticker or (active_set is not None and ticker not in active_set):
-            continue
-        amount = round(float(row.get('valor_total') or 0), 2)
-        if not math.isfinite(amount) or amount <= 0 or not _is_income_event(row.get('tipo_evento')):
-            continue
-        fingerprint = (ticker, payment_date[:10], amount)
-        if fingerprint in seen_fingerprints:
-            continue
-        seen_fingerprints.add(fingerprint)
-        records.append({
-            'ticker': ticker, 'tipo': 'Provento',
-            'tipo_ativo': row.get('tipo_ativo') or typesafe_asset_type(ticker),
-            'status': 'Pago', 'data_com': row.get('data_com'),
-            'data_pagamento': payment_date[:10],
-            'quantidade': float(row.get('quantidade') or 0) or None,
-            'valor_por_ativo': float(row.get('valor_por_ativo') or 0) or None,
-            'valor_total': amount, 'origem': 'BRAPI',
-            'tipo_evento': row.get('tipo_evento') or 'PROVENTO',
-            'remarks': row.get('remarks') or '', 'event_key': row.get('event_key')
-        })
-    records.sort(key=lambda item: (str(item.get('data_pagamento') or ''), str(item.get('ticker') or '')))
+    records.sort(key=lambda item: (str(item.get('data_pagamento') or ''), str(item.get('ticker') or ''), str(item.get('pluggy_transaction_id') or '')))
     return records
 
 
@@ -6832,11 +7025,15 @@ def dashboard():
     # antiga só informa exDate, a data-com aproximada e a quantidade são sinalizadas.
     upcoming = []
     manual_keys = {(str(row['ticker']).upper(), str(row['data'])[:10], round(float(row['valor_total'] or 0), 2)) for row in manual_rows}
-    # Lançamentos manuais com data futura representam proventos anunciados,
-    # não recebidos. Preserve-os como A receber em vez de os misturar ao histórico pago.
+    # Lançamentos manuais no mês atual ou em meses futuros são previsões,
+    # não recebimentos confirmados. Preserve-os como A receber até a confirmação Pluggy.
     for row in manual_rows:
         payment_date = _api_date(row.get('data'))
-        if payment_date and date.fromisoformat(payment_date) > today:
+        if payment_date and _pluggy_confirmed_provento_exists(
+            row.get('ticker'), payment_date, row.get('valor_total')
+        ):
+            continue
+        if payment_date and payment_date[:7] >= today.strftime('%Y-%m'):
             upcoming.append({
                 'ticker':str(row['ticker']).upper(),'tipo':'Provento manual','tipo_ativo':typesafe_asset_type(row['ticker']),
                 'status':'A receber','data_com':None,'data_pagamento':payment_date,'quantidade':None,
@@ -6867,7 +7064,7 @@ def dashboard():
     pending_amount_keys = {(str(item.get('ticker') or '').upper(), str(item.get('data_pagamento') or '')[:10], round(float(item.get('valor_total') or 0), 2)) for item in upcoming}
     manual_pending_keys = {
         (str(row['ticker']).upper(), str(row['data'])[:10], round(float(row['valor_total'] or 0), 2))
-        for row in manual_rows if str(row.get('data') or '')[:10] > today.isoformat()
+        for row in manual_rows if str(row.get('data') or '')[:7] >= today.strftime('%Y-%m')
     }
     for item in portfolio.get('itens', []):
         ticker = str(item.get('ticker') or '').upper()

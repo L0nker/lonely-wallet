@@ -38,6 +38,7 @@ class RegressionTests(unittest.TestCase):
             # imported opening balances from leaking into IRPF/position tests.
             for table in (
                 'b3_importados', 'b3_import_lotes', 'proventos_api', 'proventos',
+                'pluggy_imported_events', 'pluggy_investment_transactions',
                 'operacoes', 'saldos_importados', 'irpf_lancamentos',
                 'api_response_cache', 'api_request_log', 'api_cache_stats', 'api_provider_state'
             ):
@@ -81,7 +82,6 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(response.get_json()['interval_minutes'], 240)
 
     def test_api_response_cache_migration_adds_payload_without_losing_rows(self):
-        import sqlite3
         legacy = sqlite3.connect(':memory:')
         legacy.execute('''CREATE TABLE api_response_cache (
             cache_key TEXT PRIMARY KEY, provider TEXT NOT NULL, endpoint TEXT NOT NULL DEFAULT '',
@@ -95,6 +95,7 @@ class RegressionTests(unittest.TestCase):
         wallet._migrate_api_response_cache_schema(legacy)
         columns = {row[1] for row in legacy.execute('PRAGMA table_info(api_response_cache)').fetchall()}
         self.assertIn('payload', columns)
+        self.assertIn('payload_json', columns)
         row = legacy.execute(
             'SELECT cache_key,provider,endpoint,payload FROM api_response_cache WHERE cache_key=?',
             ('legacy-cache-key',)
@@ -102,6 +103,35 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(row[:3], ('legacy-cache-key', 'brapi', '/api/quote/TEST4'))
         self.assertEqual(bytes(row[3] or b''), b'')
         legacy.close()
+
+    def test_api_response_cache_legacy_payload_json_not_null_can_be_migrated_and_written(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / 'legacy-cache.db')
+            legacy = sqlite3.connect(path)
+            legacy.execute('''CREATE TABLE api_response_cache (
+                cache_key TEXT PRIMARY KEY, provider TEXT NOT NULL,
+                endpoint TEXT NOT NULL DEFAULT '', payload_json TEXT NOT NULL,
+                status_code INTEGER NOT NULL DEFAULT 200, fetched_at REAL NOT NULL DEFAULT 0,
+                expires_at REAL NOT NULL DEFAULT 0, stale_until REAL NOT NULL DEFAULT 0
+            )''')
+            legacy.execute(
+                'INSERT INTO api_response_cache(cache_key,provider,endpoint,payload_json) VALUES(?,?,?,?)',
+                ('legacy-json-key', 'yahoo', '/query', '{"legacy":true}')
+            )
+            wallet._migrate_api_response_cache_schema(legacy)
+            legacy.commit()
+            migrated = legacy.execute(
+                'SELECT payload,payload_json FROM api_response_cache WHERE cache_key=?',
+                ('legacy-json-key',)
+            ).fetchone()
+            self.assertEqual(bytes(migrated[0]), b'{"legacy":true}')
+            self.assertEqual(migrated[1], '{"legacy":true}')
+            legacy.close()
+            with patch.object(wallet, 'DB_PATH', path):
+                wallet._api_cache_store('new-json-key', 'brapi', '/quote', b'{"ok":true}', 200, 60, 300)
+                cached = wallet._api_cache_row('new-json-key')
+            self.assertIsNotNone(cached)
+            self.assertEqual(cached['payload'], b'{"ok":true}')
 
     def test_sgs_series_retries_empty_response_and_parses_valid_json(self):
         start, end = '2026-01-01', '2026-01-03'
@@ -134,6 +164,51 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(mocked.call_count, 3)
         self.assertEqual(points, cached_points)
         wallet.SGS_CACHE.pop(key, None)
+
+    def test_sgs_cache_survives_process_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_path = wallet.SGS_CACHE_PATH
+            old_loaded = wallet.SGS_CACHE_LOADED
+            old_cache = dict(wallet.SGS_CACHE)
+            try:
+                wallet.SGS_CACHE_PATH = str(Path(directory) / 'sgs_cache.json')
+                wallet.SGS_CACHE.clear()
+                wallet.SGS_CACHE_LOADED = True
+                key = (12, '2026-01-01', '2026-01-03')
+                points = [(wallet.date(2026, 1, 2), 0.05)]
+                wallet.SGS_CACHE[key] = (wallet.time.time(), points)
+                wallet._persist_sgs_cache()
+                wallet.SGS_CACHE.clear()
+                wallet.SGS_CACHE_LOADED = False
+                wallet._load_sgs_cache_from_disk()
+                self.assertEqual(wallet.SGS_CACHE[key][1], points)
+                self.assertTrue(Path(wallet.SGS_CACHE_PATH).is_file())
+            finally:
+                wallet.SGS_CACHE_PATH = old_path
+                wallet.SGS_CACHE_LOADED = old_loaded
+                wallet.SGS_CACHE.clear()
+                wallet.SGS_CACHE.update(old_cache)
+
+    def test_legacy_paid_api_forecasts_are_reset_without_pluggy_confirmation(self):
+        with wallet.app.app_context():
+            con = wallet.db()
+            stamp = wallet.datetime.now(wallet.TZ).isoformat(timespec='seconds')
+            con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        ('LEGACY-UNCONFIRMED','LEGACY4','acao','DIVIDENDO','2026-11-01','2026-11-02','2026-11-20',1,10,10,'Pago','status antigo',stamp))
+            cursor = con.execute('INSERT INTO proventos(ticker,valor_total,data) VALUES(?,?,?)',
+                                 ('CONFIRM4', 20.0, '2026-11-20'))
+            con.execute("INSERT INTO pluggy_imported_events(external_id,event_type,ticker,event_date,amount,target_id,import_state,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                        ('confirmed-legacy-id','provento','CONFIRM4','2026-11-20',20.0,int(cursor.lastrowid),'imported',stamp))
+            con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        ('LEGACY-CONFIRMED','CONFIRM4','acao','DIVIDENDO','2026-11-01','2026-11-02','2026-11-20',1,20,20,'Pago','Pluggy confirmou',stamp))
+            con.commit()
+            changed = wallet._migrate_unconfirmed_proventos_api_status(con)
+            con.commit()
+            self.assertEqual(changed, 1)
+            unconfirmed = con.execute("SELECT status FROM proventos_api WHERE event_key='LEGACY-UNCONFIRMED'").fetchone()
+            confirmed = con.execute("SELECT status FROM proventos_api WHERE event_key='LEGACY-CONFIRMED'").fetchone()
+            self.assertEqual(unconfirmed['status'], 'A receber')
+            self.assertEqual(confirmed['status'], 'Pago')
 
     def test_api_cache_row_treats_empty_migrated_payload_as_cache_miss(self):
         with wallet.app.app_context():
@@ -391,21 +466,83 @@ class RegressionTests(unittest.TestCase):
             con.commit()
             self.assertTrue(wallet.sale_breaks_future_position('DELETEBUY4','2026-02-01',0.0,{int(purchase.lastrowid)}))
 
-    def test_paid_api_proventos_are_included_and_future_receipts_excluded(self):
+    def test_paid_non_pluggy_api_events_are_not_counted_as_received(self):
         with wallet.app.app_context():
             con = wallet.db()
-            con.execute("DELETE FROM proventos_api WHERE upper(ticker)='PROVTEST4'")
-            con.execute("DELETE FROM proventos WHERE upper(ticker)='PROVTEST4'")
             stamp = wallet.datetime.now(wallet.TZ).isoformat(timespec='seconds')
             con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        ('PROVTEST4:PAID','PROVTEST4','fii','Rendimento','2026-01-10','2026-01-11','2026-01-15',1.0,20,20.0,'Pago','Teste',stamp))
+                        ('PROVTEST4:PAID','PROVTEST4','fii','Rendimento','2026-01-10','2026-01-11','2026-01-15',1.0,20,20.0,'Pago','BRAPI sem confirmação Pluggy',stamp))
             con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         ('PROVTEST4:FUTURE','PROVTEST4','fii','Rendimento','2026-12-10','2026-12-11','2026-12-15',1.0,20,20.0,'A receber','Teste',stamp))
+            con.execute('INSERT INTO proventos(ticker,valor_total,data) VALUES(?,?,?)',
+                        ('PROVTEST4', 99.0, '2026-01-15'))
             con.commit()
             records = wallet._received_proventos_records(['PROVTEST4'])
-            self.assertEqual(len(records), 1)
-            self.assertEqual(records[0]['valor_total'], 20.0)
-            self.assertEqual(records[0]['status'], 'Pago')
+            self.assertEqual(records, [])
+
+    def test_only_pluggy_confirmed_proventos_are_received_and_distinct_ids_survive(self):
+        with wallet.app.app_context():
+            con = wallet.db()
+            stamp = wallet.datetime.now(wallet.TZ).isoformat(timespec='seconds')
+            targets = []
+            for external_id in ('pluggy-event-a', 'pluggy-event-b'):
+                # A matched manual/B3 target may have a slightly different
+                # amount/date; the Pluggy event remains the authoritative value.
+                cursor = con.execute('INSERT INTO proventos(ticker,valor_total,data) VALUES(?,?,?)',
+                                      ('ABCD4', 19.95, '2026-01-13'))
+                target_id = int(cursor.lastrowid)
+                targets.append(target_id)
+                con.execute('''INSERT INTO pluggy_imported_events
+                    (external_id,event_type,ticker,event_date,amount,target_id,import_state,created_at)
+                    VALUES(?,?,?,?,?,?,?,?)''',
+                    (external_id, 'provento', 'ABCD4', '2026-01-15', 20.0, target_id, 'imported', stamp))
+                con.execute('''INSERT INTO pluggy_investment_transactions
+                    (transaction_id,item_id,investment_id,ticker,transaction_date,description,movement_type,
+                     quantity,unit_value,amount,import_state,imported_operation_id,raw_json,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    (external_id, 'item1', 'inv1', 'ABCD4', '2026-01-15', 'Dividend payment', 'DIVIDEND',
+                     1, 20, 20, 'imported_provento', None, '{}', stamp))
+            # A BRAPI event with status Pago and a manual record are not proof of receipt.
+            con.execute('''INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,
+                valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                ('ABCD4:api','ABCD4','acao','DIVIDENDO','2026-01-10','2026-01-11','2026-01-15',20,1,20,'Pago','BRAPI',stamp))
+            con.execute('INSERT INTO proventos(ticker,valor_total,data) VALUES(?,?,?)',
+                        ('ABCD4', 20.0, '2026-01-15'))
+            con.commit()
+            records = wallet._received_proventos_records(['ABCD4'])
+            self.assertEqual(len(records), 2)
+            self.assertEqual([row['valor_total'] for row in records], [20.0, 20.0])
+            self.assertEqual({row['data_pagamento'] for row in records}, {'2026-01-15'})
+            self.assertEqual({row['pluggy_transaction_id'] for row in records},
+                             {'pluggy-event-a', 'pluggy-event-b'})
+            self.assertTrue(all(row['origem'] == 'Pluggy' and row['status'] == 'Pago' for row in records))
+
+    def test_distinct_pluggy_ids_match_manual_once_then_create_separate_receipts(self):
+        with wallet.app.app_context():
+            con = wallet.db()
+            con.execute('INSERT INTO proventos(ticker,valor_total,data) VALUES(?,?,?)',
+                        ('ABCD4', 20.0, '2026-01-15'))
+            stamp = wallet.datetime.now(wallet.TZ).isoformat(timespec='seconds')
+            con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        ('ABCD4:FORECAST','ABCD4','acao','DIVIDENDO','2026-01-10','2026-01-11','2026-01-15',20,1,20,'A receber','BRAPI forecast',stamp))
+            con.commit()
+            investment = {'id': 'inv-ABCD4', 'code': 'ABCD4', 'type': 'EQUITY', 'subtype': 'STOCK'}
+            for external_id in ('pluggy-match-a', 'pluggy-match-b'):
+                movement = {'id': external_id, 'type': 'DIVIDEND', 'tradeDate': '2026-01-15',
+                            'quantity': 1, 'value': 20, 'amount': 20, 'description': 'Dividend'}
+                wallet._pluggy_import_investment_transaction('item-test', investment, movement, now_text='2026-01-15T10:00:00-03:00')
+            # Idempotent replay of the second external event must not add a third row.
+            movement = {'id': 'pluggy-match-b', 'type': 'DIVIDEND', 'tradeDate': '2026-01-15',
+                        'quantity': 1, 'value': 20, 'amount': 20, 'description': 'Dividend'}
+            wallet._pluggy_import_investment_transaction('item-test', investment, movement, now_text='2026-01-15T10:00:00-03:00')
+            con.commit()
+            rows = wallet._received_proventos_records(['ABCD4'])
+            self.assertEqual(len(rows), 2)
+            self.assertEqual({row['pluggy_transaction_id'] for row in rows},
+                             {'pluggy-match-a', 'pluggy-match-b'})
+            forecast = con.execute("SELECT status FROM proventos_api WHERE event_key='ABCD4:FORECAST'").fetchone()
+            self.assertEqual(forecast['status'], 'Pago')
 
     def test_upcoming_proventos_filter_keeps_current_and_future_months_only(self):
         as_of = datetime.date(2026, 11, 23)

@@ -1,4 +1,45 @@
-# Lonely Wallet v4.2.40
+# Lonely Wallet v4.2.41
+
+
+# Atualizações da versão 4.2.41
+
+## Compatibilidade do cache SQLite
+- Corrigida a incompatibilidade com bancos persistentes que possuem `payload_json TEXT NOT NULL` na tabela `api_response_cache`.
+- A migração preserva a coluna legada e adiciona/atualiza `payload` sem recriar a tabela nem apagar registros.
+- As novas gravações sincronizam `payload` e `payload_json`, atendendo às restrições NOT NULL de instalações antigas.
+- Leituras antigas que ainda não possuam `payload` utilizam o conteúdo válido de `payload_json` como fallback.
+- A leitura do cache reconhece as duas representações e reaproveita respostas antigas válidas.
+
+## Confirmação de proventos exclusivamente pela Pluggy
+- O card de proventos recebidos e o lucro total consideram somente eventos vinculados a um ID externo de transação Pluggy importado e confirmado.
+- Registros manuais, planilhas B3 e eventos de outras APIs não são considerados recebimentos apenas porque a data de pagamento passou.
+- Eventos BRAPI permanecem como `A receber` até que uma transação Pluggy compatível seja conciliada.
+- Na inicialização, registros antigos marcados automaticamente como `Pago` são rebaixados para `A receber` quando não existe correspondência Pluggy confirmada.
+- Ao confirmar um pagamento pela Pluggy, a previsão correspondente da BRAPI é promovida para `Pago`, evitando que permaneça duplicada nas previsões.
+- IDs Pluggy distintos são preservados mesmo quando ticker, data e valor coincidem.
+- Quando um evento Pluggy é conciliado com um lançamento manual/B3, a data e o valor do recebimento são calculados a partir do evento externo, não do lançamento usado apenas como vínculo.
+- A conciliação reutiliza um registro manual/B3 não vinculado apenas uma vez; outro ID externo distinto gera outro registro confirmado.
+- Eventos antigos anteriormente marcados como duplicados podem ser reprocessados em sincronizações futuras.
+
+## Persistência do cache CDI/IPCA
+- O cache de séries SGS agora é persistido atomicamente em `/data/sgs_cache.json`.
+- O fallback recente de até sete dias sobrevive a reinicializações do container.
+- Os dados persistidos passam por validação de formato, datas e valores numéricos antes de serem reutilizados.
+- O arquivo é limitado em tamanho, escrito com permissão restrita e substituído atomicamente.
+
+## Documentação e pacote
+- Atualizada a versão do README, dos exemplos de healthcheck e dos metadados Docker/CasaOS para `4.2.41`.
+- Removidos arquivos `__pycache__` e `.pyc` do pacote de distribuição.
+
+## Testes
+- Adicionados testes para schema legado com `payload_json NOT NULL`, migração preservando valores e gravação posterior no cache.
+- Adicionados testes para excluir pagamentos não confirmados pela Pluggy.
+- Adicionados testes para preservar dois IDs externos Pluggy distintos com mesmo ticker/data/valor.
+- Adicionado teste para garantir que data e valor confirmados venham do registro Pluggy, mesmo quando o lançamento conciliado tiver pequena diferença.
+- Adicionados testes para conciliar uma linha manual/B3 uma única vez e garantir idempotência em reprocessamentos.
+- Adicionado teste para persistência e recuperação do cache SGS após reinicialização simulada.
+- Build Docker real, sincronização com a API Pluggy e validação no ZimaOS ainda precisam ser realizados no ambiente de produção.
+
 
 # Atualizações da versão 4.2.40
 
@@ -84,7 +125,7 @@ As consultas da brapi passam a usar cache persistente em SQLite, orçamento loca
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.39 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.41 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
 - **Persistência:** SQLite, com bancos separados para ativos e tokens
 - **Porta:** `8085` no host e `8080` no container
@@ -114,7 +155,7 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve apresentar `ok: true` e `version: 4.2.39`.
+O retorno deve apresentar `ok: true` e `version: 4.2.41`.
 
 **Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
 
@@ -127,6 +168,7 @@ O retorno deve apresentar `ok: true` e `version: 4.2.39`.
 | `carteira.db` | Banco legado, preservado para migração/compatibilidade quando existir |
 | `quotes_last_valid.json` | Últimas cotações válidas salvas |
 | `dashboard_cache.json` | Snapshot completo do dashboard, invalidado quando os bancos mudam |
+| `sgs_cache.json` | Séries SGS CDI/IPCA persistidas para fallback após indisponibilidade do Banco Central |
 | `.api-credentials.key` | Chave usada para proteger credenciais de integrações |
 | `.lonely-wallet-session.key` | Segredo persistente das sessões, quando configurado |
 | `backups/pre-exclusao-*` | Backups preventivos antes de exclusões em massa |
