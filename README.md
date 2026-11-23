@@ -1,6 +1,6 @@
-# Lonely Wallet v4.2.37
+# Lonely Wallet v4.2.38
 
-## Correção da distribuição mensal de proventos
+## Correção das métricas do gráfico Evolução do Patrimônio
 
 - Corrigida a janela de distribuição aberta ao clicar em uma coluna do gráfico **Evolução de Proventos**, que podia permanecer vazia devido a uma referência JavaScript a uma variável inexistente (`side`).
 - Corrigida a renderização do gráfico de rosca para apresentar a distribuição dos valores por ativo e por tipo.
@@ -12,9 +12,19 @@
 
 **Gerenciador pessoal de investimentos | Docker / ZimaOS | Português (Brasil)**
 
-Esta versão parte da base v4.2.36 e preserva a interface, as regras financeiras, as integrações, os dados e as credenciais existentes.
+Esta versão parte da base v4.2.37 e preserva a interface, as regras financeiras, as integrações, os dados e as credenciais existentes.
 
 As consultas da brapi passam a usar cache persistente em SQLite, orçamento local móvel de 30 dias, uma chamada por ticker, concorrência serializada e intervalo mínimo entre chamadas. As respostas recentes podem ser reutilizadas após reinicializações e, durante indisponibilidades temporárias, respostas anteriores dentro da janela de contingência podem ser reaproveitadas. A sincronização Pluggy para novas instalações passa a ter frequência padrão de quatro horas; preferências já salvas pelo usuário são preservadas.
+
+## Atualizações da versão 4.2.38
+
+- Corrigida a metodologia de capital aplicado no gráfico **Evolução do Patrimônio** para ações, FIIs e demais ativos negociados em bolsa.
+- Vendas passam a reduzir o capital aplicado pelo custo médio das unidades vendidas, em vez de subtrair o valor financeiro de venda. Isso evita tratar lucro ou prejuízo realizado como alteração do custo das posições restantes.
+- Implementada reconstrução histórica do custo médio a partir do saldo-base importado, revertendo compras e vendas para meses anteriores e aplicando operações posteriores à fotografia.
+- Mantida a metodologia anterior para renda fixa, cujo comportamento já estava correto.
+- O ganho de capital do mês corrente passa a ser calculado pela diferença entre valor atual e valor investido, alinhado aos cards da carteira e sem incluir proventos.
+- Adicionados cinco testes de regressão para compras, vendas parciais, reconstrução a partir do saldo-base, posições totalmente vendidas e exclusão da renda fixa da nova regra.
+- Build Docker real e comparação funcional no ZimaOS precisam ser confirmados pelo usuário.
 
 ## Atualizações da versão 4.2.37
 
@@ -44,7 +54,7 @@ As consultas da brapi passam a usar cache persistente em SQLite, orçamento loca
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.37 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.38 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
 - **Persistência:** SQLite, com bancos separados para ativos e tokens
 - **Porta:** `8085` no host e `8080` no container
@@ -74,7 +84,7 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve apresentar `ok: true` e `version: 4.2.37`.
+O retorno deve apresentar `ok: true` e `version: 4.2.38`.
 
 **Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
 

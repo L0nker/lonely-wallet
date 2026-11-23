@@ -5474,6 +5474,103 @@ def fetch_portfolio_price_history(operations, extra_positions=None):
     PORTFOLIO_HISTORY_CACHE[cache_key] = {'time': now, 'data': response_data}
     return response_data
 
+def _market_cost_basis_at_date(executed, snapshot_map, base_day, cutoff, market_tickers):
+    """Reconstrói o custo médio das posições de bolsa na data consultada.
+
+    A série do gráfico representa o custo das posições mantidas, não o fluxo de
+    caixa líquido de vendas. Com saldo-base, operações posteriores são aplicadas
+    para frente e operações entre o fechamento consultado e a fotografia são
+    revertidas para trás. Vendas reduzem o custo pelo custo médio, não pelo preço
+    de venda, para não transformar lucro/prejuízo realizado em capital investido.
+    """
+    market_tickers = set(market_tickers or ())
+    if not market_tickers:
+        return 0.0
+
+    def average_cost_before(target):
+        quantity = 0.0
+        basis = 0.0
+        target_key = (target['_date'], int(target.get('id') or 0))
+        for previous in executed:
+            if (previous['_date'], int(previous.get('id') or 0)) >= target_key:
+                break
+            if previous['_ticker'] != target['_ticker']:
+                continue
+            qty = max(0.0, float(previous.get('_quantity') or 0))
+            if previous.get('lado') == 'compra':
+                quantity += qty
+                basis += qty * max(0.0, float(previous.get('_price') or 0)) + max(0.0, float(previous.get('_costs') or 0))
+            elif quantity > 1e-8:
+                sold = min(quantity, qty)
+                average = basis / quantity
+                quantity -= sold
+                basis = max(0.0, basis - average * sold)
+        if quantity > 1e-8 and basis > 0:
+            return basis / quantity
+        return max(0.0, float(target.get('_price') or 0))
+
+    positions = {}
+    snapshot_map = snapshot_map or {}
+    for ticker in market_tickers:
+        base = snapshot_map.get(ticker)
+        if base and base_day:
+            quantity = max(0.0, float(base.get('quantidade') or 0))
+            basis = quantity * max(0.0, float(base.get('preco_medio') or 0))
+        else:
+            quantity = 0.0
+            basis = 0.0
+        positions[ticker] = {'quantity': quantity, 'basis': basis}
+
+    if base_day and cutoff >= base_day:
+        for op in executed:
+            if not (base_day < op['_date'] <= cutoff) or op['_ticker'] not in market_tickers:
+                continue
+            position = positions[op['_ticker']]
+            qty = max(0.0, float(op.get('_quantity') or 0))
+            amount = qty * max(0.0, float(op.get('_price') or 0)) + max(0.0, float(op.get('_costs') or 0))
+            if op.get('lado') == 'compra':
+                position['quantity'] += qty
+                position['basis'] += amount
+            elif position['quantity'] > 1e-8:
+                sold = min(position['quantity'], qty)
+                average = position['basis'] / position['quantity']
+                position['quantity'] -= sold
+                position['basis'] = max(0.0, position['basis'] - average * sold)
+    elif base_day:
+        for op in reversed(executed):
+            if not (cutoff < op['_date'] <= base_day) or op['_ticker'] not in market_tickers:
+                continue
+            position = positions[op['_ticker']]
+            qty = max(0.0, float(op.get('_quantity') or 0))
+            amount = qty * max(0.0, float(op.get('_price') or 0)) + max(0.0, float(op.get('_costs') or 0))
+            if op.get('lado') == 'compra':
+                position['quantity'] = max(0.0, position['quantity'] - qty)
+                position['basis'] = max(0.0, position['basis'] - amount)
+            else:
+                average = (position['basis'] / position['quantity']) if position['quantity'] > 1e-8 else average_cost_before(op)
+                position['quantity'] += qty
+                position['basis'] += qty * average
+    else:
+        for op in executed:
+            if op['_date'] > cutoff:
+                break
+            if op['_ticker'] not in market_tickers:
+                continue
+            position = positions[op['_ticker']]
+            qty = max(0.0, float(op.get('_quantity') or 0))
+            amount = qty * max(0.0, float(op.get('_price') or 0)) + max(0.0, float(op.get('_costs') or 0))
+            if op.get('lado') == 'compra':
+                position['quantity'] += qty
+                position['basis'] += amount
+            elif position['quantity'] > 1e-8:
+                sold = min(position['quantity'], qty)
+                average = position['basis'] / position['quantity']
+                position['quantity'] -= sold
+                position['basis'] = max(0.0, position['basis'] - average * sold)
+
+    return sum(max(0.0, float(position['basis'])) for position in positions.values())
+
+
 def build_portfolio_performance(operations, dividends, history=None, imported_positions=None, snapshot_date=None, current_positions=None):
     """Reconstrói patrimônio e ganho/perda de capital por mês usando fechamentos não ajustados.
 
@@ -5767,25 +5864,43 @@ def build_portfolio_performance(operations, dividends, history=None, imported_po
 
     monthly_returns = []
     portfolio_series = []
-    snapshot_invested = sum(
-        float(row.get('quantidade') or 0) * float(row.get('preco_medio') or 0)
-        for row in imported_positions
-        if str(row.get('ticker') or '').upper() in available_tickers
-    )
-
-    def net_applied_through(cutoff, after=None):
-        """Capital líquido aplicado até a data, considerando compras e retiradas por venda."""
-        total = snapshot_invested if base_day and after is not None and cutoff >= base_day else 0.0
+    def net_applied_through(cutoff, after=None, ticker_filter=None):
+        """Mantém o critério de fluxo líquido para renda fixa e compatibilidade legada."""
+        allowed = set(ticker_filter) if ticker_filter is not None else None
+        total = 0.0
+        if base_day and after is not None and cutoff >= base_day:
+            total = sum(
+                float(row.get('quantidade') or 0) * float(row.get('preco_medio') or 0)
+                for ticker, row in snapshot_map.items()
+                if allowed is None or ticker in allowed
+            )
         for op in executed:
             if op['_date'] > cutoff:
                 break
             if after is not None and op['_date'] <= after:
+                continue
+            if allowed is not None and op['_ticker'] not in allowed:
                 continue
             trade_notional, adjusted_costs = adjusted_operation_values(
                 op['_ticker'], op['_date'], op['_quantity'], op['_price'], op['_costs']
             )
             total += (trade_notional + adjusted_costs) if op.get('lado') == 'compra' else -(trade_notional - adjusted_costs)
         return total
+
+    def market_cost_basis_through(cutoff):
+        return _market_cost_basis_at_date(
+            executed, snapshot_map, base_day, cutoff,
+            set(all_tickers) - fixed_income_symbols
+        )
+
+    def applied_capital_through(cutoff):
+        """Combina custo médio para ativos de bolsa e regra preservada de renda fixa."""
+        fixed_income_applied = net_applied_through(
+            cutoff,
+            after=base_day if base_day and cutoff >= base_day else None,
+            ticker_filter=fixed_income_symbols
+        )
+        return market_cost_basis_through(cutoff) + fixed_income_applied
 
     first_year, first_month = int(month_keys[0][:4]), int(month_keys[0][5:7])
     previous_end = date(first_year, first_month, 1) - timedelta(days=1)
@@ -5798,10 +5913,7 @@ def build_portfolio_performance(operations, dividends, history=None, imported_po
         start_value = portfolio_value(start_date)
         end_value = portfolio_value(end_date)
         if end_value is not None:
-            applied_value = net_applied_through(
-                end_date,
-                after=base_day if base_day and end_date >= base_day else None
-            )
+            applied_value = applied_capital_through(end_date)
             portfolio_series.append({
                 'mes': key,
                 'aplicado': round(applied_value, 2),

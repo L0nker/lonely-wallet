@@ -3752,9 +3752,12 @@ function setProvDistributionMode(mode){
 
 const chartPalette=['#78b7f5','#f3d978','#42d49b','#b59af3','#ed8e9c','#74d7d2','#d7a36a','#e8a56b','#a8b7cb','#d98ad0','#f28f5b','#88c1a8','#c49aeb','#d9c46a','#78a8d8','#e57da9','#9cc36b','#b6a0d8'];
 function sumAssetCapitalGain(items){
+ // Usa a mesma base dos cards da carteira: valor atual menos custo investido.
+ // variacao_valor pode ser nulo quando a instituição informa saldo, mas não preço.
  return (Array.isArray(items)?items:[]).reduce((sum,item)=>{
-  const raw=item?.variacao_valor??item?.lucro;
-  const value=raw===null||raw===undefined?0:Number(raw);
+  const current=Number(item?.valor_atual||0);
+  const invested=Number(item?.investido||0);
+  const value=current-invested;
   return sum+(Number.isFinite(value)?value:0);
  },0);
 }
