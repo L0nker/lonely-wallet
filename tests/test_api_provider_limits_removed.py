@@ -25,6 +25,17 @@ class ProviderQuotaRemovalTests(unittest.TestCase):
         self.assertIn('Sem cotas artificiais locais.', template)
         self.assertNotIn('Orçamento interno brapi', template)
 
+    def test_disabled_internal_budget_is_not_rendered_in_dashboard(self):
+        template = (ROOT / 'app' / 'templates' / 'index.html').read_text(encoding='utf-8')
+        self.assertIn('const budgetEnabled = item.budget_enabled === true;', template)
+        self.assertIn("const budgetMetric = budgetEnabled ?", template)
+        self.assertNotIn('<strong>Desativado</strong>', template)
+
+    def test_internal_budget_metric_only_appears_when_backend_enables_it(self):
+        template = (ROOT / 'app' / 'templates' / 'index.html').read_text(encoding='utf-8')
+        self.assertIn('const budgetMetric = budgetEnabled ?', template)
+        self.assertIn('api-usage-grid${budgetEnabled?', template)
+
 
 if __name__ == '__main__':
     unittest.main()

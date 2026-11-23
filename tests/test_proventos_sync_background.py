@@ -134,7 +134,13 @@ class ProventosBackgroundQueueTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(ns['PROVENTOS_SYNC_STATE']['status'], 'completed')
         self.assertEqual(ns['PROVENTOS_SYNC_STATE']['result']['mensagem'], 'segunda')
+        # The worker publishes its in-memory state while holding the queue lock;
+        # wait for the durable SQLite write as well, rather than racing the final commit.
+        persist_deadline = time.monotonic() + 2
         row = ns['_test_connection'].execute('SELECT * FROM proventos_sync_queue_state WHERE id=1').fetchone()
+        while row['status'] != 'completed' and time.monotonic() < persist_deadline:
+            time.sleep(0.01)
+            row = ns['_test_connection'].execute('SELECT * FROM proventos_sync_queue_state WHERE id=1').fetchone()
         self.assertEqual(row['status'], 'completed')
         self.assertEqual(row['pending_signature'], '')
         self.assertEqual(json.loads(row['inputs_json'])['active_items'][0]['ticker'], 'BBB4')

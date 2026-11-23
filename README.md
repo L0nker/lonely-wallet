@@ -1,7 +1,19 @@
-# Lonely Wallet v4.2.45
+# Lonely Wallet v4.2.46
 
 
-# Atualizações da versão 4.2.45
+# Atualizações da versão 4.2.46
+
+
+## Dashboard de consumo das APIs
+- Removida a métrica “Orçamento interno: Desativado” quando `budget_enabled` está ausente ou é falso.
+- A métrica de orçamento somente é renderizada quando o backend informa explicitamente `budget_enabled=true`.
+- Reorganizado o painel para apresentar chamadas BRAPI e reaproveitamento de cache em duas colunas quando não existe orçamento interno ativo.
+- Mantida a apresentação condicional de três colunas somente quando um orçamento estiver efetivamente habilitado.
+
+## Testes da versão 4.2.46
+- Adicionados testes para garantir que orçamento desativado não apareça no painel.
+- Adicionado teste para garantir que a métrica só apareça quando habilitada explicitamente pelo backend.
+- Mantidos os testes de ausência de cotas artificiais e de funcionamento dos contadores informativos.
 
 ## Healthcheck e estado degradado dos gráficos
 - O endpoint `/api/health` mantém HTTP 200 quando o renderer alternativo está disponível e informa `status=degraded` no JSON.
@@ -208,7 +220,7 @@ A aplicação preserva a interface, as regras financeiras, as integrações, os 
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.45 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.46 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
 - **Persistência:** SQLite, com bancos separados para ativos e tokens
 - **Porta:** `8085` no host e `8080` no container
