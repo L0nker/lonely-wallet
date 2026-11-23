@@ -2354,6 +2354,16 @@ function hideDashboardDataWait(){
 function scheduleDashboardInitialRetry(){
  if(dashboardInitialRetryTimer)return;
  dashboardInitialRetryAttempt++;
+ if(dashboardInitialRetryAttempt>4){
+  const retry=document.getElementById('dashboardDataWaitRetry');
+  const title=document.getElementById('dashboardDataWaitTitle');
+  const message=document.getElementById('dashboardDataWaitMessage');
+    setDashboardDataWait('Verifique a conexão com o servidor e tente novamente. A aplicação não continuará repetindo chamadas automaticamente.');
+  if(title)title.textContent='Não foi possível carregar a carteira';
+  if(message)message.textContent='Verifique a conexão com o servidor e tente novamente. A aplicação não continuará repetindo chamadas automaticamente.';
+  if(retry)retry.style.display='inline-flex';
+  return;
+ }
  setDashboardDataWait('A conexão está demorando para responder. A carteira tentará carregar novamente automaticamente.');
  const delay=dashboardRetryDelay(dashboardInitialRetryAttempt);
  dashboardInitialRetryTimer=setTimeout(()=>{
@@ -2364,6 +2374,24 @@ function scheduleDashboardInitialRetry(){
 function scheduleDashboardFullRetry(showWait=true){
  if(dashboardFullRetryTimer)return;
  dashboardFullRetryAttempt++;
+ if(dashboardFullRetryAttempt>3){
+  if(state&&Array.isArray(state.itens)){
+   render();
+   applyPositionColumnPrefs();
+   hideDashboardDataWait();
+   const updated=document.getElementById('updated');
+   if(updated)updated.textContent='Dados locais exibidos · atualização completa pendente';
+   toast('A atualização complementar falhou após três tentativas. A carteira foi liberada com os últimos dados locais disponíveis.');
+  }else{
+   const title=document.getElementById('dashboardDataWaitTitle');
+   const message=document.getElementById('dashboardDataWaitMessage');
+   const retry=document.getElementById('dashboardDataWaitRetry');
+   if(title)title.textContent='Atualização pendente';
+   if(message)message.textContent='Não foi possível concluir a atualização. Verifique os logs do servidor e tente novamente manualmente.';
+   if(retry)retry.style.display='inline-flex';
+  }
+  return;
+ }
  if(showWait)setDashboardDataWait('Estamos concluindo a atualização. Uma nova tentativa será feita automaticamente.');
  else{
   const updated=document.getElementById('updated');

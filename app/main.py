@@ -371,6 +371,10 @@ def init_api_state_db():
             CREATE TABLE IF NOT EXISTS api_state_meta (
               key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT ''
             );
+            CREATE TABLE IF NOT EXISTS api_sync_leases (
+              lock_name TEXT PRIMARY KEY, owner TEXT NOT NULL, acquired_at REAL NOT NULL,
+              expires_at REAL NOT NULL
+            );
         ''')
 
         # CREATE TABLE IF NOT EXISTS does not upgrade a database created by an
@@ -1015,6 +1019,72 @@ def _brapi_get(url, params=None, headers=None, timeout=12, cache_ttl=None, stale
                          cache_ttl=float(cache_ttl), stale_ttl=float(stale_ttl), budgeted=True)
 
 
+def _acquire_api_sync_lease(lock_name, owner, ttl_seconds=1800):
+    # Acquire a cross-worker lease for a long-running provider synchronization.
+    connection = None
+    now = time.time()
+    try:
+        connection = _api_cache_connection()
+        connection.execute('BEGIN IMMEDIATE')
+        row = connection.execute(
+            'SELECT owner,expires_at FROM api_sync_leases WHERE lock_name=?',
+            (str(lock_name),)
+        ).fetchone()
+        if row and float(row['expires_at'] or 0) > now and str(row['owner']) != str(owner):
+            connection.rollback()
+            return False
+        connection.execute(
+            '''INSERT INTO api_sync_leases(lock_name,owner,acquired_at,expires_at) VALUES(?,?,?,?)
+               ON CONFLICT(lock_name) DO UPDATE SET owner=excluded.owner,
+                 acquired_at=excluded.acquired_at,expires_at=excluded.expires_at''',
+            (str(lock_name), str(owner), now, now + max(60, int(ttl_seconds)))
+        )
+        connection.commit()
+        return True
+    except sqlite3.Error as exc:
+        if connection is not None:
+            try: connection.rollback()
+            except sqlite3.Error: pass
+        app.logger.warning('Não foi possível reservar sincronização %s: %s', lock_name, exc)
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _renew_api_sync_lease(lock_name, owner, ttl_seconds=1800):
+    connection = None
+    now = time.time()
+    try:
+        connection = _api_cache_connection()
+        cursor = connection.execute(
+            'UPDATE api_sync_leases SET expires_at=? WHERE lock_name=? AND owner=?',
+            (now + max(60, int(ttl_seconds)), str(lock_name), str(owner))
+        )
+        connection.commit()
+        return cursor.rowcount == 1
+    except sqlite3.Error as exc:
+        app.logger.warning('Não foi possível renovar sincronização %s: %s', lock_name, exc)
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _release_api_sync_lease(lock_name, owner):
+    connection = None
+    try:
+        connection = _api_cache_connection()
+        connection.execute('DELETE FROM api_sync_leases WHERE lock_name=? AND owner=?',
+                           (str(lock_name), str(owner)))
+        connection.commit()
+    except sqlite3.Error as exc:
+        app.logger.warning('Não foi possível liberar sincronização %s: %s', lock_name, exc)
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def _api_cache_cleanup():
     global _API_CACHE_LAST_CLEANUP
     now = time.time()
@@ -1028,6 +1098,7 @@ def _api_cache_cleanup():
         connection.execute('DELETE FROM api_response_cache WHERE stale_until<?', (now,))
         connection.execute('DELETE FROM api_request_log WHERE requested_at<?', (now - 40 * 86400,))
         connection.execute('DELETE FROM api_provider_state_scoped WHERE cooldown_until<?', (now - 30 * 86400,))
+        connection.execute('DELETE FROM api_sync_leases WHERE expires_at<?', (now,))
         connection.commit()
         _API_CACHE_LAST_CLEANUP = now
     except sqlite3.Error as exc:
@@ -1133,8 +1204,8 @@ def security_headers(response):
 
 def db():
     if 'db' not in g:
-        g.db = sqlite3.connect(DB_PATH, timeout=15)
-        g.db.execute('PRAGMA busy_timeout=15000')
+        g.db = sqlite3.connect(DB_PATH, timeout=30)
+        g.db.execute('PRAGMA busy_timeout=30000')
         g.db.execute('PRAGMA journal_mode=WAL')
         g.db.execute('PRAGMA synchronous=NORMAL')
         g.db.row_factory = sqlite3.Row
@@ -2481,7 +2552,7 @@ def _pluggy_import_investment_transaction(item_id, investment, movement, now_tex
             'SELECT external_id FROM pluggy_imported_events WHERE external_id=?', (external_id,)
         ).fetchone()
         duplicate = db().execute(
-            """SELECT id FROM proventos WHERE UPPER(ticker)=?
+            """SELECT id,valor_total,data FROM proventos WHERE UPPER(ticker)=?
                AND date(data) BETWEEN date(?,'-3 day') AND date(?,'+3 day')
                AND ABS(valor_total-?)<=MAX(0.05,?*0.01) LIMIT 1""",
             (ticker, trade_date, trade_date, amount, amount)
@@ -2492,7 +2563,18 @@ def _pluggy_import_investment_transaction(item_id, investment, movement, now_tex
                AND ABS(valor_total-?)<=MAX(0.05,?*0.01) LIMIT 1""",
             (ticker, trade_date, trade_date, amount, amount)
         ).fetchone()
-        if already_imported or duplicate or api_duplicate:
+        if already_imported:
+            state = 'provento_duplicado_ignorado'
+        elif duplicate or api_duplicate:
+            # Even when the economic row already exists from B3/manual/BRAPI,
+            # Pluggy must retain its own confirmation so paid totals use Pluggy only.
+            target_id = int(duplicate['id']) if duplicate else None
+            db().execute(
+                """INSERT OR IGNORE INTO pluggy_imported_events
+                   (external_id,event_type,ticker,event_date,amount,target_id,import_state,created_at)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (external_id, 'provento', ticker, trade_date, amount, target_id, 'matched_existing', now_text)
+            )
             state = 'provento_duplicado_ignorado'
         else:
             cursor = db().execute(
@@ -2761,6 +2843,8 @@ def _pluggy_sync_impl():
     try:
         _pluggy_api_key()
         summary['b3_duplicates_reconciled'] = _reconcile_existing_pluggy_b3_duplicates()
+        # Never carry a financial write transaction into a network request.
+        db().commit()
         for local_item in items:
             item_id = local_item['item_id']
             item = _pluggy_request('GET', '/items/' + item_id)
@@ -2773,6 +2857,7 @@ def _pluggy_sync_impl():
                  str(item.get('status') or ''), str(item.get('consentExpiresAt') or ''),
                  now_text, item_id)
             )
+            db().commit()
             for investment in investments:
                 investment_id = str(investment.get('id') or '')
                 if not investment_id: continue
@@ -2790,14 +2875,17 @@ def _pluggy_sync_impl():
                      float(investment.get('balance') or 0),float(investment.get('value') or 0),
                      str(investment.get('status') or ''),json.dumps(investment,ensure_ascii=False),now_text)
                 )
+                # The following pagination call may take seconds; commit first.
+                db().commit()
                 summary['investments'] += 1
                 if _refine_pluggy_asset_type(investment) == 'outros':
                     summary['warnings'].append(
                         'Tipo de investimento não reconhecido pela classificação automática: ' +
                         str(investment.get('name') or investment.get('type') or investment_id)[:90]
                     )
+                db().commit()
                 inv_transactions = _pluggy_results('/investments/' + investment_id + '/transactions')
-                for movement in inv_transactions:
+                for movement_index, movement in enumerate(inv_transactions, start=1):
                     summary['investment_transactions'] += 1
                     external_id = str(movement.get('id') or '').strip()
                     prior = db().execute(
@@ -2826,6 +2914,10 @@ def _pluggy_sync_impl():
                     elif state == 'matched_existing': summary['operations_matched'] += 1
                     elif state == 'imported_provento': summary['dividends_imported'] += 1
                     elif state == 'provento_duplicado_ignorado': summary['duplicates_ignored'] += 1
+                    # Bound write-lock duration even for investments with long histories.
+                    if movement_index % 50 == 0:
+                        db().commit()
+                db().commit()
             pluggy_snapshot_date = snapshot_date_for() or datetime.now(TZ).date().isoformat()
             snapshot_fixed, snapshot_market, skipped_fixed = _pluggy_fixed_income_snapshot_rows(
                 item_id, investments, pluggy_snapshot_date, now_text
@@ -2833,6 +2925,8 @@ def _pluggy_sync_impl():
             summary['fixed_income_positions'] = summary.get('fixed_income_positions', 0) + snapshot_fixed
             summary['market_positions'] = summary.get('market_positions', 0) + snapshot_market
             summary['fixed_income_skipped_missing_data'] = summary.get('fixed_income_skipped_missing_data', 0) + skipped_fixed
+            # Snapshot writes are local-only and are committed before marking the item synced.
+            db().commit()
             if skipped_fixed:
                 summary['warnings'].append(f'{skipped_fixed} posição(ões) de renda fixa não importada(s): faltam indexador ou taxa contratual.')
             db().execute('UPDATE pluggy_items SET last_synced_at=?,updated_at=? WHERE item_id=?',
@@ -4126,29 +4220,72 @@ def next_b3_session(requested):
     return candidate
 
 
+DUE_OPERATIONS_LOCK = threading.Lock()
+
+
 def process_due_operations():
-    now=datetime.now(TZ).isoformat(timespec='minutes')
-    con=db()
-    con.execute("UPDATE operacoes SET status='executada', data=substr(data_execucao,1,10) WHERE status='agendada' AND data_execucao<=?",(now,))
-    con.commit()
+    """Promote due operations only when needed, in a short isolated transaction.
+
+    This routine is called by request handlers and the scheduler. It uses its own
+    connection so it never commits unrelated work from the Flask request, checks
+    for due rows before taking a write lock, and treats transient lock contention
+    as a deferred promotion rather than failing the dashboard.
+    """
+    if not DUE_OPERATIONS_LOCK.acquire(blocking=False):
+        return 0
+    connection = None
+    try:
+        now = datetime.now(TZ).isoformat(timespec='seconds')
+        connection = sqlite3.connect(DB_PATH, timeout=8)
+        connection.execute('PRAGMA busy_timeout=8000')
+        connection.execute('PRAGMA synchronous=NORMAL')
+        if not connection.execute(
+            "SELECT 1 FROM operacoes WHERE status='agendada' AND data_execucao<=? LIMIT 1",
+            (now,)
+        ).fetchone():
+            return 0
+        connection.execute('BEGIN IMMEDIATE')
+        if not connection.execute(
+            "SELECT 1 FROM operacoes WHERE status='agendada' AND data_execucao<=? LIMIT 1",
+            (now,)
+        ).fetchone():
+            connection.commit()
+            return 0
+        cursor = connection.execute(
+            "UPDATE operacoes SET status='executada', data=substr(data_execucao,1,10) "
+            "WHERE status='agendada' AND data_execucao<=?", (now,)
+        )
+        changed = max(0, int(cursor.rowcount or 0))
+        connection.commit()
+        if changed:
+            CACHE.clear()
+            PORTFOLIO_HISTORY_CACHE.clear()
+        return changed
+    except sqlite3.OperationalError as exc:
+        if connection is not None:
+            try: connection.rollback()
+            except sqlite3.Error: pass
+        if 'locked' in str(exc).lower() or 'busy' in str(exc).lower():
+            app.logger.warning('Promoção de operações agendadas adiada por concorrência SQLite: %s', exc)
+            return 0
+        app.logger.exception('Falha ao promover operações agendadas: %s', exc)
+        return 0
+    except Exception as exc:
+        if connection is not None:
+            try: connection.rollback()
+            except sqlite3.Error: pass
+        app.logger.exception('Falha inesperada ao promover operações agendadas: %s', exc)
+        return 0
+    finally:
+        if connection is not None:
+            connection.close()
+        DUE_OPERATIONS_LOCK.release()
 
 
 def scheduler_loop():
-    # Promove operações agendadas automaticamente quando chega o horário previsto.
+    """Single code path for automatic promotion; no unconditional UPDATEs."""
     while True:
-        con = None
-        try:
-            now=datetime.now(TZ).isoformat(timespec='minutes')
-            con=sqlite3.connect(DB_PATH,timeout=10)
-            con.execute("UPDATE operacoes SET status='executada', data=substr(data_execucao,1,10) WHERE status='agendada' AND data_execucao<=?",(now,))
-            con.commit()
-        except Exception:
-            if con is not None:
-                try: con.rollback()
-                except Exception: pass
-        finally:
-            if con is not None:
-                con.close()
+        process_due_operations()
         time.sleep(30)
 
 
@@ -5382,7 +5519,42 @@ def _fetch_brapi_dividend_events(asset_type, symbols, start_date):
 
 
 
+PROVENTOS_SYNC_LOCK = threading.Lock()
+
+
 def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
+    """Run at most one dividend sync across threads/workers; duplicates reuse current state."""
+    owner = f"{os.getpid()}:{threading.get_ident()}:{uuid.uuid4().hex}"
+    if not PROVENTOS_SYNC_LOCK.acquire(blocking=False):
+        cached = PROVENTOS_SYNC_CACHE.get('result')
+        if cached:
+            return {**cached, 'em_andamento': True,
+                    'mensagem': 'A sincronização de proventos já está em andamento; exibindo o último resultado disponível.'}
+        return {'ok': True, 'em_andamento': True, 'importados': 0, 'ignorados': 0, 'erros': [],
+                'mensagem': 'A sincronização de proventos já está em andamento.'}
+    lease_acquired = _acquire_api_sync_lease('brapi_proventos_sync', owner, ttl_seconds=1800)
+    if not lease_acquired:
+        PROVENTOS_SYNC_LOCK.release()
+        cached = PROVENTOS_SYNC_CACHE.get('result')
+        if cached:
+            return {**cached, 'em_andamento': True,
+                    'mensagem': 'Outra instância está sincronizando proventos; exibindo o último resultado disponível.'}
+        return {'ok': True, 'em_andamento': True, 'importados': 0, 'ignorados': 0, 'erros': [],
+                'mensagem': 'Outra instância está sincronizando proventos. Nenhuma chamada duplicada foi realizada.'}
+    try:
+        return _sync_brapi_proventos_impl(force=force, quote_items=quote_items,
+                                           active_items=active_items, lease_owner=owner)
+    except sqlite3.OperationalError as exc:
+        app.logger.exception('Falha SQLite durante a sincronização de proventos: %s', exc)
+        return {'ok': False, 'importados': 0, 'ignorados': 0,
+                'erros': [safe_error_text(exc, 120)],
+                'mensagem': 'A sincronização de proventos foi adiada por concorrência no banco. Os dados já gravados foram preservados.'}
+    finally:
+        _release_api_sync_lease('brapi_proventos_sync', owner)
+        PROVENTOS_SYNC_LOCK.release()
+
+
+def _sync_brapi_proventos_impl(force=False, quote_items=None, active_items=None, lease_owner=None):
     """Sincroniza proventos apenas para posições atualmente mantidas. Idempotente e limitada por cache."""
     now_ts = time.time()
     if active_items is None:
@@ -5444,6 +5616,8 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
     quote_symbols = set(types)
     quote_symbols.update(str(item.get('ticker') or '').upper() for item in (quote_items or []))
     for ticker in sorted(symbol for symbol in quote_symbols if symbol):
+        if lease_owner:
+            _renew_api_sync_lease('brapi_proventos_sync', lease_owner, ttl_seconds=1800)
         kind = types.get(ticker, 'outros')
         if kind not in stock_types and kind not in {'fii', 'fiis', 'fundo_imobiliario', 'fundos_imobiliarios'}:
             continue
@@ -5476,6 +5650,7 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
         elif epoch > 0:
             fresh_source_epochs.append(epoch)
     conn = db()
+    pending_writes = 0
     for event, source_type in fetched:
         ticker = str(event.get('symbol') or event.get('requestedSymbol') or '').strip().upper()
         if not ticker or ticker not in types:
@@ -5520,7 +5695,7 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
             continue
         raw_label = str(event.get('label') or ('RENDIMENTO' if source_type == 'fii' else 'PROVENTO')).strip().upper()
         label = 'JCP' if 'JCP' in raw_label or 'INTEREST' in raw_label else ('RENDIMENTO' if 'REND' in raw_label else 'DIVIDENDO')
-        status = 'Pago' if payment_date and date.fromisoformat(payment_date) < today else 'A receber'
+        status = 'A receber'  # Only Pluggy can confirm that the payment was actually received.
         # Data de pagamento pode ser corrigida pela fonte; não faz parte da chave.
         event_anchor = record_date or payment_date or approved_date or 'sem-data'
         event_key = '|'.join((ticker, label, event_anchor, f'{rate:.10f}'))
@@ -5563,7 +5738,14 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
             valor_total=excluded.valor_total,status=excluded.status,remarks=excluded.remarks,sincronizado_em=excluded.sincronizado_em
         ''', (event_key,ticker,types[ticker],label,approved_date,record_date,ex_date,payment_date,rate,qty,total,status,remarks_text,synced_at))
         imported += 1
+        pending_writes += 1
+        if pending_writes >= 25:
+            conn.commit()
+            pending_writes = 0
 
+    # Finish the current bounded batch before calculating synchronization metadata.
+    if pending_writes:
+        conn.commit()
     previous_sync_row = conn.execute("SELECT valor FROM integracao_estado WHERE chave='brapi_proventos_ultima_sincronizacao'").fetchone()
     previous_sync = str(previous_sync_row['valor']) if previous_sync_row else ''
     data_is_stale = bool(stale_sources or stale_events)
@@ -5595,90 +5777,156 @@ def _is_income_event(event_type):
 
 
 def _received_proventos_records(active_tickers=None):
-    """Return paid receipts only, combining manual/B3/Pluggy records and paid API events."""
-    active_set = None if active_tickers is None else {str(t).upper() for t in active_tickers}
+    """Return payments confirmed by Pluggy only; other providers never confirm a payment."""
+    active_set = None if active_tickers is None else {str(t).strip().upper() for t in active_tickers}
     if active_set is not None and not active_set:
         return []
     today = datetime.now(TZ).date()
-    pluggy_ids = {int(r['target_id']) for r in db().execute(
-        "SELECT target_id FROM pluggy_imported_events WHERE event_type='provento' AND target_id IS NOT NULL"
-    ).fetchall()}
-    b3_ids = {int(r['registro_id']) for r in db().execute(
-        "SELECT registro_id FROM b3_importados WHERE lower(categoria)='provento' AND registro_id IS NOT NULL"
-    ).fetchall()}
-    origin_by_id = {ident: 'Pluggy' for ident in pluggy_ids}
-    for ident in b3_ids:
-        origin_by_id.setdefault(ident, 'B3')
-
+    rows = db().execute(
+        """SELECT transaction_id,ticker,transaction_date,description,movement_type,
+                  amount,import_state,raw_json
+           FROM pluggy_investment_transactions
+           WHERE import_state IN ('imported_provento','provento_duplicado_ignorado')
+           ORDER BY transaction_date,transaction_id"""
+    ).fetchall()
     records = []
-    seen_fingerprints = set()
-    rows = db().execute('SELECT id,ticker,valor_total,data FROM proventos ORDER BY data,id').fetchall()
+    seen_ids = set()
     for raw in rows:
         row = dict(raw)
-        payment_date = _api_date(row.get('data'))
-        if not payment_date:
+        external_id = str(row.get('transaction_id') or '').strip()
+        if not external_id or external_id in seen_ids:
             continue
-        try:
-            if date.fromisoformat(payment_date[:10]) > today:
-                continue
-        except ValueError:
-            continue
-        ticker = str(row.get('ticker') or '').upper()
-        if active_set is not None and ticker not in active_set:
-            continue
-        amount = round(float(row.get('valor_total') or 0), 2)
-        if not math.isfinite(amount) or amount <= 0:
-            continue
-        key = (ticker, payment_date[:10], amount)
-        origin = origin_by_id.get(int(row['id']), 'Manual')
-        # Exact same payment imported from multiple origins is counted once.
-        if key in seen_fingerprints:
-            continue
-        seen_fingerprints.add(key)
-        records.append({
-            'ticker': ticker, 'tipo': 'Provento', 'tipo_ativo': typesafe_asset_type(ticker),
-            'status': 'Pago', 'data_com': None, 'data_pagamento': payment_date[:10],
-            'quantidade': None, 'valor_por_ativo': None, 'valor_total': amount,
-            'origem': origin, 'tipo_evento': 'PROVENTO'
-        })
-
-    api_rows = db().execute(
-        "SELECT event_key,ticker,tipo_ativo,tipo_evento,data_com,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks "
-        "FROM proventos_api WHERE lower(trim(status))='pago' ORDER BY data_pagamento,event_key"
-    ).fetchall()
-    for raw in api_rows:
-        row = dict(raw)
-        payment_date = _api_date(row.get('data_pagamento'))
-        if not payment_date:
-            continue
-        try:
-            if date.fromisoformat(payment_date[:10]) > today:
-                continue
-        except ValueError:
-            continue
-        ticker = str(row.get('ticker') or '').upper()
+        seen_ids.add(external_id)
+        ticker = str(row.get('ticker') or '').strip().upper()
         if not ticker or (active_set is not None and ticker not in active_set):
             continue
-        amount = round(float(row.get('valor_total') or 0), 2)
-        if not math.isfinite(amount) or amount <= 0 or not _is_income_event(row.get('tipo_evento')):
+        payment_date = _api_date(row.get('transaction_date'))
+        if not payment_date:
             continue
-        fingerprint = (ticker, payment_date[:10], amount)
-        if fingerprint in seen_fingerprints:
+        try:
+            paid_on = date.fromisoformat(payment_date[:10])
+        except ValueError:
             continue
-        seen_fingerprints.add(fingerprint)
+        if paid_on > today:
+            continue
+        movement_type = str(row.get('movement_type') or '').upper()
+        description = str(row.get('description') or '').upper()
+        if 'AMORTIZA' in movement_type or 'AMORTIZA' in description:
+            continue
+        try:
+            amount = abs(float(row.get('amount') or 0))
+        except (TypeError, ValueError):
+            amount = 0.0
+        if (not math.isfinite(amount) or amount <= 0) and row.get('raw_json'):
+            try:
+                raw_movement = json.loads(row['raw_json'])
+            except (TypeError, ValueError):
+                raw_movement = {}
+            try:
+                amount = abs(float(raw_movement.get('amount') or raw_movement.get('netAmount') or 0))
+            except (TypeError, ValueError):
+                amount = 0.0
+        if not math.isfinite(amount) or amount <= 0:
+            continue
+        if ('JCP' in movement_type or 'INTEREST_ON_EQUITY' in movement_type
+                or 'JCP' in description or 'JUROS SOBRE CAPITAL' in description
+                or 'JUROS S/ CAPITAL' in description):
+            event_type = 'JCP'
+        elif ('RENDIMENTO' in movement_type or 'RENDIMENTO' in description
+              or 'COUPON' in movement_type or 'COUPON' in description or 'CUPOM' in description):
+            event_type = 'RENDIMENTO'
+        elif 'DIVIDEND' in movement_type or 'DIVIDEND' in description or 'DIVIDENDO' in description:
+            event_type = 'DIVIDENDO'
+        elif movement_type == 'INTEREST' and typesafe_asset_type(ticker) in {'fii', 'fiis', 'fundo_imobiliario', 'fundos_imobiliarios'}:
+            event_type = 'RENDIMENTO'
+        elif movement_type == 'INTEREST':
+            event_type = 'PROVENTO'
+        else:
+            event_type = _provento_event_kind(row.get('movement_type') or row.get('description'), ticker)
         records.append({
-            'ticker': ticker, 'tipo': 'Provento',
-            'tipo_ativo': row.get('tipo_ativo') or typesafe_asset_type(ticker),
-            'status': 'Pago', 'data_com': row.get('data_com'),
-            'data_pagamento': payment_date[:10],
-            'quantidade': float(row.get('quantidade') or 0) or None,
-            'valor_por_ativo': float(row.get('valor_por_ativo') or 0) or None,
-            'valor_total': amount, 'origem': 'BRAPI',
-            'tipo_evento': row.get('tipo_evento') or 'PROVENTO',
-            'remarks': row.get('remarks') or '', 'event_key': row.get('event_key')
+            'ticker': ticker, 'tipo': event_type, 'tipo_ativo': typesafe_asset_type(ticker),
+            'status': 'Pago', 'data_com': None, 'data_pagamento': paid_on.isoformat(),
+            'quantidade': None, 'valor_por_ativo': None, 'valor_total': round(amount, 2),
+            'origem': 'Pluggy', 'tipo_evento': event_type, 'external_id': external_id,
         })
-    records.sort(key=lambda item: (str(item.get('data_pagamento') or ''), str(item.get('ticker') or '')))
+    records.sort(key=lambda item: (str(item.get('data_pagamento') or ''),
+                                   str(item.get('ticker') or ''), str(item.get('external_id') or '')))
     return records
+
+
+def _provento_event_kind(value, ticker=''):
+    """Normalize provider labels so the same announced event deduplicates across APIs."""
+    text = unicodedata.normalize('NFKD', str(value or '')).encode('ascii', 'ignore').decode('ascii').upper()
+    if 'AMORTIZA' in text:
+        return 'AMORTIZACAO'
+    if 'JCP' in text or 'JUROS SOBRE CAPITAL' in text or 'INTEREST_ON_EQUITY' in text:
+        return 'JCP'
+    if 'REND' in text or 'COUPON' in text or 'COUPOM' in text:
+        return 'RENDIMENTO'
+    asset_type = typesafe_asset_type(ticker)
+    if 'DIVID' in text:
+        return 'RENDIMENTO' if asset_type in {'fii', 'fiis', 'fundo_imobiliario', 'fundos_imobiliarios'} else 'DIVIDENDO'
+    if asset_type in {'fii', 'fiis', 'fundo_imobiliario', 'fundos_imobiliarios'}:
+        return 'RENDIMENTO'
+    return 'DIVIDENDO'
+
+
+def _provento_same_payment(left, right, day_tolerance=3):
+    """Compare economic events across provider feeds without counting paid + pending twice."""
+    left_ticker = str(left.get('ticker') or '').strip().upper()
+    right_ticker = str(right.get('ticker') or '').strip().upper()
+    if not left_ticker or left_ticker != right_ticker:
+        return False
+    left_date = _api_date(left.get('data_pagamento'))
+    right_date = _api_date(right.get('data_pagamento'))
+    if not left_date or not right_date:
+        return False
+    try:
+        delta = abs((date.fromisoformat(left_date[:10]) - date.fromisoformat(right_date[:10])).days)
+        left_amount = round(float(left.get('valor_total') or 0), 2)
+        right_amount = round(float(right.get('valor_total') or 0), 2)
+    except (TypeError, ValueError):
+        return False
+    if delta > day_tolerance or left_amount <= 0 or right_amount <= 0:
+        return False
+    if abs(left_amount - right_amount) > max(0.05, max(left_amount, right_amount) * 0.01):
+        return False
+    left_kind = _provento_event_kind(left.get('tipo_evento') or left.get('tipo'), left_ticker)
+    right_kind = _provento_event_kind(right.get('tipo_evento') or right.get('tipo'), right_ticker)
+    return left_kind == right_kind
+
+
+def _dedupe_pending_proventos(upcoming, paid_records=None):
+    """Deduplicate all pending feeds and suppress events already confirmed by Pluggy."""
+    paid = list(paid_records or [])
+    result = []
+    seen = set()
+    for raw in upcoming or []:
+        row = dict(raw)
+        row['status'] = 'A receber'
+        if not _is_income_event(row.get('tipo_evento') or row.get('tipo')):
+            continue
+        if any(_provento_same_payment(row, paid_row) for paid_row in paid):
+            continue
+        ticker = str(row.get('ticker') or '').strip().upper()
+        payment_date = _api_date(row.get('data_pagamento'))
+        try:
+            amount = round(float(row.get('valor_total') or 0), 2)
+        except (TypeError, ValueError):
+            continue
+        if not ticker or not payment_date or not math.isfinite(amount) or amount <= 0:
+            continue
+        kind = _provento_event_kind(row.get('tipo_evento') or row.get('tipo'), ticker)
+        fingerprint = (ticker, payment_date[:10], kind, amount)
+        if fingerprint in seen or any(_provento_same_payment(row, accepted, day_tolerance=0) for accepted in result):
+            continue
+        seen.add(fingerprint)
+        row['ticker'] = ticker
+        row['data_pagamento'] = payment_date[:10]
+        row['tipo_evento'] = kind
+        result.append(row)
+    result.sort(key=lambda item: (str(item.get('data_pagamento') or ''), str(item.get('ticker') or ''), str(item.get('tipo_evento') or '')))
+    return result
 
 
 def _confirmed_received_proventos(records, as_of=None):
@@ -6872,12 +7120,23 @@ def dashboard():
                 'mensagem': 'Valores atuais conferidos. Histórico e sincronização complementar seguem em segundo plano.'
             }
         else:
-            sync_status = sync_brapi_proventos(
-                force=False,
-                quote_items=portfolio_before_sync.get('itens', []),
-                active_items=portfolio_before_sync.get('itens', [])
-            )
-        portfolio = carteira().json
+            try:
+                sync_status = sync_brapi_proventos(
+                    force=False,
+                    quote_items=portfolio_before_sync.get('itens', []),
+                    active_items=portfolio_before_sync.get('itens', [])
+                )
+            except Exception as sync_exc:
+                app.logger.exception('Sincronização complementar de proventos adiada; mantendo o dashboard: %s', sync_exc)
+                sync_status = {'ok': False, 'adiada': True,
+                               'mensagem': 'A atualização de proventos foi adiada. Os valores atuais da carteira foram preservados.'}
+        try:
+            portfolio = carteira().json
+        except sqlite3.OperationalError as portfolio_exc:
+            if 'locked' not in str(portfolio_exc).lower() and 'busy' not in str(portfolio_exc).lower():
+                raise
+            app.logger.warning('Leitura final da carteira adiada por concorrência SQLite; usando o retrato anterior à sincronização: %s', portfolio_exc)
+            portfolio = portfolio_before_sync
     else:
         portfolio = carteira(use_cached_quotes=True).json
         sync_status = PROVENTOS_SYNC_CACHE.get('result') or {
@@ -6891,7 +7150,7 @@ def dashboard():
     received_records = _confirmed_received_proventos(_received_proventos_records(active_tickers), as_of=today)
     if active_tickers:
         marks = ','.join('?' for _ in active_tickers)
-        pending_rows = [dict(r) for r in db().execute("SELECT * FROM proventos_api WHERE status='A receber' AND UPPER(ticker) IN (" + marks + ") ORDER BY data_pagamento,ticker", tuple(sorted(active_tickers))).fetchall()]
+        pending_rows = [dict(r) for r in db().execute("SELECT * FROM proventos_api WHERE lower(trim(status)) IN ('a receber','pago') AND UPPER(ticker) IN (" + marks + ") ORDER BY data_pagamento,ticker", tuple(sorted(active_tickers))).fetchall()]
         manual_rows = [dict(r) for r in db().execute('SELECT * FROM proventos WHERE UPPER(ticker) IN (' + marks + ') ORDER BY data', tuple(sorted(active_tickers))).fetchall()]
     else:
         pending_rows = []
@@ -6917,7 +7176,6 @@ def dashboard():
     # Pagamentos futuros já declarados. Prioriza lastDatePrior; quando a cotação
     # antiga só informa exDate, a data-com aproximada e a quantidade são sinalizadas.
     upcoming = []
-    manual_keys = {(str(row['ticker']).upper(), str(row['data'])[:10], round(float(row['valor_total'] or 0), 2)) for row in manual_rows}
     # Lançamentos manuais com data futura representam proventos anunciados,
     # não recebidos. Preserve-os como A receber em vez de os misturar ao histórico pago.
     for row in manual_rows:
@@ -6930,31 +7188,24 @@ def dashboard():
                 'tipo_evento':'PROVENTO','remarks':'Data e valor informados manualmente.'
             })
     for row in pending_rows:
-        key=(str(row['ticker']).upper(),str(row['data_pagamento'])[:10],round(float(row['valor_total'] or 0),2))
-        if key in manual_keys:
-            continue
+        provider_was_paid = str(row.get('status') or '').strip().casefold() == 'pago'
+        remarks = str(row.get('remarks') or '')
+        if provider_was_paid:
+            remarks = (remarks + ' Data de pagamento informada pela fonte externa; recebimento ainda não confirmado pela Pluggy.').strip()
         upcoming.append({
             'ticker':row['ticker'],'tipo':row['tipo_evento'],'tipo_ativo':row['tipo_ativo'],
             'status':'A receber','data_com':row['data_com'],'data_pagamento':row['data_pagamento'],
             'quantidade':float(row['quantidade'] or 0),'valor_por_ativo':float(row['valor_por_ativo'] or 0),
-            'valor_total':float(row['valor_total'] or 0),'origem':('Fonte histórica' if 'Alpha Vantage' in str(row.get('remarks') or '') else 'brapi'),'tipo_evento':row['tipo_evento'],
-            'remarks':row.get('remarks','')
+            'valor_total':float(row['valor_total'] or 0),'origem':('Fonte histórica' if 'Alpha Vantage' in str(row.get('remarks') or '') else 'API externa'),'tipo_evento':row['tipo_evento'],
+            'remarks':remarks
         })
 
     # Fallback visual da versão estável: eventos anunciados vindos da cotação v1
     # aparecem mesmo se o módulo v2 de dividendos não estiver habilitado no plano.
     # Esses itens são deduplicados com o histórico sincronizado e não substituem
     # os pagamentos confirmados do banco.
-    pending_keys = {
-        (str(item.get('ticker') or '').upper(), str(item.get('data_pagamento') or '')[:10],
-         str(item.get('tipo_evento') or item.get('tipo') or '').upper(), round(float(item.get('valor_por_ativo') or 0), 8))
-        for item in upcoming
-    }
-    pending_amount_keys = {(str(item.get('ticker') or '').upper(), str(item.get('data_pagamento') or '')[:10], round(float(item.get('valor_total') or 0), 2)) for item in upcoming}
-    manual_pending_keys = {
-        (str(row['ticker']).upper(), str(row['data'])[:10], round(float(row['valor_total'] or 0), 2))
-        for row in manual_rows if str(row.get('data') or '')[:10] > today.isoformat()
-    }
+    # A cotação v1 também pode anunciar pagamentos futuros. A deduplicação
+    # unificada é feita depois, preservando tipos diferentes como JCP e dividendo.
     for item in portfolio.get('itens', []):
         ticker = str(item.get('ticker') or '').upper()
         kind = str(item.get('tipo') or '').lower()
@@ -6993,9 +7244,6 @@ def dashboard():
             if quantity <= 1e-8:
                 continue
             event_type = str(event.get('label') or event.get('type') or ('RENDIMENTO' if kind == 'fii' else 'PROVENTO')).upper()
-            dedupe = (ticker, payment_date, event_type, round(rate, 8))
-            if dedupe in pending_keys or (ticker, payment_date, round(quantity * rate, 2)) in manual_pending_keys or (ticker, payment_date, round(quantity * rate, 2)) in pending_amount_keys:
-                continue
             remarks = str(event.get('remarks') or '')
             if estimated:
                 remarks = (remarks + ' Data-com estimada pela véspera do exDate; confira o informe oficial.').strip()
@@ -7010,8 +7258,10 @@ def dashboard():
                 'valor_total':round(quantity*rate,2),'origem':'Cotação v1','tipo_evento':event_type,
                 'remarks':remarks
             })
-            pending_keys.add(dedupe)
-            pending_amount_keys.add((ticker, payment_date, round(quantity * rate, 2)))
+
+    # Pluggy is the single source of truth for paid events. All other providers
+    # can only contribute pending/announced events, deduplicated across feeds.
+    upcoming = _dedupe_pending_proventos(upcoming, detailed)
 
     monthly_values = [{'mes':m,'recebido':round(received_by_month.get(m,0),2)} for m in month_keys]
     total_12m = round(sum(received_by_month.get(month, 0.0) for month in month_keys), 2)
@@ -7104,7 +7354,7 @@ def dashboard():
         integridade_dados={
             'cotacoes': {item['ticker']: {'fonte': item.get('cotacao_origem'), 'disponivel': bool(item.get('cotacao_disponivel'))} for item in portfolio.get('itens', [])},
             'historico_precos': performance.get('fontes_historico', {}),
-            'proventos': {'fonte_canonica': 'brapi + lançamentos manuais/B3', 'deduplicacao': 'chave de evento + ticker/data de pagamento/valor', 'sincronizacao': sync_status}
+            'proventos': {'fonte_canonica': 'Pluggy para recebidos; fontes externas habilitadas para a receber', 'fonte_recebidos': 'Pluggy', 'fontes_a_receber': 'Fontes externas que disponibilizam calendário de proventos (BRAPI v2 e eventos da cotação v1 atualmente habilitados) + lançamentos manuais futuros', 'deduplicacao': 'ticker + tipo de evento + data de pagamento + valor, com tolerância para divergência entre fontes', 'sincronizacao': sync_status}
         },
         proventos_dashboard={
             'mensal':monthly_values,'total_12m':total_12m,'total_confirmado_12m':total_confirmed_12m,'media_mensal':round(total_12m/12,2),

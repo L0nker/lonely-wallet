@@ -621,21 +621,44 @@ class RegressionTests(unittest.TestCase):
             con.commit()
             self.assertTrue(wallet.sale_breaks_future_position('DELETEBUY4','2026-02-01',0.0,{int(purchase.lastrowid)}))
 
-    def test_paid_api_proventos_are_included_and_future_receipts_excluded(self):
+    def test_only_pluggy_confirms_paid_proventos_and_other_apis_remain_pending(self):
         with wallet.app.app_context():
             con = wallet.db()
             con.execute("DELETE FROM proventos_api WHERE upper(ticker)='PROVTEST4'")
             con.execute("DELETE FROM proventos WHERE upper(ticker)='PROVTEST4'")
+            con.execute("DELETE FROM pluggy_investment_transactions WHERE upper(ticker)='PROVTEST4'")
             stamp = wallet.datetime.now(wallet.TZ).isoformat(timespec='seconds')
             con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        ('PROVTEST4:PAID','PROVTEST4','fii','Rendimento','2026-01-10','2026-01-11','2026-01-15',1.0,20,20.0,'Pago','Teste',stamp))
+                        ('PROVTEST4:PAID','PROVTEST4','fii','Rendimento','2026-01-10','2026-01-11','2026-01-15',1.0,20,20.0,'Pago','BRAPI',stamp))
             con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        ('PROVTEST4:FUTURE','PROVTEST4','fii','Rendimento','2026-12-10','2026-12-11','2026-12-15',1.0,20,20.0,'A receber','Teste',stamp))
+                        ('PROVTEST4:FUTURE','PROVTEST4','fii','Rendimento','2026-12-10','2026-12-11','2026-12-15',1.0,20,20.0,'A receber','Dados B3',stamp))
+            con.execute("INSERT INTO pluggy_investment_transactions(transaction_id,item_id,investment_id,ticker,transaction_date,description,movement_type,quantity,unit_value,amount,import_state,imported_operation_id,raw_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        ('pluggy-paid-provtest4','pluggy-item-test','pluggy-investment-test','PROVTEST4','2026-01-15','Rendimento de fundo imobiliário','INTEREST',0,0,20.0,'provento_duplicado_ignorado',None,'{}',stamp))
             con.commit()
             records = wallet._received_proventos_records(['PROVTEST4'])
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]['valor_total'], 20.0)
             self.assertEqual(records[0]['status'], 'Pago')
+            self.assertEqual(records[0]['origem'], 'Pluggy')
+            pending = [
+                {'ticker':'PROVTEST4','status':'A receber','data_pagamento':'2026-01-15','valor_total':20.0,'tipo_evento':'Rendimento','origem':'BRAPI'},
+                {'ticker':'PROVTEST4','status':'A receber','data_pagamento':'2026-12-15','valor_total':20.0,'tipo_evento':'Rendimento','origem':'Dados B3'},
+                {'ticker':'PROVTEST4','status':'A receber','data_pagamento':'2026-12-15','valor_total':20.0,'tipo_evento':'Rendimento','origem':'HG Brasil'},
+            ]
+            deduped = wallet._dedupe_pending_proventos(pending, records)
+            self.assertEqual(len(deduped), 1)
+            self.assertEqual(deduped[0]['origem'], 'Dados B3')
+
+    def test_api_marked_paid_does_not_become_confirmed_without_pluggy(self):
+        with wallet.app.app_context():
+            con = wallet.db()
+            con.execute("DELETE FROM proventos_api WHERE upper(ticker)='ONLYAPI4'")
+            con.execute("DELETE FROM pluggy_investment_transactions WHERE upper(ticker)='ONLYAPI4'")
+            stamp = wallet.datetime.now(wallet.TZ).isoformat(timespec='seconds')
+            con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        ('ONLYAPI4:PAID','ONLYAPI4','acao','Dividendo','2026-01-10','2026-01-11','2026-01-15',1.0,20,20.0,'Pago','Fonte externa',stamp))
+            con.commit()
+            self.assertEqual(wallet._received_proventos_records(['ONLYAPI4']), [])
 
     def test_confirmed_proventos_total_adds_only_announced_payments_within_next_12_months(self):
         as_of = datetime.date(2026, 11, 22)

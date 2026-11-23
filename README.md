@@ -302,3 +302,57 @@ O orçamento é uma proteção local, não uma leitura oficial da cota do proved
 - Build Docker real e validação final no ZimaOS não foram executados neste ambiente.
 
 **Atualização:** mantenha o volume `/DATA/AppData/lonely-wallet/data:/data`. Não apague `ativos.db`, `tokens.db` ou `api_state.db`. A atualização corrige o schema e a migração automaticamente, preservando os dados financeiros e o histórico de consumo.
+
+
+## Lonely Wallet v4.2.37
+
+### Estabilidade SQLite e sincronizações
+
+- Pluggy agora confirma gravações locais antes de realizar novas chamadas HTTP.
+- Operações importadas são confirmadas em lotes limitados, evitando transações financeiras abertas durante a paginação externa.
+- Promoção de operações agendadas utiliza conexão isolada, transação curta e verificação prévia de operações vencidas.
+- O agendador reutiliza a mesma rotina de promoção, sem `UPDATE` incondicional a cada 30 segundos.
+- Sincronização de proventos ganhou exclusão mútua local e lease persistente no `api_state.db`, evitando chamadas e gravações duplicadas entre threads/workers.
+- Gravações de proventos são confirmadas em lotes curtos.
+- Falhas de atualização complementar de proventos não derrubam a resposta do dashboard.
+- Após três tentativas de atualização completa, a interface libera o último estado local disponível e oferece tentativa manual, em vez de manter um bloqueio infinito.
+
+### Regra de origem dos proventos pagos
+
+- Proventos pagos passam a ser contabilizados exclusivamente a partir de eventos confirmados pela Pluggy (`pluggy_imported_events`).
+- Eventos B3, manuais e BRAPI continuam disponíveis como fontes de pagamentos a receber, mas não entram no total recebido sem confirmação Pluggy.
+- Quando a Pluggy confirma um evento já cadastrado por B3 ou manualmente, a confirmação externa é vinculada ao registro existente sem criar um segundo lançamento.
+
+### Atualização
+
+- Base: Lonely Wallet v4.2.36.
+- Não apagar bancos SQLite, tokens, chaves ou arquivos WAL.
+- Manter o volume `/DATA/AppData/lonely-wallet/data:/data`.
+- Reconstruir a imagem Docker para aplicar as alterações.
+
+
+## Lonely Wallet v4.2.37
+
+### Estabilidade SQLite e sincronizações
+
+- A sincronização Pluggy confirma as gravações locais antes de executar novas chamadas HTTP e grava as movimentações em lotes curtos.
+- A promoção de operações agendadas usa conexão SQLite isolada, verifica a existência de operações vencidas e evita `UPDATE` quando não há trabalho.
+- A sincronização de proventos possui exclusão mútua por thread e lease persistente no `api_state.db`, evitando execuções duplicadas entre workers.
+- As gravações de proventos são confirmadas em lotes curtos.
+- Falhas complementares de proventos ou bloqueios transitórios na leitura final não derrubam o dashboard quando existe um retrato anterior válido.
+- A interface limita as tentativas automáticas e libera o último estado local disponível após falhas repetidas.
+
+### Regra de origem dos proventos
+
+- **Pagos/recebidos:** contabilizados exclusivamente a partir de transações de proventos importadas pela Pluggy. Lançamentos manuais, importações B3 e respostas pagas de outras APIs não confirmam recebimento. A identificação considera a descrição da movimentação para classificar corretamente JCP, dividendos e rendimentos.
+- **A receber:** eventos anunciados pelas fontes integradas que disponibilizam calendário de proventos são exibidos como pendentes até existir confirmação Pluggy. Nesta versão, o calendário externo implementado é o da BRAPI v2; a cotação BRAPI v1 também é usada como fallback quando retorna `cashDividends`. Importações B3 e lançamentos manuais futuros também permanecem pendentes.
+- HG Brasil, Dados B3 (séries de índices), FRED, BCB, IBGE e Tesouro são usados para cotações ou indicadores e não são tratados como calendários de proventos quando não fornecem eventos de pagamento.
+- Eventos anunciados por várias fontes são deduplicados por ativo, data de pagamento, tipo normalizado e valor. Correspondências já confirmadas pela Pluggy são removidas da lista pendente, com tolerância para pequenas diferenças de valor e data. Transações Pluggy com IDs diferentes permanecem distintas para preservar recebimentos legítimos em contas diferentes.
+- Quando a Pluggy confirma um evento previamente anunciado por outra API, o registro existente é preservado sem duplicar o pagamento.
+
+### Atualização
+
+- Base: Lonely Wallet v4.2.36.
+- Manter os bancos `ativos.db`, `tokens.db` e `api_state.db`, além dos arquivos WAL.
+- Manter o volume `/DATA/AppData/lonely-wallet/data:/data`.
+- Reconstruir a imagem Docker para aplicar as alterações.
