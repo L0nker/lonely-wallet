@@ -1,6 +1,34 @@
-# Lonely Wallet v4.2.53
+# Lonely Wallet v4.2.54
 
-# Atualizações da versão 4.2.53
+## Correção da confirmação de recebimentos de proventos
+- A fonte canônica de proventos recebidos passa a ser exclusivamente o ledger de transações de investimento importadas pela Pluggy.
+- Eventos anunciados por APIs de mercado não são promovidos a recebidos pelo simples fato de a data de pagamento pertencer a um mês encerrado.
+- O status `Pago` fornecido por uma API de calendário também não comprova crédito na corretora e não entra em recebidos, gráficos, histórico, totais, metas ou ranking.
+- Lançamentos manuais e importações B3 continuam sendo previsões até existir uma transação Pluggy conciliada.
+- Transações Pluggy já importadas continuam compondo o histórico mesmo quando a integração é posteriormente desconectada, desde que o registro da transação importada permaneça no banco.
+- A consulta de recebimentos exige correspondência entre o evento importado e a transação de investimento Pluggy correspondente; registros órfãos do ledger não são tratados como confirmação.
+- Previsões vencidas sem confirmação permanecem preservadas no SQLite, mas são excluídas da projeção de recebíveis. Não são apagadas nem reclassificadas como recebidas.
+- Removido da interface o rótulo legado `Pago · API`.
+
+## Cache e compatibilidade
+- Incrementado `DASHBOARD_CACHE_FORMAT` para 11 para invalidar snapshots que possam conter recebimentos estimados pela regra anterior.
+- Nenhuma migração destrutiva ou exclusão de dados financeiros foi adicionada.
+- Mantidos os bancos SQLite, credenciais, chave de criptografia, operações, eventos e snapshots persistentes.
+
+## Testes e validação
+- Atualizados testes de regressão para garantir que APIs de mercado, datas vencidas e status `Pago` de API nunca comprovem recebimento.
+- Mantidos testes de recebimentos Pluggy distintos, idempotência e conciliação por ticker, data, categoria e valor.
+- Verificados os caminhos do dashboard, lista de proventos e fonte de dados do histórico.
+- A validação funcional completa depende de executar a suíte Flask e testar sincronização real com a Pluggy no ambiente de implantação.
+
+**Base:** Lonely Wallet v4.2.53(3), pacote enviado pelo usuário.
+
+**Versão:** 4.2.54.
+
+---
+
+
+# Histórico: atualizações da versão 4.2.53
 
 ## Exclusão de proventos não recebidos após a data prevista
 - Removida a categoria visual e lógica de proventos “Atrasado”.

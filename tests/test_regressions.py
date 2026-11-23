@@ -595,7 +595,7 @@ class RegressionTests(unittest.TestCase):
             wallet.db().execute("DELETE FROM pluggy_items WHERE item_id='active-item-test'")
             wallet.db().commit()
 
-    def test_alternative_api_past_payments_are_received_only_when_pluggy_is_unconfigured(self):
+    def test_alternative_api_past_payments_are_never_receipts_without_pluggy(self):
         with wallet.app.app_context():
             con = wallet.db()
             stamp = wallet.datetime.now(wallet.TZ).isoformat(timespec='seconds')
@@ -605,18 +605,20 @@ class RegressionTests(unittest.TestCase):
                         ('PROVTEST4:FUTURE','PROVTEST4','fii','Rendimento','2026-12-10','2026-12-11','2026-12-15',1.0,20,20.0,'A receber','Teste',stamp))
             con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         ('PROVTEST4:TODAY','PROVTEST4','fii','Rendimento','2026-11-22','2026-11-22','2026-11-23',1.0,20,20.0,'A receber','Teste pagamento hoje',stamp))
+            con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        ('PROVTEST4:API-PAID','PROVTEST4','fii','Rendimento','2026-01-10','2026-01-11','2026-01-15',1.0,20,20.0,'Pago','Status API não comprova crédito',stamp))
             con.execute('INSERT INTO proventos(ticker,valor_total,data) VALUES(?,?,?)',
                         ('PROVTEST4', 99.0, '2026-01-15'))
             con.commit()
             with patch.object(wallet, '_pluggy_is_configured', return_value=False):
                 records = wallet._received_proventos_records(['PROVTEST4'])
-            self.assertEqual(len(records), 1)
-            self.assertEqual(records[0]['valor_total'], 20.0)
-            self.assertEqual(records[0]['origem'], 'API alternativa (sem Pluggy)')
-            self.assertEqual(records[0]['confirmacao'], 'estimado_pela_data_de_pagamento_sem_confirmacao_pluggy')
-            self.assertEqual(records[0]['source_event_key'], 'PROVTEST4:PAID')
+            self.assertEqual(records, [])
+            # Market-calendar rows and manual entries remain persisted; they are
+            # not promoted to receipts based on elapsed dates or API status.
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM proventos_api WHERE ticker='PROVTEST4'").fetchone()[0], 4)
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM proventos WHERE ticker='PROVTEST4'").fetchone()[0], 1)
 
-    def test_alternative_api_payment_earlier_this_month_stays_pending_without_pluggy(self):
+    def test_alternative_api_payment_earlier_this_month_is_not_a_receipt(self):
         with wallet.app.app_context():
             con = wallet.db()
             today = wallet.datetime.now(wallet.TZ).date()
@@ -631,12 +633,12 @@ class RegressionTests(unittest.TestCase):
                 records = wallet._received_proventos_records(['CURRENTMONTH'])
             self.assertEqual(records, [])
 
-    def test_alternative_api_received_are_disabled_when_pluggy_is_configured(self):
+    def test_alternative_api_events_are_never_received_even_if_api_says_paid(self):
         with wallet.app.app_context():
             con = wallet.db()
             stamp = wallet.datetime.now(wallet.TZ).isoformat(timespec='seconds')
             con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        ('PROVTEST4:STRICT','PROVTEST4','fii','Rendimento','2026-01-10','2026-01-11','2026-01-15',1.0,20,20.0,'A receber','BRAPI',stamp))
+                        ('PROVTEST4:STRICT','PROVTEST4','fii','Rendimento','2026-01-10','2026-01-11','2026-01-15',1.0,20,20.0,'Pago','BRAPI status Pago sem transação Pluggy',stamp))
             con.commit()
             with patch.object(wallet, '_pluggy_is_configured', return_value=True):
                 records = wallet._received_proventos_records(['PROVTEST4'])
@@ -672,7 +674,7 @@ class RegressionTests(unittest.TestCase):
             con.execute('INSERT INTO proventos(ticker,valor_total,data) VALUES(?,?,?)',
                         ('ABCD4', 20.0, '2026-01-15'))
             con.commit()
-            with patch.object(wallet, '_pluggy_is_configured', return_value=True):
+            with patch.object(wallet, '_pluggy_is_configured', return_value=False):
                 records = wallet._received_proventos_records(['ABCD4'])
             self.assertEqual(len(records), 2)
             self.assertEqual([row['valor_total'] for row in records], [20.0, 20.0])
@@ -680,6 +682,22 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual({row['pluggy_transaction_id'] for row in records},
                              {'pluggy-event-a', 'pluggy-event-b'})
             self.assertTrue(all(row['origem'] == 'Pluggy' and row['status'] == 'Pago' for row in records))
+
+    def test_orphaned_pluggy_event_without_transaction_is_not_a_receipt(self):
+        with wallet.app.app_context():
+            con = wallet.db()
+            cursor = con.execute("INSERT INTO proventos(ticker,valor_total,data) VALUES(?,?,?)",
+                                 ('ORPHAN4', 10.0, '2026-01-15'))
+            target_id = int(cursor.lastrowid)
+            stamp = wallet.datetime.now(wallet.TZ).isoformat(timespec='seconds')
+            con.execute("INSERT INTO pluggy_imported_events (external_id,event_type,ticker,event_date,amount,target_id,import_state,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                        ('orphan-pluggy-event', 'provento', 'ORPHAN4', '2026-01-15', 10.0,
+                         target_id, 'imported', stamp))
+            con.commit()
+            self.assertEqual(wallet._received_proventos_records(['ORPHAN4']), [])
+            self.assertFalse(wallet._pluggy_confirmed_provento_exists(
+                'ORPHAN4', '2026-01-15', 10.0, event_type='DIVIDENDO'
+            ))
 
     def test_distinct_pluggy_ids_match_manual_once_then_create_separate_receipts(self):
         with wallet.app.app_context():

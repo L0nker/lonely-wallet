@@ -3682,11 +3682,10 @@ function renderProventosDashboard(){
  if(table){
   const start=(myProvPage-1)*pageSize,visible=myRows.slice(start,start+pageSize);
   table.innerHTML=visible.length?visible.map(x=>{
-   const statusText=x.confirmacao==='estimado_pela_data_de_pagamento_sem_confirmacao_pluggy'?'Pago · API':(x.status||'—');
-   const statusTitle=x.confirmacao==='estimado_pela_data_de_pagamento_sem_confirmacao_pluggy'?'Estimado pela data de pagamento publicada por API alternativa; não confirmado via Pluggy.':'';
+   const statusText=x.status||'—';
    const statusClass=x.status==='A receber'?'pending':'';
    const valueClass=x.status==='Pago'?'green':'blue';
-   return `<tr><td class="ticker">${escapeHTML(x.ticker||'—')}${x.remarks?`<div class="mini">${escapeHTML(x.remarks)}</div>`:''}</td><td>${escapeHTML(x.tipo||'Provento')}</td><td><span class="prov-status ${statusClass}" title="${escapeHTML(statusTitle)}">${escapeHTML(statusText)}</span></td><td>${x.data_com?new Date(x.data_com+'T12:00:00').toLocaleDateString('pt-BR'):'—'}</td><td>${x.data_pagamento?new Date(x.data_pagamento+'T12:00:00').toLocaleDateString('pt-BR'):'—'}</td><td>${x.quantidade??'—'}</td><td>${x.valor_por_ativo!==null&&x.valor_por_ativo!==undefined?brl(x.valor_por_ativo):'—'}</td><td class="${valueClass}">${brl(x.valor_total)}</td></tr>`;
+   return `<tr><td class="ticker">${escapeHTML(x.ticker||'—')}${x.remarks?`<div class="mini">${escapeHTML(x.remarks)}</div>`:''}</td><td>${escapeHTML(x.tipo||'Provento')}</td><td><span class="prov-status ${statusClass}">${escapeHTML(statusText)}</span></td><td>${x.data_com?new Date(x.data_com+'T12:00:00').toLocaleDateString('pt-BR'):'—'}</td><td>${x.data_pagamento?new Date(x.data_pagamento+'T12:00:00').toLocaleDateString('pt-BR'):'—'}</td><td>${x.quantidade??'—'}</td><td>${x.valor_por_ativo!==null&&x.valor_por_ativo!==undefined?brl(x.valor_por_ativo):'—'}</td><td class="${valueClass}">${brl(x.valor_total)}</td></tr>`;
   }).join(''):rowEmpty(8,'Nenhum provento encontrado para os filtros selecionados.');
  }
  if(pagination){

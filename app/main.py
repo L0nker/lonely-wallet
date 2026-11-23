@@ -84,7 +84,7 @@ QUOTE_HISTORY_PATH = os.environ.get('QUOTE_HISTORY_PATH', '/data/quotes_last_val
 QUOTE_HISTORY_LOCK = threading.RLock()
 DASHBOARD_CACHE_PATH = os.environ.get('DASHBOARD_CACHE_PATH', '/data/dashboard_cache.json')
 DASHBOARD_CACHE_LOCK = threading.RLock()
-DASHBOARD_CACHE_FORMAT = 10
+DASHBOARD_CACHE_FORMAT = 11
 PORTFOLIO_HISTORY_CACHE, PORTFOLIO_HISTORY_TTL = {}, 1800
 PORTFOLIO_HISTORY_EMPTY_TTL = 120
 def _dashboard_cache_signature():
@@ -5491,7 +5491,7 @@ def _pluggy_confirmed_provento_exists(ticker, payment_date, amount, event_type=N
         """SELECT pe.external_id,pe.event_date,pe.amount,tx.movement_type,
                   tx.description,tx.raw_json
            FROM pluggy_imported_events pe
-           LEFT JOIN pluggy_investment_transactions tx ON tx.transaction_id=pe.external_id
+           JOIN pluggy_investment_transactions tx ON tx.transaction_id=pe.external_id
            WHERE pe.event_type='provento'
              AND pe.target_id IS NOT NULL
              AND COALESCE(pe.import_state,'') IN ('imported','matched_existing')
@@ -6031,13 +6031,13 @@ def _is_income_event(event_type):
 
 
 def _received_proventos_records(active_tickers=None):
-    """Return income receipts from Pluggy, or API-calendar estimates when Pluggy is unconfigured.
+    """Return only income receipts backed by imported Pluggy transactions.
 
-    Pluggy stays authoritative when valid enabled credentials and an active item exist.
-    Only a genuinely unconfigured installation may infer a receipt from an alternative
-    API event whose payment month has ended. Events in the current month remain pending
-    for the entire month. The fallback is explicitly estimated and never treats
-    manual/B3 entries as receipts by themselves.
+    Calendar events from market APIs and manual/B3 records are forecasts, not
+    evidence that money reached the brokerage account. A passed payment date or
+    an API status label must never promote an event to a received payment.
+    Previously confirmed Pluggy receipts remain available in the local ledger
+    even when the user later disconnects the integration.
     """
     active_set = None if active_tickers is None else {str(t).upper() for t in active_tickers}
     if active_set is not None and not active_set:
@@ -6050,7 +6050,7 @@ def _received_proventos_records(active_tickers=None):
                     COALESCE(tx.raw_json,'{}') AS movement_raw
              FROM pluggy_imported_events pe
              JOIN proventos p ON p.id=pe.target_id
-             LEFT JOIN pluggy_investment_transactions tx ON tx.transaction_id=pe.external_id
+             JOIN pluggy_investment_transactions tx ON tx.transaction_id=pe.external_id
              WHERE pe.event_type='provento' AND pe.target_id IS NOT NULL
                AND COALESCE(pe.import_state,'') IN ('imported','matched_existing')
              ORDER BY pe.event_date,pe.external_id"""
@@ -6097,82 +6097,12 @@ def _received_proventos_records(active_tickers=None):
             'confirmacao': 'confirmado_por_transacao_pluggy'
         })
 
-    # Do not downgrade existing Pluggy receipts when the integration is absent
-    # but its old imported-event ledger remains in the database.
-    if _pluggy_is_configured():
-        records.sort(key=lambda item: (str(item.get('data_pagamento') or ''), str(item.get('ticker') or ''), str(item.get('pluggy_transaction_id') or '')))
-        return records
-
-    today = datetime.now(TZ).date()
-    current_month = today.strftime('%Y-%m')
-    api_rows = db().execute(
-        """SELECT event_key,ticker,tipo_ativo,tipo_evento,data_com,data_pagamento,
-                  valor_por_ativo,quantidade,valor_total,status,remarks
-           FROM proventos_api
-           WHERE substr(trim(COALESCE(data_pagamento,'')),1,7)<?
-             AND lower(trim(COALESCE(status,''))) NOT IN ('cancelado','cancelled','rejeitado','rejected','invalid')
-           ORDER BY data_pagamento,ticker,event_key""",
-        (current_month,)
-    ).fetchall()
-    seen_api_events = set()
-    for raw in api_rows:
-        row = dict(raw)
-        ticker = str(row.get('ticker') or '').strip().upper()
-        if not ticker or (active_set is not None and ticker not in active_set):
-            continue
-        payment_date = _api_date(row.get('data_pagamento'))
-        if not payment_date:
-            continue
-        try:
-            paid_on = date.fromisoformat(payment_date[:10])
-            amount = float(row.get('valor_total') or 0)
-            rate = float(row.get('valor_por_ativo') or 0)
-            quantity = float(row.get('quantidade') or 0)
-        except (TypeError, ValueError):
-            continue
-        if not math.isfinite(quantity):
-            quantity = 0.0
-        event_type = str(row.get('tipo_evento') or 'PROVENTO').strip().upper()
-        # Keep all events in the current month pending, even when their
-        # published payment day has passed. Without Pluggy, only a closed
-        # payment month may be estimated as received.
-        if paid_on.strftime('%Y-%m') >= current_month or not math.isfinite(amount) or amount <= 0 or not _is_income_event(event_type):
-            continue
-        # Keep Pluggy events as the stronger source if an old receipt matches.
-        if _pluggy_confirmed_provento_exists(
-            ticker, payment_date, amount, event_type=row.get('tipo_evento'),
-            record_date=row.get('data_com')
-        ):
-            continue
-        # API calendars can repeat the same event across endpoints. Deduplicate
-        # those rows by their event identity, while never collapsing Pluggy IDs.
-        fingerprint = (
-            ticker, payment_date, event_type, str(row.get('data_com') or '')[:10],
-            round(rate, 8), round(amount, 2)
-        )
-        if fingerprint in seen_api_events:
-            continue
-        seen_api_events.add(fingerprint)
-        records.append({
-            'ticker': ticker, 'tipo': 'Provento',
-            'tipo_ativo': str(row.get('tipo_ativo') or typesafe_asset_type(ticker)),
-            'status': 'Pago', 'data_com': _api_date(row.get('data_com')),
-            'data_pagamento': payment_date[:10],
-            'quantidade': quantity,
-            'valor_por_ativo': rate, 'valor_total': round(amount, 2),
-            'origem': 'API alternativa (sem Pluggy)', 'tipo_evento': event_type,
-            'source_event_key': str(row.get('event_key') or ''),
-            'confirmacao': 'estimado_pela_data_de_pagamento_sem_confirmacao_pluggy',
-            'remarks': (str(row.get('remarks') or '').strip() +
-                        ' Recebimento estimado pela data de pagamento informada pela API; não confirmado via Pluggy.').strip()
-        })
-    records.sort(key=lambda item: (str(item.get('data_pagamento') or ''), str(item.get('ticker') or ''),
-                                   str(item.get('pluggy_transaction_id') or item.get('source_event_key') or '')))
+    records.sort(key=lambda item: (str(item.get('data_pagamento') or ''), str(item.get('ticker') or ''), str(item.get('pluggy_transaction_id') or '')))
     return records
 
 
 def _confirmed_received_proventos(records, as_of=None):
-    """Keep Pluggy-confirmed receipts and explicitly marked API estimates through today."""
+    """Keep only valid, date-eligible receipts supplied by the Pluggy ledger."""
     cutoff = as_of or datetime.now(TZ).date()
     confirmed = []
     for raw in records or []:
@@ -6201,7 +6131,7 @@ def _confirmed_received_proventos(records, as_of=None):
 
 
 def _confirmed_received_proventos_by_month(records, month_keys, as_of=None):
-    """Aggregate received records (Pluggy-confirmed or labeled estimates) by month."""
+    """Aggregate only Pluggy-confirmed receipt records by month."""
     allowed_months = {str(month) for month in month_keys}
     totals = {}
     for row in _confirmed_received_proventos(records, as_of=as_of):
@@ -7812,12 +7742,10 @@ def dashboard():
     scheduled = [dict(r) for r in db().execute("SELECT * FROM operacoes WHERE status='agendada' ORDER BY data_execucao,id").fetchall()]
     active_tickers = {str(item.get('ticker') or '').upper() for item in portfolio.get('itens', []) if item.get('ticker')}
     today = datetime.now(TZ).date()
-    pluggy_configured = _pluggy_is_configured()
     # Recebimentos realizados pertencem ao histórico do investidor, inclusive
     # ativos que foram vendidos. Apenas previsões e cards por ativo usam posições atuais.
+    # A origem é sempre uma transação Pluggy importada; calendário de APIs não comprova crédito.
     received_records = _confirmed_received_proventos(_received_proventos_records(), as_of=today)
-    alternative_received = [row for row in received_records
-                            if row.get('confirmacao') == 'estimado_pela_data_de_pagamento_sem_confirmacao_pluggy']
     if active_tickers:
         marks = ','.join('?' for _ in active_tickers)
         pending_rows = [dict(r) for r in db().execute("SELECT * FROM proventos_api WHERE status='A receber' AND UPPER(ticker) IN (" + marks + ") ORDER BY data_pagamento,ticker", tuple(sorted(active_tickers))).fetchall()]
@@ -7855,13 +7783,6 @@ def dashboard():
             row.get('ticker'), payment_date, row.get('valor_total')
         ):
             continue
-        if payment_date and not pluggy_configured and any(
-            str(receipt.get('ticker') or '').upper() == str(row.get('ticker') or '').upper()
-            and abs(float(receipt.get('valor_total') or 0) - float(row.get('valor_total') or 0)) <= max(0.05, float(row.get('valor_total') or 0) * 0.01)
-            and abs((date.fromisoformat(str(receipt.get('data_pagamento'))[:10]) - date.fromisoformat(payment_date[:10])).days) <= 3
-            for receipt in alternative_received
-        ):
-            continue
         if payment_date:
             upcoming.append({
                 'ticker':str(row['ticker']).upper(),'tipo':'Provento manual','tipo_ativo':typesafe_asset_type(row['ticker']),
@@ -7871,14 +7792,10 @@ def dashboard():
             })
     for row in pending_rows:
         row_payment_date = _api_date(row.get('data_pagamento'))
-        if pluggy_configured and row_payment_date and _pluggy_confirmed_provento_exists(
+        if row_payment_date and _pluggy_confirmed_provento_exists(
             row.get('ticker'), row_payment_date, row.get('valor_total'),
             event_type=row.get('tipo_evento'), record_date=row.get('data_com')
         ):
-            continue
-        # In fallback mode, an API payment date that has already passed is shown
-        # among estimated receipts, not simultaneously as an upcoming forecast.
-        if not pluggy_configured and row_payment_date and row_payment_date[:7] < today.strftime('%Y-%m'):
             continue
         key=(str(row['ticker']).upper(),str(row['data_pagamento'])[:10],round(float(row['valor_total'] or 0),2))
         if key in manual_keys:
@@ -8068,7 +7985,7 @@ def dashboard():
         integridade_dados={
             'cotacoes': {item['ticker']: {'fonte': item.get('cotacao_origem'), 'disponivel': bool(item.get('cotacao_disponivel'))} for item in portfolio.get('itens', [])},
             'historico_precos': performance.get('fontes_historico', {}),
-            'proventos': {'fonte_canonica': ('Pluggy' if pluggy_configured else 'APIs alternativas de meses encerrados; recebimento estimado sem Pluggy'), 'escopo_recebidos': 'histórico integral, incluindo ativos vendidos', 'escopo_a_receber': 'ativos com posição atual', 'deduplicacao': ('ID externo Pluggy + categoria/data/valor estritos para conciliar previsões' if pluggy_configured else 'chave de evento + ticker/data-com/data de pagamento/tipo/valor'), 'sincronizacao': sync_status}
+            'proventos': {'fonte_canonica': 'Transações de investimento confirmadas pela Pluggy', 'escopo_recebidos': 'histórico integral, incluindo ativos vendidos', 'escopo_a_receber': 'ativos com posição atual', 'deduplicacao': 'ID externo Pluggy + categoria/data/valor estritos para conciliar previsões', 'sincronizacao': sync_status}
         },
         proventos_dashboard={
             'mensal':monthly_values,'total_12m':total_12m,'total_confirmado_12m':total_confirmed_12m,'media_mensal':round(total_12m/12,2),
