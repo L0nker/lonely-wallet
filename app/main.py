@@ -290,8 +290,13 @@ def _api_cache_row(cache_key):
         ).fetchone()
         if not row:
             return None
+        payload = bytes(row[0] or b'')
+        # Older installations may gain the payload column through migration.
+        # Rows created with the empty migration default are not usable cache hits.
+        if not payload:
+            return None
         return {
-            'payload': bytes(row[0]), 'status_code': int(row[1]), 'fetched_at': float(row[2]),
+            'payload': payload, 'status_code': int(row[1]), 'fetched_at': float(row[2]),
             'expires_at': float(row[3]), 'stale_until': float(row[4])
         }
     except (sqlite3.Error, TypeError, ValueError, OSError):
@@ -866,6 +871,28 @@ def migrate_api_credentials():
         assets.close()
 
 
+def _migrate_api_response_cache_schema(connection):
+    """Add cache columns missing from older persistent SQLite databases.
+
+    ALTER TABLE preserves existing rows. Empty payload defaults are treated as
+    cache misses by _api_cache_row, so they are naturally repopulated on demand.
+    """
+    columns = {row[1] for row in connection.execute('PRAGMA table_info(api_response_cache)').fetchall()}
+    additions = {
+        'endpoint': "TEXT NOT NULL DEFAULT ''",
+        'payload': "BLOB NOT NULL DEFAULT X''",
+        'status_code': 'INTEGER NOT NULL DEFAULT 200',
+        'fetched_at': 'REAL NOT NULL DEFAULT 0',
+        'expires_at': 'REAL NOT NULL DEFAULT 0',
+        'stale_until': 'REAL NOT NULL DEFAULT 0',
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            connection.execute(f'ALTER TABLE api_response_cache ADD COLUMN {name} {definition}')
+            columns.add(name)
+    return columns
+
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
     con = sqlite3.connect(DB_PATH, timeout=15)
@@ -1181,9 +1208,7 @@ def init_db():
     if 'registro_id' not in b3cols: con.execute('ALTER TABLE b3_importados ADD COLUMN registro_id INTEGER')
 
     # Upgrade older persistent installations without discarding their API cache.
-    cache_columns = {row[1] for row in con.execute('PRAGMA table_info(api_response_cache)').fetchall()}
-    if 'endpoint' not in cache_columns:
-        con.execute("ALTER TABLE api_response_cache ADD COLUMN endpoint TEXT NOT NULL DEFAULT ''")
+    _migrate_api_response_cache_schema(con)
     request_columns = {row[1] for row in con.execute('PRAGMA table_info(api_request_log)').fetchall()}
     if 'endpoint' not in request_columns:
         con.execute("ALTER TABLE api_request_log ADD COLUMN endpoint TEXT NOT NULL DEFAULT ''")
@@ -2977,15 +3002,18 @@ def _fallback_market_quote(ticker):
 
 
 def _sgs_series(series_id, start_date, end_date):
-    """Busca séries históricas oficiais do BCB/SGS, em janelas inferiores a 10 anos."""
+    """Busca séries oficiais SGS com retry e fallback de cache recente."""
     start = date.fromisoformat(str(start_date)[:10])
     end = date.fromisoformat(str(end_date)[:10])
     if end < start:
         return []
     key = (int(series_id), start.isoformat(), end.isoformat())
     cached = SGS_CACHE.get(key)
-    if cached and time.time() - cached[0] < SGS_CACHE_TTL:
+    cached_age = (time.time() - cached[0]) if cached else None
+    if cached and cached_age < SGS_CACHE_TTL:
         return cached[1]
+
+    stale_points = cached[1] if cached and cached_age is not None and cached_age <= 7 * 86400 else None
     points = []
     cursor = start
     while cursor <= end:
@@ -2995,19 +3023,43 @@ def _sgs_series(series_id, start_date, end_date):
             'dataInicial': cursor.strftime('%d/%m/%Y'),
             'dataFinal': chunk_end.strftime('%d/%m/%Y')
         }
-        response = requests.get(
-            f'https://api.bcb.gov.br/dados/serie/bcdata.sgs.{int(series_id)}/dados',
-            params=params, timeout=18
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, list):
-            raise ValueError('Resposta inválida do Banco Central')
+        url = f'https://api.bcb.gov.br/dados/serie/bcdata.sgs.{int(series_id)}/dados'
+        payload = None
+        last_error = None
+        for attempt, delay in enumerate((0.0, 0.35, 0.85)):
+            if delay:
+                time.sleep(delay)
+            try:
+                response = requests.get(url, params=params, timeout=18,
+                                        headers={'Accept': 'application/json'})
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, list):
+                    raise ValueError('BCB SGS retornou JSON em formato diferente de lista')
+                last_error = None
+                break
+            except (requests.RequestException, ValueError, TypeError) as exc:
+                last_error = exc
+                payload = None
+                # Retry a resposta vazia/não JSON e indisponibilidades transitórias.
+                if attempt == 2:
+                    break
+        if last_error is not None or payload is None:
+            if stale_points is not None:
+                app.logger.warning(
+                    'BCB SGS indisponível para série %s; utilizando cache local recente (%s)',
+                    int(series_id), type(last_error).__name__ if last_error else 'resposta vazia'
+                )
+                return stale_points
+            reason = 'resposta vazia ou não JSON' if isinstance(last_error, ValueError) else type(last_error).__name__ if last_error else 'resposta vazia'
+            raise ValueError(f'BCB SGS indisponível para série {int(series_id)}: {reason}') from last_error
+
         for row in payload:
             try:
                 d = datetime.strptime(row['data'], '%d/%m/%Y').date()
                 value = float(str(row['valor']).replace(',', '.'))
-                points.append((d, value))
+                if math.isfinite(value):
+                    points.append((d, value))
             except (KeyError, TypeError, ValueError):
                 continue
         cursor = chunk_end + timedelta(days=1)

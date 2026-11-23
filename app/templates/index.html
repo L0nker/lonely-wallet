@@ -4603,6 +4603,14 @@ function getTopPaidDividendPayers(records, assetRows=[], todayKey=null){
   .slice(0,2);
 }
 
+function calculateTotalProfit(capitalGain, receivedDividends){
+ const gain=Number(capitalGain);
+ const dividends=Number(receivedDividends);
+ const safeGain=Number.isFinite(gain)?gain:0;
+ const safeDividends=Number.isFinite(dividends)?dividends:0;
+ return Number((safeGain+safeDividends).toFixed(2));
+}
+
 function render(){const r=state.resumo||{},provDash=state.proventos_dashboard||{};
 const allTypesHistory=getAllTypesPortfolioHistory().rows;
 const latestEvolution=allTypesHistory.length?allTypesHistory[allTypesHistory.length-1]:null;
@@ -4614,7 +4622,7 @@ const summaryCapitalGain=sumAssetCapitalGain(state.itens||[]);
 const portfolioReturn=summaryApplied>0?(summaryCapitalGain/summaryApplied)*100:null;
 const topDividendPayers=getTopPaidDividendPayers(provDash.maiores_pagadores||[],state.itens||[]);
 const summaryPatrimony=Number((summaryApplied+summaryCapitalGain).toFixed(2));
-const totalProfit=latestEvolution?Number(latestEvolution.ganho||0):Number(r.lucro||0);
+const totalProfit=calculateTotalProfit(summaryCapitalGain,r.proventos||0);
 document.getElementById('stats').innerHTML=`
  <div class="card stat"><div class="statlabel-row">Patrimônio total<span class="info-tip" tabindex="0" aria-label="Sobre o patrimônio total" data-tip="Valor atual de todos os seus ativos na carteira, considerando a cotação atual de cada posição.">i</span></div><div class="statvalue statvalue-inline">${brl(summaryPatrimony)} <small class="${summaryCapitalGain>=0?'green':'red'}" title="Ganho de capital de ${brl(summaryCapitalGain)} sobre ${brl(summaryApplied)} investidos">${pct(portfolioReturn)} ${summaryCapitalGain>=0?'▲':'▼'}</small></div><div class="statdetail"><span>Valor investido</span><b>${brl(summaryApplied)}</b></div></div>
  <div class="card stat"><div class="statlabel-row">Lucro total<span class="info-tip" tabindex="0" aria-label="Sobre o lucro total" data-tip="Seu resultado acumulado na carteira: ganho de capital (valorização dos ativos) somado aos dividendos e proventos recebidos.">i</span></div><div class="statvalue ${totalProfit>=0?'green':'red'}">${brl(totalProfit)}</div><div class="statdetail"><span>Ganho de capital</span><b>${brl(summaryCapitalGain)}</b></div><div class="statdetail"><span>Dividendos recebidos</span><b>${brl(r.proventos||0)}</b></div></div>

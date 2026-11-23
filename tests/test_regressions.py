@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import datetime
 import io
+import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
@@ -78,6 +79,86 @@ class RegressionTests(unittest.TestCase):
         response = self.client.get('/api/pluggy/settings')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()['interval_minutes'], 240)
+
+    def test_api_response_cache_migration_adds_payload_without_losing_rows(self):
+        import sqlite3
+        legacy = sqlite3.connect(':memory:')
+        legacy.execute('''CREATE TABLE api_response_cache (
+            cache_key TEXT PRIMARY KEY, provider TEXT NOT NULL, endpoint TEXT NOT NULL DEFAULT '',
+            status_code INTEGER NOT NULL DEFAULT 200, fetched_at REAL NOT NULL DEFAULT 0,
+            expires_at REAL NOT NULL DEFAULT 0, stale_until REAL NOT NULL DEFAULT 0
+        )''')
+        legacy.execute(
+            'INSERT INTO api_response_cache(cache_key,provider,endpoint,status_code) VALUES(?,?,?,?)',
+            ('legacy-cache-key', 'brapi', '/api/quote/TEST4', 200)
+        )
+        wallet._migrate_api_response_cache_schema(legacy)
+        columns = {row[1] for row in legacy.execute('PRAGMA table_info(api_response_cache)').fetchall()}
+        self.assertIn('payload', columns)
+        row = legacy.execute(
+            'SELECT cache_key,provider,endpoint,payload FROM api_response_cache WHERE cache_key=?',
+            ('legacy-cache-key',)
+        ).fetchone()
+        self.assertEqual(row[:3], ('legacy-cache-key', 'brapi', '/api/quote/TEST4'))
+        self.assertEqual(bytes(row[3] or b''), b'')
+        legacy.close()
+
+    def test_sgs_series_retries_empty_response_and_parses_valid_json(self):
+        start, end = '2026-01-01', '2026-01-03'
+        key = (12, start, end)
+        wallet.SGS_CACHE.pop(key, None)
+        empty = wallet.requests.Response()
+        empty.status_code = 200
+        empty._content = b''
+        valid = wallet.requests.Response()
+        valid.status_code = 200
+        valid._content = wallet.json.dumps([{'data': '02/01/2026', 'valor': '0,05'}]).encode()
+        valid.headers['Content-Type'] = 'application/json'
+        with patch.object(wallet.requests, 'get', side_effect=[empty, valid]) as mocked, \
+             patch.object(wallet.time, 'sleep'):
+            points = wallet._sgs_series(12, start, end)
+        self.assertEqual(mocked.call_count, 2)
+        self.assertEqual(points, [(wallet.date(2026, 1, 2), 0.05)])
+
+    def test_sgs_series_uses_recent_stale_cache_when_bcb_returns_empty(self):
+        start, end = '2026-01-01', '2026-01-03'
+        key = (12, start, end)
+        cached_points = [(wallet.date(2026, 1, 2), 0.05)]
+        wallet.SGS_CACHE[key] = (wallet.time.time() - wallet.SGS_CACHE_TTL - 60, cached_points)
+        empty = wallet.requests.Response()
+        empty.status_code = 200
+        empty._content = b''
+        with patch.object(wallet.requests, 'get', return_value=empty) as mocked, \
+             patch.object(wallet.time, 'sleep'):
+            points = wallet._sgs_series(12, start, end)
+        self.assertEqual(mocked.call_count, 3)
+        self.assertEqual(points, cached_points)
+        wallet.SGS_CACHE.pop(key, None)
+
+    def test_api_cache_row_treats_empty_migrated_payload_as_cache_miss(self):
+        with wallet.app.app_context():
+            con = wallet.db()
+            con.execute(
+                '''INSERT INTO api_response_cache(cache_key,provider,endpoint,payload,status_code,
+                   fetched_at,expires_at,stale_until) VALUES(?,?,?,?,?,?,?,?)''',
+                ('empty-migrated-cache', 'brapi', '/api/quote/OLD4', sqlite3.Binary(b''),
+                 200, wallet.time.time(), wallet.time.time() + 3600, wallet.time.time() + 86400)
+            )
+            con.commit()
+            self.assertIsNone(wallet._api_cache_row('empty-migrated-cache'))
+
+    def test_sgs_series_rejects_repeated_empty_responses_without_fabricating_data(self):
+        start, end = '2026-03-01', '2026-03-03'
+        key = (12, start, end)
+        wallet.SGS_CACHE.pop(key, None)
+        empty = wallet.requests.Response()
+        empty.status_code = 200
+        empty._content = b''
+        with patch.object(wallet.requests, 'get', return_value=empty) as mocked, \
+             patch.object(wallet.time, 'sleep'):
+            with self.assertRaisesRegex(ValueError, 'resposta vazia ou não JSON'):
+                wallet._sgs_series(12, start, end)
+        self.assertEqual(mocked.call_count, 3)
 
     def test_brapi_response_cache_persists_and_avoids_repeat_request(self):
         payload = {'results': [{'symbol': 'CACHE4', 'regularMarketPrice': 12.34}]}

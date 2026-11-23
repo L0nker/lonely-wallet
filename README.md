@@ -1,4 +1,34 @@
-# Lonely Wallet v4.2.39
+# Lonely Wallet v4.2.40
+
+# Atualizações da versão 4.2.40
+
+## Lucro total
+- Corrigida a composição do card **Lucro total** para somar o ganho de capital atual aos dividendos e proventos efetivamente recebidos.
+- O cálculo utiliza a mesma métrica de ganho de capital exibida no detalhamento do card, evitando usar o valor de `ganho` do último ponto histórico, que pode divergir do resultado atual.
+- Proventos futuros e anunciados não entram nessa soma.
+- Os dividendos não são adicionados novamente ao patrimônio total nem ao ganho de capital.
+
+## Migração do cache de APIs
+- Adicionada migração automática da coluna `payload` em `api_response_cache` para bancos SQLite criados por versões antigas.
+- A migração também garante as colunas de metadados esperadas pelo cache, sem recriar a tabela.
+- Os registros existentes são preservados. Linhas antigas que recebem payload vazio são tratadas como cache miss e atualizadas quando o provedor responder novamente.
+
+## Robustez da consulta CDI/IPCA pelo SGS
+- Implementadas até três tentativas para respostas transitórias vazias, não JSON ou erros HTTP do Banco Central.
+- Adicionada espera progressiva entre tentativas.
+- Implementado fallback para dados SGS previamente consultados e armazenados em memória por até sete dias quando o endpoint estiver indisponível.
+- Se não houver resposta válida nem cache recente, o cálculo informa indisponibilidade do indexador, sem inventar taxa ou rendimento.
+
+## Testes
+- Adicionados testes de runtime para soma do ganho de capital com proventos recebidos, incluindo cenários de ganho negativo e valores inválidos.
+- Adicionados testes de migração de `api_response_cache` preservando registros antigos.
+- Adicionados testes de retry do SGS após resposta vazia e de fallback para cache recente.
+- Compilação Python e testes JavaScript de runtime executados neste ambiente.
+- Testes Python que dependem do Flask não puderam ser executados porque a dependência não estava instalada e o ambiente estava sem acesso ao PyPI.
+- Build Docker e verificação real da API do Banco Central permanecem pendentes no ZimaOS.
+
+
+## Histórico de versões anteriores
 
 ## Correção das métricas do gráfico Evolução do Patrimônio
 
