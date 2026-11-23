@@ -26,7 +26,7 @@ class HealthcheckStrictModeTests(unittest.TestCase):
             'token_db': lambda: SimpleNamespace(execute=lambda *_: SimpleNamespace(fetchone=lambda: (1,))),
             '_chart_assets_status': lambda: {'status': chart_status},
             'request': SimpleNamespace(args={'strict': '1' if strict else ''}),
-            'APP_VERSION': '4.2.45',
+            'APP_VERSION': '4.2.49',
             'jsonify': lambda **kwargs: kwargs,
             'app': SimpleNamespace(logger=SimpleNamespace(exception=lambda *_: None)),
         }
@@ -53,24 +53,28 @@ class HealthcheckStrictModeTests(unittest.TestCase):
         self.assertEqual(payload['status'], 'healthy')
         self.assertTrue(payload['ok'])
 
-    def test_compose_healthcheck_uses_strict_endpoint(self):
+    def test_compose_healthcheck_uses_service_availability_endpoint(self):
         compose = (ROOT / 'docker-compose.yml').read_text(encoding='utf-8')
         self.assertIn('/srv/scripts/healthcheck.py', compose)
+        self.assertIn("URL = 'http://127.0.0.1:8080/api/health'", (ROOT / 'scripts' / 'healthcheck.py').read_text(encoding='utf-8'))
 
-    def test_docker_health_script_logs_degraded_renderer_and_fails(self):
+    def test_docker_health_script_logs_degraded_renderer_but_accepts_usable_fallback(self):
         module_path = ROOT / 'scripts' / 'healthcheck.py'
         spec = importlib.util.spec_from_file_location('lonely_healthcheck', module_path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         body = json.dumps({
             'status': 'degraded', 'charts': {
-                'engine': 'fallback', 'warning': 'Chart.js ausente; fallback ativo.'
+                'engine': 'fallback', 'fallback_available': True, 'warning': 'Chart.js ausente; fallback ativo.'
             }
         }).encode('utf-8')
-        error = HTTPError(module.URL, 503, 'Service Unavailable', {}, io.BytesIO(body))
+        class Response(io.BytesIO):
+            status = 200
+
+        response = Response(body)
         output = io.StringIO()
-        with patch.object(module, 'urlopen', side_effect=error), contextlib.redirect_stdout(output):
-            self.assertEqual(module.main(), 1)
+        with patch.object(module, 'urlopen', return_value=response), contextlib.redirect_stdout(output):
+            self.assertEqual(module.main(), 0)
         self.assertIn('degraded', output.getvalue())
         self.assertIn('fallback', output.getvalue())
 
@@ -90,6 +94,23 @@ class HealthcheckStrictModeTests(unittest.TestCase):
         with patch.object(module, 'urlopen', return_value=response), contextlib.redirect_stdout(output):
             self.assertEqual(module.main(), 0)
         self.assertIn('healthy', output.getvalue())
+
+    def test_docker_health_script_rejects_missing_fallback(self):
+        module_path = ROOT / 'scripts' / 'healthcheck.py'
+        spec = importlib.util.spec_from_file_location('lonely_healthcheck_missing_fallback', module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        class Response(io.BytesIO):
+            status = 200
+
+        response = Response(json.dumps({
+            'status': 'unhealthy', 'charts': {'engine': 'unavailable', 'fallback_available': False}
+        }).encode('utf-8'))
+        output = io.StringIO()
+        with patch.object(module, 'urlopen', return_value=response), contextlib.redirect_stdout(output):
+            self.assertEqual(module.main(), 1)
+        self.assertIn('unhealthy', output.getvalue())
 
 
 if __name__ == '__main__':

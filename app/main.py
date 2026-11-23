@@ -429,6 +429,62 @@ def _api_cache_store(cache_key, provider, endpoint, payload, status_code, ttl, s
             connection.close()
 
 
+def _api_cache_delete(cache_key):
+    """Remove a malformed cached response so it cannot hide a later valid reply."""
+    connection = None
+    try:
+        connection = _api_cache_connection()
+        connection.execute('DELETE FROM api_response_cache WHERE cache_key=?', (str(cache_key),))
+        connection.commit()
+    except sqlite3.Error as exc:
+        app.logger.warning('Não foi possível invalidar uma resposta de cache inválida: %s', exc)
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _provider_json_get(provider, url, params=None, headers=None, timeout=18,
+                       cache_ttl=0, stale_ttl=None, expected_type=None, invalid_retries=2):
+    """Fetch JSON through the common provider gate, cache, and Retry-After handling.
+
+    HTTP 429/503/408/425 responses are not retried here: `_provider_get` persists
+    the provider cooldown using the upstream Retry-After header. Only malformed
+    successful JSON responses receive short local retries, after their bad cache
+    entry is invalidated.
+    """
+    params = dict(params or {})
+    headers = dict(headers or {})
+    cache_key = _api_response_cache_key(provider, url, params, headers)
+    try:
+        retries = min(3, max(1, int(invalid_retries) + 1))
+    except (TypeError, ValueError):
+        retries = 3
+    delays = (0.0, 0.35, 0.85)
+    last_error = None
+    for attempt in range(retries):
+        if delays[attempt]:
+            time.sleep(delays[attempt])
+        response = _provider_get(
+            provider, url, params=params, headers=headers, timeout=timeout,
+            cache_ttl=cache_ttl, stale_ttl=stale_ttl
+        )
+        # Rate limits and upstream outages are surfaced immediately after
+        # _provider_get persists the Retry-After cooldown or serves stale data.
+        response.raise_for_status()
+        try:
+            payload = response.json()
+        except (ValueError, TypeError) as exc:
+            last_error = exc
+            _api_cache_delete(cache_key)
+            continue
+        if expected_type is not None and not isinstance(payload, expected_type):
+            last_error = ValueError(f'{provider} retornou JSON em formato inesperado')
+            _api_cache_delete(cache_key)
+            continue
+        return payload, response
+    raise ValueError(f'{provider} retornou JSON inválido após {retries} tentativa(s)') from last_error
+
+
 _API_REQUEST_LOG_LOCK = threading.RLock()
 
 def _commit_pending_pluggy_writes_before_request_log(provider):
@@ -696,7 +752,7 @@ def _provider_get(provider, url, params=None, headers=None, timeout=12, cache_tt
                     '''INSERT INTO api_provider_state(provider,cooldown_until,last_status_code,last_error)
                        VALUES(?,?,?,?) ON CONFLICT(provider) DO UPDATE SET cooldown_until=excluded.cooldown_until,
                        last_status_code=excluded.last_status_code,last_error=excluded.last_error''',
-                    (provider, now + cooldown_seconds, 429, message[:300])
+                    (provider, time.time() + cooldown_seconds, 429, message[:300])
                 )
                 connection.commit()
             except sqlite3.Error:
@@ -707,10 +763,11 @@ def _provider_get(provider, url, params=None, headers=None, timeout=12, cache_tt
             if cached and cached['stale_until'] > now:
                 _api_cache_record_hit(provider, stale=True)
                 return _cached_http_response(cached['payload'], url, cached['status_code'], stale=True)
-        elif response.status_code >= 500:
+        elif response.status_code in (408, 425) or response.status_code >= 500:
             retry_header = response.headers.get('Retry-After')
             cooldown_seconds = _retry_after_seconds(retry_header, default=30, minimum=1, maximum=2_147_483_647) if retry_header else 30
-            _provider_set_cooldown(provider, cooldown_seconds, response.status_code, 'upstream_5xx')
+            reason = 'upstream_timeout' if response.status_code in (408, 425) else 'upstream_5xx'
+            _provider_set_cooldown(provider, cooldown_seconds, response.status_code, reason)
             if cached and cached['stale_until'] > now:
                 _api_cache_record_hit(provider, stale=True)
                 return _cached_http_response(cached['payload'], url, cached['status_code'], stale=True)
@@ -3327,32 +3384,23 @@ def _sgs_series(series_id, start_date, end_date):
         url = f'https://api.bcb.gov.br/dados/serie/bcdata.sgs.{int(series_id)}/dados'
         payload = None
         last_error = None
-        for attempt, delay in enumerate((0.0, 0.35, 0.85)):
-            if delay:
-                time.sleep(delay)
-            try:
-                response = requests.get(url, params=params, timeout=18,
-                                        headers={'Accept': 'application/json'})
-                response.raise_for_status()
-                payload = response.json()
-                if not isinstance(payload, list):
-                    raise ValueError('BCB SGS retornou JSON em formato diferente de lista')
-                last_error = None
-                break
-            except (requests.RequestException, ValueError, TypeError) as exc:
-                last_error = exc
-                payload = None
-                # Retry a resposta vazia/não JSON e indisponibilidades transitórias.
-                if attempt == 2:
-                    break
-        if last_error is not None or payload is None:
+        try:
+            payload, response = _provider_json_get(
+                'bcb', url, params=params, headers={'Accept': 'application/json'},
+                timeout=18, cache_ttl=SGS_CACHE_TTL, stale_ttl=7 * 86400,
+                expected_type=list, invalid_retries=2
+            )
+            if response.headers.get('X-LonelyWallet-Cache') == 'stale':
+                app.logger.warning('BCB SGS série %s utilizando resposta HTTP antiga em cache.', int(series_id))
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            last_error = exc
             if stale_points is not None:
                 app.logger.warning(
                     'BCB SGS indisponível para série %s; utilizando cache local recente (%s)',
-                    int(series_id), type(last_error).__name__ if last_error else 'resposta vazia'
+                    int(series_id), type(last_error).__name__
                 )
                 return stale_points
-            reason = 'resposta vazia ou não JSON' if isinstance(last_error, ValueError) else type(last_error).__name__ if last_error else 'resposta vazia'
+            reason = 'resposta vazia ou não JSON' if isinstance(last_error, ValueError) else type(last_error).__name__
             raise ValueError(f'BCB SGS indisponível para série {int(series_id)}: {reason}') from last_error
 
         for row in payload:
@@ -7203,14 +7251,18 @@ def _benchmark_monthly_ibge_ipca(start_date, end_date):
     end = date.fromisoformat(str(end_date)[:10])
     first_period = start.year * 100 + start.month
     last_period = end.year * 100 + end.month
-    response = requests.get(
-        f'https://apisidra.ibge.gov.br/values/t/1737/n1/1/v/63/p/{first_period}-{last_period}',
-        headers={'User-Agent': USER_AGENT},
-        timeout=20
+    url = f'https://apisidra.ibge.gov.br/values/t/1737/n1/1/v/63/p/{first_period}-{last_period}'
+    headers = {'User-Agent': USER_AGENT, 'Accept': 'application/json'}
+    cache_key = _api_response_cache_key('ibge', url, {}, headers)
+    rows, response = _provider_json_get(
+        'ibge', url, headers=headers, timeout=20,
+        cache_ttl=12 * 3600, stale_ttl=7 * 86400,
+        expected_type=list, invalid_retries=2
     )
-    response.raise_for_status()
-    rows = response.json()
-    if not isinstance(rows, list) or len(rows) < 2:
+    if response.headers.get('X-LonelyWallet-Cache') == 'stale':
+        app.logger.warning('IBGE SIDRA IPCA utilizando resposta antiga em cache.')
+    if len(rows) < 2:
+        _api_cache_delete(cache_key)
         return None
     monthly = {}
     for row in rows[1:]:
@@ -7227,7 +7279,10 @@ def _benchmark_monthly_ibge_ipca(start_date, end_date):
     for key in sorted(monthly):
         factor *= 1 + monthly[key] / 100.0
         output.append({'mes': key, 'valor': round((factor - 1) * 100, 4)})
-    return output or None
+    if not output:
+        _api_cache_delete(cache_key)
+        return None
+    return output
 
 
 def _benchmark_monthly_prices(points):

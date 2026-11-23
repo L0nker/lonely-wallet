@@ -196,8 +196,8 @@ class RegressionTests(unittest.TestCase):
         valid.status_code = 200
         valid._content = wallet.json.dumps([{'data': '02/01/2026', 'valor': '0,05'}]).encode()
         valid.headers['Content-Type'] = 'application/json'
-        with patch.object(wallet.requests, 'get', side_effect=[empty, valid]) as mocked, \
-             patch.object(wallet.time, 'sleep'):
+        with patch.object(wallet, '_provider_get', side_effect=[empty, valid]) as mocked, \
+             patch.object(wallet.time, 'sleep'), patch.object(wallet, '_api_cache_delete'):
             points = wallet._sgs_series(12, start, end)
         self.assertEqual(mocked.call_count, 2)
         self.assertEqual(points, [(wallet.date(2026, 1, 2), 0.05)])
@@ -210,8 +210,8 @@ class RegressionTests(unittest.TestCase):
         empty = wallet.requests.Response()
         empty.status_code = 200
         empty._content = b''
-        with patch.object(wallet.requests, 'get', return_value=empty) as mocked, \
-             patch.object(wallet.time, 'sleep'):
+        with patch.object(wallet, '_provider_get', return_value=empty) as mocked, \
+             patch.object(wallet.time, 'sleep'), patch.object(wallet, '_api_cache_delete'):
             points = wallet._sgs_series(12, start, end)
         self.assertEqual(mocked.call_count, 3)
         self.assertEqual(points, cached_points)
@@ -281,8 +281,8 @@ class RegressionTests(unittest.TestCase):
         empty = wallet.requests.Response()
         empty.status_code = 200
         empty._content = b''
-        with patch.object(wallet.requests, 'get', return_value=empty) as mocked, \
-             patch.object(wallet.time, 'sleep'):
+        with patch.object(wallet, '_provider_get', return_value=empty) as mocked, \
+             patch.object(wallet.time, 'sleep'), patch.object(wallet, '_api_cache_delete'):
             with self.assertRaisesRegex(ValueError, 'resposta vazia ou não JSON'):
                 wallet._sgs_series(12, start, end)
         self.assertEqual(mocked.call_count, 3)

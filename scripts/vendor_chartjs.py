@@ -14,6 +14,9 @@ import os
 import sys
 import tarfile
 import time
+import math
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import requests
@@ -55,6 +58,49 @@ LICENSE = VENDOR / 'CHARTJS-LICENSE.txt'
 FALLBACK = VENDOR / 'chart-fallback.js'
 STATUS = VENDOR / 'chartjs-build-status.json'
 MIN_BUNDLE_SIZE = 100_000
+
+
+def _retry_after_delay(response, fallback: float) -> float:
+    """Return a Retry-After delay for build downloads.
+
+    If a source asks for a long wait, the caller skips that source and tries
+    another mirror rather than retrying early or blocking a Docker build for
+    hours. A missing/invalid header uses a small transient-error backoff,
+    except HTTP 429 which defaults conservatively to 60 seconds.
+    """
+    status = int(getattr(response, 'status_code', 0) or 0)
+    default = 60.0 if status == 429 else max(0.0, float(fallback))
+    headers = getattr(response, 'headers', {}) or {}
+    raw = str(headers.get('Retry-After') or '').strip()
+    if not raw:
+        return default
+    try:
+        seconds = math.ceil(float(raw))
+        if not math.isfinite(float(raw)):
+            return default
+        return max(0.0, float(seconds))
+    except (TypeError, ValueError, OverflowError):
+        pass
+    try:
+        retry_at = parsedate_to_datetime(raw)
+        if retry_at is None:
+            return default
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        return max(0.0, math.ceil((retry_at.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()))
+    except (TypeError, ValueError, OverflowError, IndexError):
+        return default
+
+
+def _wait_or_skip_source(response, attempt: int) -> bool:
+    """Wait briefly when safe; return False when another mirror should be tried."""
+    fallback = min(3.0, 0.5 * attempt)
+    delay = _retry_after_delay(response, fallback)
+    if delay > 10:
+        return False
+    if delay > 0:
+        time.sleep(delay)
+    return True
 
 
 def _sha256(payload: bytes) -> str:
@@ -126,8 +172,7 @@ def _download_chartjs_tarball() -> bytes:
                     detail = f'{source_url} respondeu HTTP {status_code}: {exc}'
                     if status_code in (408, 425, 429) or status_code >= 500:
                         transient_errors.append(detail)
-                        if attempt < DOWNLOAD_ATTEMPTS:
-                            time.sleep(min(3, 0.5 * attempt))
+                        if attempt < DOWNLOAD_ATTEMPTS and _wait_or_skip_source(response, attempt):
                             continue
                     else:
                         permanent_errors.append(detail)
@@ -185,8 +230,7 @@ def _download_direct_chartjs_bundle() -> tuple[bytes, str]:
                     detail = f'{source_url} respondeu HTTP {status_code}: {exc}'
                     if status_code in (408, 425, 429) or status_code >= 500:
                         transient_errors.append(detail)
-                        if attempt < DOWNLOAD_ATTEMPTS:
-                            time.sleep(min(3, 0.5 * attempt))
+                        if attempt < DOWNLOAD_ATTEMPTS and _wait_or_skip_source(response, attempt):
                             continue
                     else:
                         permanent_errors.append(detail)

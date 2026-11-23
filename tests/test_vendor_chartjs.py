@@ -16,9 +16,10 @@ SPEC.loader.exec_module(vendor)
 
 
 class FakeResponse:
-    def __init__(self, content, status_code=200):
+    def __init__(self, content, status_code=200, headers=None):
         self.content = content
         self.status_code = status_code
+        self.headers = dict(headers or {})
 
     def raise_for_status(self):
         return None
@@ -121,6 +122,44 @@ class VendorChartJsTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(get.call_count, 2)
         self.assertEqual(vendor.TARGET.read_bytes(), bundle)
+
+    def test_chartjs_download_honors_long_retry_after_by_skipping_to_next_mirror(self):
+        bundle = b'/*! Chart.js generated package */\n' + (b'x' * 120_000)
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode='w:gz') as archive:
+            info = tarfile.TarInfo('package/dist/chart.umd.min.js')
+            info.size = len(bundle)
+            archive.addfile(info, io.BytesIO(bundle))
+        tarball = stream.getvalue()
+        vendor.EXPECTED_SRI = 'sha512-' + base64.b64encode(hashlib.sha512(tarball).digest()).decode('ascii')
+        vendor.DOWNLOAD_URLS = ('https://registry-one.invalid/chart.tgz', 'https://registry-two.invalid/chart.tgz')
+        vendor.DOWNLOAD_ATTEMPTS = 2
+
+        limited = FakeResponse(b'limited', status_code=429, headers={'Retry-After': '3600'})
+        def raise_429():
+            error = vendor.requests.HTTPError('429 rate limited')
+            error.response = limited
+            raise error
+        limited.raise_for_status = raise_429
+
+        with patch.object(vendor.requests, 'get', side_effect=[limited, FakeResponse(tarball)]) as get, \
+             patch.object(vendor.time, 'sleep') as sleep:
+            result = vendor.main()
+        self.assertEqual(result, 0)
+        self.assertEqual(get.call_count, 2)
+        self.assertEqual(get.call_args_list[0].args[0], vendor.DOWNLOAD_URLS[0])
+        self.assertEqual(get.call_args_list[1].args[0], vendor.DOWNLOAD_URLS[1])
+        sleep.assert_not_called()
+        self.assertEqual(vendor.TARGET.read_bytes(), bundle)
+
+    def test_build_retry_after_parser_accepts_http_date(self):
+        from datetime import datetime, timedelta, timezone
+        from email.utils import format_datetime
+        response = FakeResponse(b'', status_code=503)
+        response.headers['Retry-After'] = format_datetime(datetime.now(timezone.utc) + timedelta(seconds=30), usegmt=True)
+        delay = vendor._retry_after_delay(response, fallback=1)
+        self.assertGreaterEqual(delay, 28)
+        self.assertLessEqual(delay, 31)
 
     def test_verified_tarball_installs_complete_chartjs_bundle(self):
         bundle = b'/*! Chart.js generated package */\n' + (b'x' * 120_000)

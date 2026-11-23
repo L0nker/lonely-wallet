@@ -1,6 +1,6 @@
-# Lonely Wallet v4.2.48
+# Lonely Wallet v4.2.49
 
-# Atualizações da versão 4.2.48
+# Atualizações da versão 4.2.49
 
 ## Retry-After padronizado em todos os provedores
 - Mantida a função compartilhada `_retry_after_seconds()` para interpretar `Retry-After` em segundos ou data HTTP.
@@ -17,7 +17,7 @@
 - Se todos os registries e CDNs estiverem indisponíveis, o build mantém o renderer alternativo e sinaliza `mode=fallback`; não declara o Chart.js completo como verificado.
 - Referências públicas do SRI do bundle 4.6.1: https://www.jsdelivr.com/package/npm/chart.js?path=dist e https://plainjs.com/javascript/plugins/chart-js-5/.
 
-## Testes da versão 4.2.48
+## Testes da versão 4.2.49
 - Adicionado teste de fallback do registry npm para o bundle UMD direto por CDN.
 - Adicionado teste para rejeitar bundle direto com SHA-384 divergente.
 - Mantidos testes de fallback offline, espelho de registry, retry HTTP 503 e SRI do tarball.
@@ -555,3 +555,16 @@ Os intervalos locais controlam somente o ritmo de envio. Não substituem as regr
 - Uma transação Pluggy marca apenas a previsão mais próxima, evitando pagar vários eventos parecidos de uma só vez.
 - Removida a lista de posições financeiras pessoais embutida no código; migrações continuam reconhecendo snapshots de usuário já armazenados no banco.
 - O pacote entregue usa o renderer alternativo porque o registry npm estava inacessível durante a geração. O Dockerfile tenta baixar Chart.js 4.6.1 e valida o SRI/SHA-256 durante o build; quando não há rede, o status correto é `degraded` e o fallback permanece ativo.
+
+
+## v4.2.49
+
+- As consultas oficiais do Banco Central (SGS) e do IBGE/SIDRA utilizam o controle comum de provedores, com persistência de cooldown e respeito ao cabeçalho `Retry-After` em segundos ou HTTP-date.
+- Respostas HTTP 408, 425, 429 e 5xx aplicam cooldown por provedor; dados antigos válidos podem ser utilizados dentro da janela de cache de contingência.
+- Respostas 200 com JSON inválido são removidas do cache e recebem tentativas curtas, sem repetir chamadas bloqueadas por `Retry-After`.
+- O healthcheck do Docker considera saudável o serviço quando o renderer fallback está disponível, mas continua imprimindo `degraded`; `/api/health?strict=1` permanece disponível para monitoração estrita.
+- O vendoring do Chart.js respeita `Retry-After` dos registries/CDNs: aguarda somente períodos curtos e passa para outro mirror quando a espera indicada é longa, sem consultar novamente a mesma origem antes do prazo.
+
+### Disponibilidade dos gráficos e healthcheck
+
+O healthcheck do container considera a aplicação operacional quando o renderer alternativo está disponível, mas imprime o estado `degraded` para diagnóstico. O endpoint `/api/health?strict=1` continua retornando HTTP 503 nesse cenário para monitoramento estrito. Assim, a limitação gráfica não faz o Docker marcar como indisponível uma carteira cujo dashboard continua acessível.

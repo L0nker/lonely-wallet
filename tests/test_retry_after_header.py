@@ -52,10 +52,17 @@ class RetryAfterHeaderTests(unittest.TestCase):
         self.assertIn("_retry_after_seconds(retry_after", SOURCE)
         self.assertIn("_retry_after_seconds(response.headers.get('Retry-After')", SOURCE)
         self.assertIn("_retry_after_seconds(result.headers.get('Retry-After')", SOURCE)
-        self.assertEqual(SOURCE.count('_retry_after_seconds('), 7)  # definition + 3 rate-limit and 3 upstream 5xx call sites
+        self.assertEqual(SOURCE.count('_retry_after_seconds('), 7)  # definition + provider response/cooldown call sites
         self.assertNotIn("int(float(response.headers.get('Retry-After')", SOURCE)
         self.assertNotIn("int(float(result.headers.get('Retry-After')", SOURCE)
         self.assertGreaterEqual(SOURCE.count("_retry_after_seconds(retry_header, default=30"), 3)
+
+    def test_official_indicator_providers_share_retry_after_handling(self):
+        self.assertIn("_provider_json_get(\n                'bcb'", SOURCE)
+        self.assertIn("_provider_json_get(\n        'ibge'", SOURCE)
+        provider_get = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == '_provider_get')
+        provider_source = ast.get_source_segment(SOURCE, provider_get)
+        self.assertIn('response.status_code in (408, 425) or response.status_code >= 500', provider_source)
 
 
 if __name__ == '__main__':
