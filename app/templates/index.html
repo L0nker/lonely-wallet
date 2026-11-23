@@ -3364,6 +3364,29 @@ function confirmFixedIncomeSale(){
  closeSuggestions();closeFixedIncomeSalePicker();
 }
 
+function getProventoAssetType(row){
+ const ticker=String(row?.ticker||'').trim().toUpperCase();
+ const holding=(state.itens||[]).find(item=>String(item.ticker||'').trim().toUpperCase()===ticker);
+ const candidates=[row?.tipo_ativo,holding?.tipo,holding?.classe].filter(Boolean);
+ // Prefer a fixed-income classification from either the event or the current
+ // holding so a conflicting provider label cannot leak fixed-income products.
+ return candidates.find(isFixedIncomeProventoType)||candidates[0]||'outros';
+}
+function isFixedIncomeProventoType(value){
+ const raw=String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim().replace(/[_-]+/g,' ').replace(/\s+/g,' ');
+ const canonical=typeof categoryKeyFromName==='function'?categoryKeyFromName(raw):null;
+ const key=String(canonical||raw).replace(/\s+/g,'_');
+ const fixedIncome=new Set(['renda_fixa','tesouro','tesouro_direto','cdb','rdb','lci','lca','lc','debenture','debentures','cri','cra','poupanca','fundos_de_renda_fixa','fundo_de_renda_fixa']);
+ return fixedIncome.has(key)||key.startsWith('renda_fixa_')||key.startsWith('tesouro_');
+}
+function filterProventoRowsByAsset(rows,selectedType='todos',selectedAsset='todos'){
+ return (rows||[]).filter(row=>{
+  const kind=getProventoAssetType(row);
+  if(isFixedIncomeProventoType(kind))return false;
+  return (selectedType==='todos'||kind===selectedType)&&
+   (selectedAsset==='todos'||String(row?.ticker||'')===selectedAsset);
+ });
+}
 function buildProvPalette(count){
  const hues=[];let step=137.508,index=0;
  while(hues.length<Math.max(1,count)&&index<720){
@@ -3376,9 +3399,9 @@ function buildProvPalette(count){
 }
 function buildProvDistribution(records,title){
  const assetTotals={},typeTotals={};
- (records||[]).filter(x=>!String(x.tipo_evento||x.tipo||'').toUpperCase().includes('AMORTIZA')).forEach(x=>{
+ (records||[]).filter(x=>!String(x.tipo_evento||x.tipo||'').toUpperCase().includes('AMORTIZA')&&!isFixedIncomeProventoType(getProventoAssetType(x))).forEach(x=>{
   const amount=Number(x.valor_total||0);if(!(amount>0))return;
-  const ticker=String(x.ticker||'Outros'),kind=x.tipo_ativo||((state.itens||[]).find(i=>i.ticker===ticker)||{}).tipo||'outros';
+  const ticker=String(x.ticker||'Outros'),kind=getProventoAssetType(x);
   assetTotals[ticker]=(assetTotals[ticker]||0)+amount;typeTotals[kind]=(typeTotals[kind]||0)+amount;
  });
  const assetRows=Object.entries(assetTotals).sort((a,b)=>b[1]-a[1]);
@@ -3402,8 +3425,8 @@ function openProvDistributionForBar(key,mode){
   const date=String(x.data_pagamento||'');if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return false;
   const dt=new Date(date+'T12:00:00');
   const bucket=mode==='anual'?String(dt.getFullYear()):`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}`;
-  const kind=x.tipo_ativo||((state.itens||[]).find(i=>i.ticker===x.ticker)||{}).tipo||'outros';
-  return bucket===key&&(selectedType==='todos'||kind===selectedType)&&(selectedAsset==='todos'||x.ticker===selectedAsset);
+  const kind=getProventoAssetType(x);
+  return !isFixedIncomeProventoType(kind)&&bucket===key&&(selectedType==='todos'||kind===selectedType)&&(selectedAsset==='todos'||x.ticker===selectedAsset);
  });
  const title=mode==='anual'?`Distribuição de proventos em ${key}`:`Distribuição de proventos em ${key.slice(5,7)}/${key.slice(0,4)}`;
  provDistributionStatus='Consolidado';
@@ -3535,10 +3558,10 @@ function renderProvHistoryFilters(rows,eventType){
 function renderProventosDashboard(){
  const d=state.proventos_dashboard||{},r=state.resumo||{};
  const todayForRows=new Date(),todayRowsISO=`${todayForRows.getFullYear()}-${String(todayForRows.getMonth()+1).padStart(2,'0')}-${String(todayForRows.getDate()).padStart(2,'0')}`;
- const rows=[...(d.recebidos||[]),...(d.a_receber||[]).filter(x=>String(x.data_pagamento||'')>=todayRowsISO)];
- const received=(d.recebidos||[]).reduce((sum,x)=>sum+Number(x.valor_total||0),0);
+ const rows=filterProventoRowsByAsset([...(d.recebidos||[]),...(d.a_receber||[]).filter(x=>String(x.data_pagamento||'')>=todayRowsISO)]);
+ const receivedRows=filterProventoRowsByAsset(d.recebidos||[]);
+ const received=receivedRows.reduce((sum,x)=>sum+Number(x.valor_total||0),0);
  const upcoming=rows.filter(x=>x.status==='A receber').reduce((sum,x)=>sum+Number(x.valor_total||0),0);
- const receivedRows=d.recebidos||[];
  const average=Number(d.media_mensal||0),total12=Number(d.total_12m||0);
  const averageEl=document.getElementById('provAverage'),totalEl=document.getElementById('provTotal12'),portfolioEl=document.getElementById('provPortfolioTotal');
  if(portfolioEl)portfolioEl.textContent=brl(receivedRows.reduce((sum,x)=>sum+Number(x.valor_total||0),0));
@@ -3563,23 +3586,23 @@ function renderProventosDashboard(){
 
  const typeSelect=document.getElementById('provTypeFilter'),assetSelect=document.getElementById('provAssetFilter');
  const priorType=typeSelect?.value||'todos',priorAsset=assetSelect?.value||'todos';
- const typeMap=new Map((state.itens||[]).map(x=>[x.tipo,labels[x.tipo]||x.tipo]));
- rows.forEach(x=>{const kind=x.tipo_ativo||((state.itens||[]).find(i=>i.ticker===x.ticker)||{}).tipo;if(kind&&!typeMap.has(kind))typeMap.set(kind,labels[kind]||kind);});
+ const typeMap=new Map();
+ rows.forEach(x=>{const kind=getProventoAssetType(x);if(kind&&!isFixedIncomeProventoType(kind)&&!typeMap.has(kind))typeMap.set(kind,labels[kind]||kind);});
  if(typeSelect){typeSelect.innerHTML='<option value="todos">Tipo de ativo</option>'+[...typeMap].map(([v,l])=>`<option value="${escapeHTML(v)}">${escapeHTML(l)}</option>`).join('');typeSelect.value=typeMap.has(priorType)?priorType:'todos';}
  const assetOptions=[...new Set(rows.map(x=>x.ticker).filter(Boolean))].sort();
  if(assetSelect){assetSelect.innerHTML='<option value="todos">Ativos</option>'+assetOptions.map(t=>`<option value="${escapeHTML(t)}">${escapeHTML(t)}</option>`).join('');assetSelect.value=assetOptions.includes(priorAsset)?priorAsset:'todos';}
  const selectedType=typeSelect?.value||'todos',selectedAsset=assetSelect?.value||'todos';
  const status=document.getElementById('provStatusFilter')?.value||'todos';
- const eventType=x=>x.tipo_ativo||((state.itens||[]).find(i=>i.ticker===x.ticker)||{}).tipo||'outros';
- const filtered=rows.filter(x=>
-  (selectedType==='todos'||eventType(x)===selectedType)&&(selectedAsset==='todos'||x.ticker===selectedAsset)&&(status==='todos'||x.status===status)
- ).sort((a,b)=>String(b.data_pagamento).localeCompare(String(a.data_pagamento)));
+ const eventType=x=>getProventoAssetType(x)||'outros';
+ const filtered=rows.filter(x=>(selectedType==='todos'||eventType(x)===selectedType)&&(selectedAsset==='todos'||x.ticker===selectedAsset)&&(status==='todos'||x.status===status))
+  .sort((a,b)=>String(b.data_pagamento).localeCompare(String(a.data_pagamento)));
+ const chartRows=filterProventoRowsByAsset(rows,selectedType,selectedAsset);
 
  // A distribuição considera apenas renda recebida nos últimos 12 meses;
  // amortizações são listadas, mas não entram como rendimento.
  const distributionNow=new Date(),firstDistribution=new Date(distributionNow.getFullYear(),distributionNow.getMonth()-11,1);
  const distribution={};
- (d.recebidos||[]).filter(x=>{const dt=new Date(String(x.data_pagamento||'')+'T12:00:00');return (selectedType==='todos'||eventType(x)===selectedType)&&(selectedAsset==='todos'||x.ticker===selectedAsset)&&!String(x.tipo_evento||x.tipo||'').toUpperCase().includes('AMORTIZA')&&Number.isFinite(dt.getTime())&&dt>=firstDistribution;}).forEach(x=>distribution[x.ticker]=(distribution[x.ticker]||0)+Number(x.valor_total||0));
+ receivedRows.filter(x=>{const dt=new Date(String(x.data_pagamento||'')+'T12:00:00');return (selectedType==='todos'||eventType(x)===selectedType)&&(selectedAsset==='todos'||x.ticker===selectedAsset)&&!String(x.tipo_evento||x.tipo||'').toUpperCase().includes('AMORTIZA')&&Number.isFinite(dt.getTime())&&dt>=firstDistribution;}).forEach(x=>distribution[x.ticker]=(distribution[x.ticker]||0)+Number(x.valor_total||0));
  const syncStatus=document.getElementById('proventosSyncStatus');
  if(syncStatus){
   const sync=d.sincronizacao||{};
@@ -3594,7 +3617,7 @@ function renderProventosDashboard(){
  const distValues=distNames.map(k=>distribution[k]);
  const distTotal=distValues.reduce((a,b)=>a+b,0);
  const typeDistribution={};
- distNames.forEach(ticker=>{const sample=(d.recebidos||[]).find(x=>x.ticker===ticker);const kind=sample?.tipo_ativo||((state.itens||[]).find(i=>i.ticker===ticker)||{}).tipo||'outros';typeDistribution[kind]=(typeDistribution[kind]||0)+distribution[ticker];});
+ distNames.forEach(ticker=>{const sample=receivedRows.find(x=>x.ticker===ticker);const kind=sample?eventType(sample):'outros';typeDistribution[kind]=(typeDistribution[kind]||0)+distribution[ticker];});
  const palette=buildProvPalette(Math.max(distNames.length,Object.keys(typeDistribution).length));
  provDistributionData={ativo:distNames.map((name,i)=>({name,value:distValues[i],color:palette[i%palette.length]})),tipo:Object.keys(typeDistribution).sort((a,b)=>typeDistribution[b]-typeDistribution[a]).map((name,i)=>({name:labels[name]||name,value:typeDistribution[name],color:palette[i%palette.length]}))};
  chart('provDistributionChart','doughnut',{labels:distNames.slice(0,3),datasets:[{data:distValues.slice(0,3),backgroundColor:distNames.slice(0,3).map((_,i)=>palette[i%palette.length]),borderWidth:0}]},{cutout:'66%',plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${ctx.label}: ${brl(ctx.raw||0)}`}}}});
@@ -3609,7 +3632,7 @@ function renderProventosDashboard(){
  const isCurrentOrFuturePending=x=>x.status==='A receber'&&String(x.data_pagamento||'')>=todayISO;
  const isConfirmedPaid=x=>x.status==='Pago'&&String(x.data_pagamento||'')<=todayISO;
  const isAnyClassifiedEvent=x=>isConfirmedPaid(x)||isCurrentOrFuturePending(x);
- const allChartRows=rows.filter(x=>{
+ const allChartRows=chartRows.filter(x=>{
   const date=String(x.data_pagamento||'');if(!validDate(date))return false;
   const dt=new Date(date+'T12:00:00'),year=date.slice(0,4);
   if(chartRange==='ano_atual')return Number(year)===now.getFullYear()&&(isConfirmedPaid(x)||isCurrentOrFuturePending(x));
@@ -3638,7 +3661,7 @@ function renderProventosDashboard(){
  }
  if(mode==='mensal'&&chartRange==='ano_atual')keys=Array.from({length:12},(_,i)=>`${now.getFullYear()}-${String(i+1).padStart(2,'0')}`);
  if(mode==='anual'&&keys.length){const min=Number(keys[0]),max=Number(keys[keys.length-1]);keys=Array.from({length:max-min+1},(_,i)=>String(min+i));}
- const availableYears=[...new Set(rows.filter(x=>validDate(x.data_pagamento)).map(x=>String(x.data_pagamento).slice(0,4)))];
+ const availableYears=[...new Set(chartRows.filter(x=>validDate(x.data_pagamento)).map(x=>String(x.data_pagamento).slice(0,4)))];
  renderProvChartPeriodMenu(availableYears);
  const labelsChart=keys.map(k=>mode==='anual'?k:`${k.slice(5,7)}/${k.slice(0,4)}`);
  const got=keys.map(k=>Number((sums[k]?.recebido||0).toFixed(2))),due=keys.map(k=>Number((sums[k]?.a_receber||0).toFixed(2)));

@@ -4,10 +4,15 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 
 const html = fs.readFileSync(require('node:path').join(__dirname, '../app/templates/index.html'), 'utf8');
+const categoryStart = html.indexOf('function categoryKeyFromName(');
+const categoryEnd = html.indexOf('\n\nfunction readAssetNoteData', categoryStart);
+const helperStart = html.indexOf('function getProventoAssetType(');
 const paletteStart = html.indexOf('function buildProvPalette(');
 const paletteEnd = html.indexOf('window.closeAllProventosMenus=function()', paletteStart);
 const modeStart = html.indexOf('function setProvDistributionMode(');
 const modeEnd = html.indexOf('\n\nconst chartPalette=', modeStart);
+assert(categoryStart >= 0 && categoryEnd > categoryStart, 'asset category helper must exist');
+assert(helperStart >= 0 && paletteStart > helperStart, 'proventos asset helpers must exist');
 assert(paletteStart >= 0 && paletteEnd > paletteStart, 'distribution builder functions must exist');
 assert(modeStart >= 0 && modeEnd > modeStart, 'distribution mode renderer must exist');
 
@@ -62,7 +67,8 @@ const context = {
 };
 
 vm.createContext(context);
-vm.runInContext(html.slice(paletteStart, paletteEnd), context);
+vm.runInContext(html.slice(categoryStart, categoryEnd), context);
+vm.runInContext(html.slice(helperStart, paletteStart) + html.slice(paletteStart, paletteEnd), context);
 vm.runInContext(html.slice(modeStart, modeEnd), context);
 
 context.openProvDistributionForBar('2026-09', 'mensal');
@@ -94,6 +100,15 @@ assert.deepEqual(
 );
 assert.equal(nodes.provDistributionTotal.textContent, 'R$ 63.61');
 nodes.provTypeFilter.value = 'todos';
+nodes.provAssetFilter.value = 'BBDC4';
+context.openProvDistributionForBar('2026-09', 'mensal');
+assert.deepEqual(
+  Array.from(context.provDistributionData.ativo, (row) => [row.name, Number(row.value.toFixed(2))]),
+  [['BBDC4', 5]],
+  'the selected ticker must also constrain the monthly detail',
+);
+assert.equal(nodes.provDistributionTotal.textContent, 'R$ 5.00');
+nodes.provAssetFilter.value = 'todos';
 context.openProvDistributionForBar('2026-09', 'mensal');
 
 context.setProvDistributionMode('tipo');
