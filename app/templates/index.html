@@ -4679,14 +4679,11 @@ async function loadAPIUsage(){
  host.innerHTML='<div class="mini">Carregando consumo local das APIs…</div>';
  try{
   const payload=await api('/api/integracoes/consumo',{skipAutoRefresh:true});
-  const item=payload.brapi||{},used=Number(item.requests_last_30_days||0),budget=Number(item.local_budget||0);
-  const remaining=item.budget_enabled?Math.max(0,Number(item.remaining_local_budget||0)):null;
-  const percent=item.budget_enabled&&budget>0?Math.min(100,used/budget*100):0;
+  const item=payload.brapi||{},used=Number(item.requests_last_30_days||0);
   const last=item.last_request_epoch?new Date(Number(item.last_request_epoch)*1000).toLocaleString('pt-BR'):'Nenhuma chamada registrada';
   const labels={pluggy:'Pluggy',hgbrasil:'HG Brasil',dadosb3:'Dados B3',fred:'FRED',yahoo:'Yahoo Finance'};
   const otherUsage=Object.entries(item.providers||{}).filter(([name])=>name!=='brapi').map(([name,stats])=>`${escapeHTML(labels[name]||name)}: ${Number(stats.requests_last_30_days||0).toLocaleString('pt-BR')}`).join(' · ');
-  const otherBudgets=Object.entries(item.provider_budgets||{}).filter(([name])=>name!=='brapi').map(([name,row])=>`${escapeHTML(labels[name]||name)}: ${Number(row.requests||0).toLocaleString('pt-BR')}/${row.enabled?Number(row.local_budget||0).toLocaleString('pt-BR'):'sem limite local'} em ${Number(row.window_hours||24)}h`).join(' · ');
-  host.innerHTML=`<div class="panelhead"><div><h3 style="margin:0">Consumo local das APIs</h3><div class="mini">Estatísticas desta instalação. A consulta não consome cota externa.</div></div><button class="ghost" type="button" onclick="loadAPIUsage()">↻ Atualizar</button></div><div class="api-usage-grid"><div><span class="mini">brapi · chamadas / 30 dias</span><strong>${used.toLocaleString('pt-BR')}</strong></div><div><span class="mini">Orçamento interno brapi</span><strong>${item.budget_enabled?budget.toLocaleString('pt-BR'):'Sem limite local'}</strong></div><div><span class="mini">Saldo do orçamento</span><strong>${remaining===null?'—':remaining.toLocaleString('pt-BR')}</strong></div><div><span class="mini">Cache brapi reutilizado</span><strong>${Number(item.cache_hits||0).toLocaleString('pt-BR')} <small>· antigo ${Number(item.stale_cache_hits||0).toLocaleString('pt-BR')}</small></strong></div></div>${item.budget_enabled?`<div class="api-usage-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent.toFixed(1)}"><span style="width:${percent.toFixed(1)}%"></span></div>`:''}<div class="mini">Última chamada brapi: ${escapeHTML(last)}. ${escapeHTML(item.note||'')}</div>${otherBudgets?`<div class="mini" style="margin-top:7px"><b>Orçamentos locais · uso e limite:</b> ${otherBudgets}</div>`:''}${otherUsage?`<div class="mini" style="margin-top:7px"><b>Outras fontes · chamadas nos últimos 30 dias:</b> ${otherUsage}</div>`:''}`;
+  host.innerHTML=`<div class="panelhead"><div><h3 style="margin:0">Consumo das APIs</h3><div class="mini">Estatísticas de chamadas e cache desta instalação. Sem cotas artificiais locais.</div></div><button class="ghost" type="button" onclick="loadAPIUsage()">↻ Atualizar</button></div><div class="api-usage-grid"><div><span class="mini">brapi · chamadas / 30 dias</span><strong>${used.toLocaleString('pt-BR')}</strong></div><div><span class="mini">Orçamento interno</span><strong>Desativado</strong></div><div><span class="mini">Cache brapi reutilizado</span><strong>${Number(item.cache_hits||0).toLocaleString('pt-BR')} <small>· antigo ${Number(item.stale_cache_hits||0).toLocaleString('pt-BR')}</small></strong></div></div><div class="mini">Última chamada brapi: ${escapeHTML(last)}. ${escapeHTML(item.note||'')}</div>${otherUsage?`<div class="mini" style="margin-top:7px"><b>Outras fontes · chamadas nos últimos 30 dias:</b> ${otherUsage}</div>`:''}`;
  }catch(error){host.innerHTML=`<div class="mini">Não foi possível carregar o consumo local: ${escapeHTML(error.message||'erro desconhecido')}</div>`;}
 }
 async function loadAPIProviders(){
@@ -5060,13 +5057,22 @@ async function setOperationSide(side){
  }
 }
 async function syncProventosHistory(){
- if(!await appConfirm('Atualizar histórico de proventos','O aplicativo consultará as fontes de proventos ativas e atualizará os eventos disponíveis.','Atualizar histórico'))return;
+ if(!await appConfirm('Atualizar histórico de proventos','O aplicativo consultará as fontes de proventos ativas em segundo plano e atualizará os eventos disponíveis.','Atualizar histórico'))return;
  const button=document.getElementById('syncProventosButton');
  if(button){button.disabled=true;button.textContent='Sincronizando…';}
  try{
-  const result=await api('/api/proventos/sincronizar',{method:'POST',body:'{}'});
+  let result=await api('/api/proventos/sincronizar',{method:'POST',body:'{}',skipAutoRefresh:true});
+  const signature=String(result.signature||'');
+  for(let attempt=0;attempt<120&&['running','queued'].includes(String(result.status||''));attempt++){
+   await new Promise(resolve=>setTimeout(resolve,1000));
+   const suffix=signature?'?signature='+encodeURIComponent(signature):'';
+   result=await api('/api/proventos/sincronizar/status'+suffix,{skipAutoRefresh:true});
+   if(result.status==='superseded')break;
+  }
   await refresh();
-  toast(result.mensagem||'Histórico de proventos atualizado.');
+  if(result.status==='failed')throw new Error(result.erro||result.mensagem||'Falha ao atualizar proventos.');
+  if(['running','queued'].includes(String(result.status||'')))toast('A sincronização continua em segundo plano. Os dados serão atualizados quando terminar.');
+  else toast(result.mensagem||'Histórico de proventos atualizado.');
  }catch(error){toast(error.message||'Não foi possível atualizar os proventos.')}
  finally{if(button){button.disabled=false;button.textContent='↻ Atualizar histórico';}}
 }

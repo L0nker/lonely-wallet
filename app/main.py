@@ -117,8 +117,17 @@ def _dashboard_cache_signature():
 
 
 def _checkpoint_dashboard_cache_sources():
-    """Consolida WALs após a leitura completa do dashboard, antes de assinar o cache."""
+    """Consolida WALs, sem disputar o banco com workers de sincronização."""
+    try:
+        proventos_running = PROVENTOS_SYNC_STATE.get('status') == 'running'
+    except NameError:
+        proventos_running = False
     for path in (DB_PATH, TOKEN_DB_PATH):
+        if path == DB_PATH and proventos_running:
+            # O dashboard pode ser salvo durante uma consulta externa longa. O
+            # WAL não vazio participa da assinatura e invalida o snapshot após
+            # a conclusão do worker, portanto o checkpoint pode esperar.
+            continue
         if not os.path.exists(path):
             continue
         connection = None
@@ -190,6 +199,12 @@ def _write_dashboard_snapshot(payload):
 
 PROVENTOS_SYNC_CACHE = {'time': 0, 'result': None, 'signature': None}
 PROVENTOS_SYNC_TTL = 3600
+PROVENTOS_SYNC_LOCK = threading.RLock()
+PROVENTOS_SYNC_STATE = {
+    'status': 'idle', 'signature': '', 'pending_signature': '',
+    'result': None, 'error': '', 'updated_at': ''
+}
+PROVENTOS_SYNC_PENDING_INPUTS = None
 SGS_CACHE = {}
 SGS_CACHE_TTL = 12 * 3600
 SGS_CACHE_PATH = os.environ.get('SGS_CACHE_PATH', '/data/sgs_cache.json')
@@ -208,33 +223,8 @@ PERFORMANCE_HISTORY_STATE = {
 }
 PERFORMANCE_HISTORY_PENDING_INPUTS = None
 
-# A cota gratuita da brapi permite uma chamada simultânea e 1 ticker por chamada.
-# O orçamento local usa 10.000 requisições em 30 dias para reservar margem para
-# outras aplicações que compartilhem o mesmo token.
-try:
-    BRAPI_LOCAL_30D_BUDGET = max(0, int(os.environ.get('BRAPI_LOCAL_30D_BUDGET', '10000')))
-except (TypeError, ValueError):
-    BRAPI_LOCAL_30D_BUDGET = 10000
-try:
-    HGBRASIL_LOCAL_24H_BUDGET = max(0, int(os.environ.get('HGBRASIL_LOCAL_24H_BUDGET', '300')))
-except (TypeError, ValueError):
-    HGBRASIL_LOCAL_24H_BUDGET = 300
-try:
-    DADOSB3_LOCAL_24H_BUDGET = max(0, int(os.environ.get('DADOSB3_LOCAL_24H_BUDGET', '150')))
-except (TypeError, ValueError):
-    DADOSB3_LOCAL_24H_BUDGET = 150
-
-
-def _provider_budget_config(provider):
-    if provider == 'brapi':
-        return BRAPI_LOCAL_30D_BUDGET, 30 * 86400
-    if provider == 'hgbrasil':
-        return HGBRASIL_LOCAL_24H_BUDGET, 24 * 3600
-    if provider == 'dadosb3':
-        return DADOSB3_LOCAL_24H_BUDGET, 24 * 3600
-    return 0, 30 * 86400
-
-
+# O controle local registra consumo e aplica somente backoff após respostas reais
+# dos provedores. Não cria cotas artificiais por dia ou mês.
 try:
     BRAPI_MAX_TICKERS_PER_REQUEST = min(20, max(1, int(os.environ.get('BRAPI_MAX_TICKERS_PER_REQUEST', '1'))))
 except (TypeError, ValueError):
@@ -380,8 +370,9 @@ def _provider_wait_for_gap(provider):
         if cooldown_until > time.time():
             raise ValueError(f'Consultas ao provedor {provider} pausadas por limite temporário. Tente novamente após {int(cooldown_until - time.time()) + 1}s.')
     except sqlite3.Error:
-        # O orçamento brapi falha fechado se o banco não puder ser consultado.
-        if provider in ('brapi', 'pluggy') and (provider != 'brapi' or BRAPI_LOCAL_30D_BUDGET > 0):
+        # Sem estado local, APIs públicas podem continuar. Pluggy permanece
+        # fail-closed porque exige registro de segurança antes da chamada.
+        if provider == 'pluggy':
             raise
     finally:
         if connection is not None:
@@ -520,22 +511,6 @@ def _api_update_request_status(request_id, status_code):
             connection.close()
 
 
-def _api_budget_used(provider='brapi', window_seconds=30 * 86400):
-    connection = None
-    try:
-        connection = _api_cache_connection()
-        row = connection.execute(
-            'SELECT COUNT(*) FROM api_request_log WHERE provider=? AND requested_at>=?',
-            (provider, time.time() - window_seconds)
-        ).fetchone()
-        return int(row[0] or 0)
-    except sqlite3.Error:
-        return _provider_budget_config(provider)[0] if _provider_budget_config(provider)[0] > 0 else 0
-    finally:
-        if connection is not None:
-            connection.close()
-
-
 def _cached_http_response(payload, url, status_code=200, stale=False):
     response = requests.Response()
     response.status_code = int(status_code)
@@ -584,7 +559,7 @@ def _provider_set_cooldown(provider, seconds, status_code, reason):
 
 def _provider_get(provider, url, params=None, headers=None, timeout=12, cache_ttl=0, stale_ttl=None,
                   budgeted=False):
-    """GET cacheado em SQLite, compartilhado entre workers e reinicializações."""
+    """GET cacheado em SQLite; `budgeted` é ignorado por compatibilidade antiga."""
     params = dict(params or {})
     headers = dict(headers or {})
     endpoint = str(url).split('?', 1)[0]
@@ -604,20 +579,8 @@ def _provider_get(provider, url, params=None, headers=None, timeout=12, cache_tt
             return _cached_http_response(cached['payload'], url, cached['status_code'], stale=False)
 
         stale_ttl = float(stale_ttl if stale_ttl is not None else max(cache_ttl * 4, 24 * 3600))
-        local_budget, budget_window = _provider_budget_config(provider)
-        if (budgeted or local_budget > 0) and local_budget > 0:
-            used = _api_budget_used(provider, window_seconds=budget_window)
-            if used >= local_budget:
-                if cached and cached['stale_until'] > now:
-                    _api_cache_record_hit(provider, stale=True)
-                    return _cached_http_response(cached['payload'], url, cached['status_code'], stale=True)
-                window_label = '30 dias' if budget_window >= 30 * 86400 else '24 horas'
-                env_name = {'brapi':'BRAPI_LOCAL_30D_BUDGET','hgbrasil':'HGBRASIL_LOCAL_24H_BUDGET','dadosb3':'DADOSB3_LOCAL_24H_BUDGET'}.get(provider, 'LOCAL_API_BUDGET')
-                return _synthetic_api_response(
-                    429,
-                    f'Orçamento local de segurança de {provider} atingido ({local_budget} chamadas em {window_label}). Aguarde a janela ou ajuste {env_name}.',
-                    url, retry_after=3600
-                )
+        # `budgeted` é mantido apenas por compatibilidade com chamadas antigas;
+        # nenhuma cota local pode bloquear a chamada ao provedor.
 
         connection = None
         try:
@@ -642,9 +605,13 @@ def _provider_get(provider, url, params=None, headers=None, timeout=12, cache_tt
         except ValueError as exc:
             return _synthetic_api_response(429, str(exc), url, retry_after=60)
         except sqlite3.Error:
-            return _synthetic_api_response(503, 'Não foi possível validar o intervalo seguro de consultas; a chamada externa foi bloqueada.', url, retry_after=60)
+            if provider == 'pluggy':
+                return _synthetic_api_response(503, 'Não foi possível validar o intervalo seguro de consultas; a chamada Pluggy foi bloqueada.', url, retry_after=60)
+            # For quote/dividend providers, a temporary local logging problem
+            # must not create an artificial outage. Their real HTTP limits remain
+            # enforced through provider responses (429/Retry-After).
         request_id = _api_record_request(provider, endpoint, 0)
-        if (budgeted or local_budget > 0 or provider == 'pluggy') and not request_id:
+        if provider == 'pluggy' and not request_id:
             if cached and cached['stale_until'] > now:
                 _api_cache_record_hit(provider, stale=True)
                 return _cached_http_response(cached['payload'], url, cached['status_code'], stale=True)
@@ -750,18 +717,27 @@ def _api_cache_cleanup():
 
 
 def _api_usage_snapshot():
-    used = _api_budget_used('brapi')
+    """Return observed request/cache statistics without imposing local quotas."""
     connection = None
     cache_entries = 0
     fresh_hits = stale_hits = 0
     last_request = None
     providers = {}
+    requests_brapi = 0
     try:
         connection = _api_cache_connection()
-        cache_entries = int(connection.execute('SELECT COUNT(*) FROM api_response_cache WHERE provider=?', ('brapi',)).fetchone()[0])
-        row = connection.execute('SELECT MAX(requested_at) FROM api_request_log WHERE provider=?', ('brapi',)).fetchone()
-        last_request = float(row[0]) if row and row[0] else None
-        stats = connection.execute('SELECT fresh_hits,stale_hits FROM api_cache_stats WHERE provider=?', ('brapi',)).fetchone()
+        cache_entries = int(connection.execute(
+            'SELECT COUNT(*) FROM api_response_cache WHERE provider=?', ('brapi',)
+        ).fetchone()[0])
+        row = connection.execute(
+            'SELECT COUNT(*),MAX(requested_at) FROM api_request_log WHERE provider=? AND requested_at>=?',
+            ('brapi', time.time() - 30 * 86400)
+        ).fetchone()
+        requests_brapi = int(row[0] or 0)
+        last_request = float(row[1]) if row[1] else None
+        stats = connection.execute(
+            'SELECT fresh_hits,stale_hits FROM api_cache_stats WHERE provider=?', ('brapi',)
+        ).fetchone()
         if stats:
             fresh_hits, stale_hits = int(stats[0] or 0), int(stats[1] or 0)
         rows = connection.execute(
@@ -778,25 +754,16 @@ def _api_usage_snapshot():
     finally:
         if connection is not None:
             connection.close()
-    budget = BRAPI_LOCAL_30D_BUDGET
-    provider_budgets = {}
-    for name in ('brapi', 'hgbrasil', 'dadosb3'):
-        limit, window_seconds = _provider_budget_config(name)
-        count = _api_budget_used(name, window_seconds=window_seconds)
-        provider_budgets[name] = {
-            'requests': count, 'local_budget': limit,
-            'remaining': max(0, limit - count) if limit > 0 else None,
-            'window_hours': int(window_seconds / 3600), 'enabled': limit > 0
-        }
     return {
-        'provider': 'brapi', 'window_days': 30, 'requests_last_30_days': used,
-        'local_budget': budget, 'remaining_local_budget': max(0, budget - used) if budget > 0 else None,
-        'budget_enabled': budget > 0, 'provider_budgets': provider_budgets,
-        'cache_entries': cache_entries, 'cache_hits': fresh_hits, 'stale_cache_hits': stale_hits,
-        'last_request_epoch': last_request, 'providers': providers,
-        'note': 'Contagem local desta instalação; outras aplicações que compartilham os tokens não são contabilizadas.'
+        'provider': 'brapi', 'window_days': 30,
+        'requests_last_30_days': requests_brapi,
+        'local_budget': None, 'remaining_local_budget': None,
+        'budget_enabled': False, 'provider_budgets': {},
+        'cache_entries': cache_entries, 'cache_hits': fresh_hits,
+        'stale_cache_hits': stale_hits, 'last_request_epoch': last_request,
+        'providers': providers,
+        'note': 'Somente estatísticas desta instalação. Não existem cotas artificiais locais; limites e pausas seguem as respostas e regras reais de cada provedor.'
     }
-
 
 
 
@@ -2176,7 +2143,10 @@ def _pluggy_import_investment_transaction(item_id, investment, movement, now_tex
     is_income_description = movement_type in ('', 'UNKNOWN', 'OTHER') and any(
         marker in text_for_income for marker in income_markers
     )
-    if (is_income_movement or is_income_description) and ticker and trade_date and amount > 0:
+    income_amount_candidates = _pluggy_amount_candidates(movement, fallback=amount)
+    income_receipt_amount = _pluggy_income_receipt_amount(movement, fallback=amount)
+    income_gross_amount = income_amount_candidates[0] if income_amount_candidates else amount
+    if (is_income_movement or is_income_description) and ticker and trade_date and income_receipt_amount > 0:
         already_imported = db().execute(
             'SELECT external_id,target_id,import_state FROM pluggy_imported_events WHERE external_id=?',
             (external_id,)
@@ -2191,14 +2161,16 @@ def _pluggy_import_investment_transaction(item_id, investment, movement, now_tex
                 """SELECT p.id FROM proventos p
                    WHERE UPPER(p.ticker)=?
                      AND date(p.data) BETWEEN date(?,'-1 day') AND date(?,'+1 day')
-                     AND ABS(p.valor_total-?)<=0.02
+                     AND (ABS(p.valor_total-?)<=0.02 OR ABS(p.valor_total-?)<=0.02)
                      AND NOT EXISTS (
                        SELECT 1 FROM pluggy_imported_events pe
                        WHERE pe.event_type='provento' AND pe.target_id=p.id
                      )
-                   ORDER BY ABS(julianday(p.data)-julianday(?)), p.id
+                   ORDER BY MIN(ABS(p.valor_total-?),ABS(p.valor_total-?)),
+                            ABS(julianday(p.data)-julianday(?)), p.id
                    LIMIT 1""",
-                (ticker, trade_date, trade_date, amount, trade_date)
+                (ticker, trade_date, trade_date, income_gross_amount, income_receipt_amount,
+                 income_gross_amount, income_receipt_amount, trade_date)
             ).fetchone()
             if matched:
                 target_id = int(matched['id'])
@@ -2206,7 +2178,7 @@ def _pluggy_import_investment_transaction(item_id, investment, movement, now_tex
             else:
                 cursor = db().execute(
                     'INSERT INTO proventos(ticker,valor_total,data) VALUES(?,?,?)',
-                    (ticker, amount, trade_date)
+                    (ticker, income_receipt_amount, trade_date)
                 )
                 target_id = int(cursor.lastrowid)
                 state = 'imported_provento'
@@ -2216,23 +2188,30 @@ def _pluggy_import_investment_transaction(item_id, investment, movement, now_tex
                     """UPDATE pluggy_imported_events
                        SET ticker=?,event_date=?,amount=?,target_id=?,import_state='imported'
                        WHERE external_id=?""",
-                    (ticker, trade_date, amount, target_id, external_id)
+                    (ticker, trade_date, income_receipt_amount, target_id, external_id)
                 )
             else:
                 db().execute(
                     """INSERT INTO pluggy_imported_events
                        (external_id,event_type,ticker,event_date,amount,target_id,import_state,created_at)
                        VALUES(?,?,?,?,?,?,?,?)""",
-                    (external_id, 'provento', ticker, trade_date, amount, target_id, 'imported', now_text)
+                    (external_id, 'provento', ticker, trade_date, income_receipt_amount, target_id, 'imported', now_text)
                 )
         else:
             state = 'imported_provento'
+            db().execute(
+                """UPDATE pluggy_imported_events
+                   SET ticker=?,event_date=?,amount=?,import_state='imported'
+                   WHERE external_id=? AND event_type='provento'""",
+                (ticker, trade_date, income_receipt_amount, external_id)
+            )
 
         # A forecast from BRAPI becomes paid only after the matching Pluggy
         # transaction has been persisted. It is not itself used as proof.
         _mark_matching_api_forecast_paid(
-            ticker, trade_date, amount, movement_type=movement_type,
-            description=description, raw_movement=movement
+            ticker, trade_date, income_gross_amount, movement_type=movement_type,
+            description=description, raw_movement=movement,
+            alternate_amounts=income_amount_candidates
         )
 
     db().execute(
@@ -2605,8 +2584,8 @@ def _pluggy_sync_impl():
         return json_error('Falha na sincronização Pluggy: ' + safe_error_text(exc, 140), 400)
     # Após atualizar as posições/movimentações, reconcilia proventos dos ativos atuais.
     try:
-        current_items = (carteira().json or {}).get('itens', [])
-        summary['proventos_sync'] = sync_brapi_proventos(force=False, quote_items=current_items, active_items=current_items)
+        current_items = (carteira(use_cached_quotes=True).json or {}).get('itens', [])
+        summary['proventos_sync'] = _queue_proventos_sync(force=False, quote_items=current_items, active_items=current_items)
     except Exception as dividend_exc:
         summary['warnings'].append('Não foi possível atualizar proventos após a sincronização: ' + safe_error_text(dividend_exc, 120))
     return jsonify(ok=True, summary=summary, synced_at=now_text)
@@ -4561,8 +4540,17 @@ def proventos():
 
 @app.route('/api/proventos/sincronizar', methods=['POST'])
 def sincronizar_proventos():
-    result = sync_brapi_proventos(force=True, quote_items=carteira().json.get('itens', []))
+    portfolio = carteira(use_cached_quotes=True).json or {}
+    result = _queue_proventos_sync(
+        force=True, quote_items=portfolio.get('itens', []),
+        active_items=portfolio.get('itens', [])
+    )
     return jsonify(result)
+
+
+@app.route('/api/proventos/sincronizar/status', methods=['GET'])
+def status_sincronizacao_proventos():
+    return jsonify(_proventos_sync_status(request.args.get('signature')))
 
 
 def _b3_normalize(value):
@@ -4860,8 +4848,8 @@ def importar_b3():
         # A importação altera a carteira: verifica eventos de proventos dos ativos que permaneceram em posição.
         dividend_sync = None
         try:
-            current_items = (carteira().json or {}).get('itens', [])
-            dividend_sync = sync_brapi_proventos(force=False, quote_items=current_items, active_items=current_items)
+            current_items = (carteira(use_cached_quotes=True).json or {}).get('itens', [])
+            dividend_sync = _queue_proventos_sync(force=False, quote_items=current_items, active_items=current_items)
         except Exception as dividend_exc:
             dividend_sync = {'ok': False, 'mensagem': safe_error_text(dividend_exc, 120)}
         return jsonify(ok=True,importadas=inserted_ops+inserted_provs,operacoes=inserted_ops,proventos=inserted_provs,duplicados=duplicates,lote_id=lote_id, sincronizacao_proventos=dividend_sync)
@@ -5278,6 +5266,58 @@ def _normalize_provento_category(value, ticker=None, description=''):
     return None
 
 
+
+def _pluggy_amount_candidates(raw_movement, fallback=None):
+    """Return documented gross/net transaction totals for safe income matching.
+
+    Pluggy exposes `amount` as gross transaction value and `netAmount` as the
+    value after expenses. For JCP these may differ because of withholding.
+    Never infer arbitrary values: only compare fields actually supplied by Pluggy.
+    """
+    if isinstance(raw_movement, str):
+        try:
+            raw_movement = json.loads(raw_movement or '{}')
+        except (TypeError, ValueError):
+            raw_movement = {}
+    if not isinstance(raw_movement, dict):
+        raw_movement = {}
+    values = []
+    for key in ('grossAmount', 'amount', 'netAmount'):
+        raw_value = raw_movement.get(key)
+        try:
+            number = abs(float(raw_value))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number) and number > 0 and all(abs(number - item) > 0.000001 for item in values):
+            values.append(number)
+    if fallback is not None:
+        try:
+            number = abs(float(fallback))
+        except (TypeError, ValueError):
+            number = 0.0
+        if math.isfinite(number) and number > 0 and all(abs(number - item) > 0.000001 for item in values):
+            values.append(number)
+    return values
+
+
+def _pluggy_income_receipt_amount(movement, fallback=None):
+    """Use Pluggy's netAmount for the credited cash, preserving gross in raw_json."""
+    candidates = _pluggy_amount_candidates(movement, fallback=fallback)
+    try:
+        net_amount = abs(float((movement or {}).get('netAmount') or 0))
+    except (TypeError, ValueError, AttributeError):
+        net_amount = 0.0
+    if math.isfinite(net_amount) and net_amount > 0:
+        return round(net_amount, 2)
+    try:
+        gross_amount = abs(float((movement or {}).get('grossAmount') or (movement or {}).get('amount') or fallback or 0))
+    except (TypeError, ValueError, AttributeError):
+        gross_amount = 0.0
+    if math.isfinite(gross_amount) and gross_amount > 0:
+        return round(gross_amount, 2)
+    return round(candidates[0], 2) if candidates else 0.0
+
+
 def _pluggy_record_date(raw_movement):
     if isinstance(raw_movement, str):
         try:
@@ -5330,11 +5370,9 @@ def _pluggy_confirmed_provento_exists(ticker, payment_date, amount, event_type=N
     expected_record_date = _api_date(record_date)
     for raw in rows:
         row = dict(raw)
-        try:
-            confirmed_amount = float(row.get('amount') or 0)
-        except (TypeError, ValueError):
-            continue
-        if not math.isfinite(confirmed_amount) or abs(confirmed_amount - value) > _pluggy_match_tolerance(value):
+        amount_candidates = _pluggy_amount_candidates(row.get('raw_json'), fallback=row.get('amount'))
+        if not any(abs(candidate - value) <= _pluggy_match_tolerance(value)
+                   for candidate in amount_candidates):
             continue
         confirmed_category = _normalize_provento_category(
             row.get('movement_type'), symbol, row.get('description')
@@ -5349,7 +5387,7 @@ def _pluggy_confirmed_provento_exists(ticker, payment_date, amount, event_type=N
 
 
 def _mark_matching_api_forecast_paid(ticker, payment_date, amount, movement_type=None,
-                                     description='', raw_movement=None):
+                                     description='', raw_movement=None, alternate_amounts=None):
     """Mark only the single best API forecast matching a confirmed Pluggy credit."""
     symbol = str(ticker or '').strip().upper()
     day = _api_date(payment_date)
@@ -5369,6 +5407,18 @@ def _mark_matching_api_forecast_paid(ticker, payment_date, amount, movement_type
     ).fetchall()
     confirmed_category = _normalize_provento_category(movement_type, symbol, description)
     confirmed_record_date = _pluggy_record_date(raw_movement)
+    amount_candidates = _pluggy_amount_candidates(raw_movement, fallback=value)
+    for alternate in alternate_amounts or []:
+        try:
+            candidate_amount = abs(float(alternate))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(candidate_amount) and candidate_amount > 0 and all(
+            abs(candidate_amount - existing) > 0.000001 for existing in amount_candidates
+        ):
+            amount_candidates.append(candidate_amount)
+    if not amount_candidates:
+        amount_candidates = [value]
     candidates = []
     for raw in rows:
         row = dict(raw)
@@ -5376,7 +5426,8 @@ def _mark_matching_api_forecast_paid(ticker, payment_date, amount, movement_type
             forecast_amount = float(row.get('valor_total') or 0)
         except (TypeError, ValueError):
             continue
-        if not math.isfinite(forecast_amount) or abs(forecast_amount - value) > _pluggy_match_tolerance(value):
+        amount_difference = min(abs(forecast_amount - candidate) for candidate in amount_candidates)
+        if not math.isfinite(forecast_amount) or amount_difference > _pluggy_match_tolerance(forecast_amount):
             continue
         forecast_category = _normalize_provento_category(row.get('tipo_evento'), symbol)
         if forecast_category and confirmed_category and forecast_category != confirmed_category:
@@ -5389,7 +5440,7 @@ def _mark_matching_api_forecast_paid(ticker, payment_date, amount, movement_type
             date_distance = abs((date.fromisoformat(forecast_day) - date.fromisoformat(day)).days)
         except (TypeError, ValueError):
             date_distance = 99
-        score = (date_distance, abs(forecast_amount - value), 0 if forecast_category == confirmed_category and forecast_category else 1)
+        score = (date_distance, amount_difference, 0 if forecast_category == confirmed_category and forecast_category else 1)
         candidates.append((score, str(row.get('event_key') or '')))
     if not candidates:
         return 0
@@ -5568,6 +5619,134 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
     }
     PROVENTOS_SYNC_CACHE.update(time=now_ts, result=result, signature=signature)
     return result
+
+
+
+def _proventos_sync_signature(quote_items=None, active_items=None):
+    """Stable signature for the asset universe used by the dividend sync."""
+    types = _asset_type_map()
+    for item in list(active_items or []) + list(quote_items or []):
+        ticker = str(item.get('ticker') or '').strip().upper()
+        if ticker:
+            types[ticker] = str(item.get('tipo') or types.get(ticker) or 'outros').lower()
+    return tuple(sorted(types.items()))
+
+
+def _proventos_sync_worker(inputs, signature):
+    """Run dividend API synchronization outside any HTTP request thread."""
+    global PROVENTOS_SYNC_PENDING_INPUTS
+    current_inputs = inputs
+    current_signature = signature
+    while True:
+        result = None
+        error = None
+        try:
+            with app.app_context():
+                result = sync_brapi_proventos(**current_inputs)
+        except Exception as exc:
+            error = safe_error_text(exc, 300)
+            app.logger.exception('Falha na sincronização de proventos em segundo plano')
+
+        with PROVENTOS_SYNC_LOCK:
+            if error:
+                PROVENTOS_SYNC_STATE.update({
+                    'status': 'failed', 'signature': current_signature,
+                    'result': None, 'error': error,
+                    'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
+                })
+            else:
+                PROVENTOS_SYNC_STATE.update({
+                    'status': 'completed', 'signature': current_signature,
+                    'result': result or {}, 'error': '',
+                    'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
+                })
+            pending = PROVENTOS_SYNC_PENDING_INPUTS
+            PROVENTOS_SYNC_PENDING_INPUTS = None
+            if not pending:
+                PROVENTOS_SYNC_STATE['pending_signature'] = ''
+                return
+            current_inputs = pending['inputs']
+            current_signature = pending['signature']
+            PROVENTOS_SYNC_STATE.update({
+                'status': 'running', 'signature': current_signature,
+                'pending_signature': '', 'result': None, 'error': '',
+                'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
+            })
+
+
+def _queue_proventos_sync(force=False, quote_items=None, active_items=None):
+    """Queue API proventos synchronization; never wait for provider network calls."""
+    global PROVENTOS_SYNC_PENDING_INPUTS
+    quote_copy = [dict(item) for item in (quote_items or []) if isinstance(item, dict)]
+    active_copy = [dict(item) for item in (active_items or []) if isinstance(item, dict)]
+    cache_signature = _proventos_sync_signature(quote_copy, active_copy)
+    signature = hashlib.sha256(
+        json.dumps(cache_signature, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    ).hexdigest()
+    inputs = {'force': bool(force), 'quote_items': quote_copy, 'active_items': active_copy}
+    now = time.time()
+
+    with PROVENTOS_SYNC_LOCK:
+        state = dict(PROVENTOS_SYNC_STATE)
+        if state.get('status') == 'running':
+            if state.get('signature') == signature:
+                return {'ok': True, 'status': 'running', 'signature': signature,
+                        'mensagem': 'Sincronização de proventos em segundo plano.'}
+            if PROVENTOS_SYNC_PENDING_INPUTS and PROVENTOS_SYNC_PENDING_INPUTS.get('signature') == signature:
+                return {'ok': True, 'status': 'queued', 'signature': signature,
+                        'mensagem': 'Atualização de proventos aguardando a execução atual.'}
+            PROVENTOS_SYNC_PENDING_INPUTS = {'inputs': inputs, 'signature': signature}
+            PROVENTOS_SYNC_STATE['pending_signature'] = signature
+            return {'ok': True, 'status': 'queued', 'signature': signature,
+                    'mensagem': 'Atualização de proventos enfileirada em segundo plano.'}
+
+        if (not force and PROVENTOS_SYNC_CACHE.get('result')
+                and PROVENTOS_SYNC_CACHE.get('signature') == cache_signature
+                and now - float(PROVENTOS_SYNC_CACHE.get('time') or 0) < PROVENTOS_SYNC_TTL):
+            cached_result = dict(PROVENTOS_SYNC_CACHE['result'])
+            PROVENTOS_SYNC_STATE.update({
+                'status': 'completed', 'signature': signature, 'result': cached_result,
+                'error': '', 'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
+            })
+            return {'ok': True, 'status': 'completed', 'signature': signature, **cached_result}
+
+        PROVENTOS_SYNC_STATE.update({
+            'status': 'running', 'signature': signature,
+            'pending_signature': '', 'result': None, 'error': '',
+            'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
+        })
+        thread = threading.Thread(
+            target=_proventos_sync_worker, args=(inputs, signature),
+            name='proventos-api-sync', daemon=True
+        )
+        thread.start()
+    return {'ok': True, 'status': 'running', 'signature': signature,
+            'mensagem': 'Sincronização de proventos iniciada em segundo plano.'}
+
+
+def _proventos_sync_status(signature=None):
+    with PROVENTOS_SYNC_LOCK:
+        state = dict(PROVENTOS_SYNC_STATE)
+        if signature and signature not in (state.get('signature'), state.get('pending_signature')):
+            return {'ok': True, 'status': 'superseded', 'mensagem': 'A solicitação foi substituída por uma atualização mais recente.'}
+        if signature and signature == state.get('pending_signature'):
+            return {'ok': True, 'status': 'queued', 'mensagem': 'Aguardando a sincronização atual.'}
+        result = state.get('result') if isinstance(state.get('result'), dict) else {}
+        payload = {
+            'ok': state.get('status') != 'failed',
+            'status': state.get('status'), 'signature': state.get('signature'),
+            'updated_at': state.get('updated_at'), 'mensagem': '',
+        }
+        if state.get('status') == 'failed':
+            payload['erro'] = state.get('error') or 'Não foi possível sincronizar os proventos.'
+            payload['mensagem'] = payload['erro']
+        else:
+            payload.update(result)
+            if state.get('status') == 'running':
+                payload['mensagem'] = 'Sincronização de proventos em andamento.'
+            elif state.get('status') == 'completed':
+                payload['mensagem'] = result.get('mensagem') or 'Histórico de proventos atualizado.'
+        return payload
 
 
 def _is_income_event(event_type):
@@ -7250,6 +7429,13 @@ def dashboard():
         cached_snapshot = _read_dashboard_snapshot()
         if cached_snapshot:
             cached_payload = dict(cached_snapshot['payload'])
+            cached_items = cached_payload.get('itens', [])
+            try:
+                _queue_proventos_sync(
+                    force=False, quote_items=cached_items, active_items=cached_items
+                )
+            except Exception as sync_exc:
+                app.logger.debug('Não foi possível enfileirar atualização de proventos no dashboard cacheado: %s', sync_exc)
             cached_payload['cache_info'] = {
                 'cached': True,
                 'saved_at': cached_snapshot['saved_at'],
@@ -7267,7 +7453,7 @@ def dashboard():
                 'mensagem': 'Valores atuais conferidos. Histórico e sincronização complementar seguem em segundo plano.'
             }
         else:
-            sync_status = sync_brapi_proventos(
+            sync_status = _queue_proventos_sync(
                 force=False,
                 quote_items=portfolio_before_sync.get('itens', []),
                 active_items=portfolio_before_sync.get('itens', [])
@@ -7275,10 +7461,10 @@ def dashboard():
         portfolio = carteira().json
     else:
         portfolio = carteira(use_cached_quotes=True).json
-        sync_status = PROVENTOS_SYNC_CACHE.get('result') or {
-            'ok': True,
-            'mensagem': 'Atualização de cotações, histórico e proventos será concluída em segundo plano.'
-        }
+        sync_status = _queue_proventos_sync(
+            force=False, quote_items=portfolio.get('itens', []),
+            active_items=portfolio.get('itens', [])
+        )
     ops = [dict(r) for r in db().execute("SELECT * FROM operacoes WHERE status='executada' ORDER BY data,id").fetchall()]
     scheduled = [dict(r) for r in db().execute("SELECT * FROM operacoes WHERE status='agendada' ORDER BY data_execucao,id").fetchall()]
     active_tickers = {str(item.get('ticker') or '').upper() for item in portfolio.get('itens', []) if item.get('ticker')}

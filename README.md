@@ -1,7 +1,7 @@
-# Lonely Wallet v4.2.43
+# Lonely Wallet v4.2.44
 
 
-# Atualizações da versão 4.2.43
+# Atualizações da versão 4.2.44
 
 ## Proventos recebidos sem Pluggy configurada
 - Quando não existem credenciais Pluggy válidas e item ativo conectado, os eventos de proventos registrados pelas APIs alternativas podem ser apresentados como recebimentos estimados.
@@ -28,6 +28,36 @@
 - Adicionados testes para banco SQLite legado com `cached_at NOT NULL` e `payload_json NOT NULL`.
 - Adicionados testes para preservar pagamentos Pluggy distintos e a idempotência de reprocessamento.
 - Build Docker real e sincronização funcional com provedores externos ainda precisam ser validados no ambiente de produção.
+
+
+## APIs sem cotas artificiais locais
+- Removidas cotas acumuladas locais por dia ou mês para BRAPI, HG Brasil e Dados B3.
+- O painel de consumo apresenta estatísticas de chamadas e cache, sem bloquear novas consultas por orçamento interno.
+- São respeitados os limites efetivamente comunicados pelos provedores, incluindo HTTP 429, `Retry-After` e períodos de indisponibilidade.
+- Mantidos intervalos de ritmo configuráveis entre chamadas; esses intervalos não representam cotas acumuladas.
+
+## Sincronização de proventos em segundo plano
+- A sincronização de calendários BRAPI não bloqueia mais a resposta do dashboard.
+- O dashboard, importação B3 e sincronização Pluggy enfileiram ou reaproveitam uma tarefa em segundo plano.
+- A rota `POST /api/proventos/sincronizar` inicia a tarefa e `GET /api/proventos/sincronizar/status` informa seu estado.
+- Alterações no universo de tickers são processadas em uma execução pendente após a tarefa atual.
+
+## Conciliação Pluggy de JCP e pagamentos líquidos
+- A conciliação considera os valores `amount`, `grossAmount` e `netAmount` quando fornecidos no registro externo.
+- O valor líquido (`netAmount`) é utilizado como valor efetivamente creditado quando disponível; os valores brutos continuam disponíveis para conciliar previsões anunciadas.
+- Mantidos critérios de compatibilidade por ticker, data, categoria e data-com.
+- Uma transação Pluggy atualiza somente a melhor previsão correspondente.
+
+## Empacotamento e gráficos
+- Removidos arquivos temporários, `.pytest_cache`, `__pycache__` e `.pyc` do pacote de distribuição.
+- O build tenta obter Chart.js 4.6.1 e validar sua integridade SHA-512. Se o registry estiver indisponível, permanece em modo `fallback` e o estado `degraded` é informado; o bundle completo não é declarado como validado nessa condição.
+
+## Testes da versão 4.2.44
+- Adicionados testes para ausência de cotas artificiais locais.
+- Adicionados testes para enfileiramento, consolidação e execução em segundo plano da sincronização de proventos.
+- Adicionados testes para conciliação de JCP entre valores brutos e líquidos.
+- Testadas as rotas de sincronização manual e consulta de status.
+- Build Docker real e sincronização com provedores externos precisam ser validados no ambiente de produção.
 
 
 # Atualizações da versão 4.2.41
@@ -112,9 +142,7 @@
 
 **Gerenciador pessoal de investimentos | Docker / ZimaOS | Português (Brasil)**
 
-Esta versão parte da base v4.2.37 e preserva a interface, as regras financeiras, as integrações, os dados e as credenciais existentes.
-
-As consultas da brapi passam a usar cache persistente em SQLite, orçamento local móvel de 30 dias, uma chamada por ticker, concorrência serializada e intervalo mínimo entre chamadas. As respostas recentes podem ser reutilizadas após reinicializações e, durante indisponibilidades temporárias, respostas anteriores dentro da janela de contingência podem ser reaproveitadas. A sincronização Pluggy para novas instalações passa a ter frequência padrão de quatro horas; preferências já salvas pelo usuário são preservadas.
+A aplicação preserva a interface, as regras financeiras, as integrações, os dados e as credenciais existentes. As consultas às APIs utilizam cache persistente, controle de concorrência e intervalos de ritmo configuráveis. Não são aplicadas cotas artificiais locais por dia ou mês; limites oficiais e respostas reais HTTP 429 dos provedores continuam sendo respeitados. As respostas recentes podem ser reutilizadas após reinicializações e, durante indisponibilidades temporárias, respostas anteriores dentro da janela de contingência podem ser reaproveitadas. A sincronização Pluggy para novas instalações utiliza frequência padrão de quatro horas; preferências já salvas pelo usuário são preservadas.
 
 ## Atualizações da versão 4.2.39
 
@@ -154,7 +182,7 @@ As consultas da brapi passam a usar cache persistente em SQLite, orçamento loca
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.43 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.44 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
 - **Persistência:** SQLite, com bancos separados para ativos e tokens
 - **Porta:** `8085` no host e `8080` no container
@@ -184,7 +212,7 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve apresentar `ok: true` e `version: 4.2.43`.
+O retorno deve apresentar `ok: true` e `version: 4.2.44`.
 
 **Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
 
@@ -380,32 +408,36 @@ Consulte o estado da integração e os logs do container. A falta de cotação n
 
 Consulte as notas históricas preservadas nos pacotes anteriores. Este README prioriza o histórico confirmado a partir da v4.2.25 e as orientações atuais de instalação, segurança e manutenção.
 
-## 12. Controle de consumo das APIs gratuitas
+## 12. Controle de consumo das APIs
 
-- A brapi usa cache persistente em SQLite, compartilhado entre threads e preservado após reinicializações do container.
+- As chamadas e reutilizações de cache são registradas localmente para diagnóstico e acompanhamento.
+- Não existem cotas artificiais por dia ou mês que bloqueiem chamadas à BRAPI, HG Brasil ou Dados B3.
+- Limites oficiais, respostas HTTP 429, `Retry-After` e indisponibilidades reais dos provedores continuam sendo respeitados.
+- O cache persistente SQLite é compartilhado entre threads e preservado após reinicializações do container.
 - O cache padrão é de 30 minutos durante o pregão, 12 horas fora do pregão, 12 horas para proventos, 24 horas para histórico e 6 horas para a lista de ativos.
-- O limite padrão é de um ticker por chamada, com apenas uma requisição brapi simultânea e intervalo mínimo de 350 ms entre chamadas.
-- Os orçamentos locais padrão são de 10.000 chamadas brapi por janela móvel de 30 dias, 300 chamadas HG Brasil por 24 horas e 150 chamadas Dados B3 por 24 horas. Os limites reservam margem para outras aplicações que possam compartilhar os tokens; as contagens incluem apenas esta instalação.
-- Quando o orçamento é atingido, a aplicação deixa de chamar a brapi e tenta reutilizar uma resposta em cache ainda dentro da janela de contingência.
-- O painel de consumo aparece em **Integrações e APIs** e mostra os limites locais da brapi, HG Brasil e Dados B3, além das chamadas registradas de Pluggy e outras fontes. Consultá-lo não chama o provedor; lê apenas o SQLite local.
-- A frequência padrão da sincronização Pluggy para novas instalações é de 4 horas. As chamadas Pluggy são espaçadas em pelo menos 1 segundo, com o intervalo persistido entre reinicializações, e a API Key é reutilizada por aproximadamente 115 minutos. Uma frequência já salva pelo usuário não é sobrescrita.
+- A BRAPI mantém uma chamada por ticker por requisição no perfil padrão e intervalo de 350 ms entre chamadas, como controle de ritmo compatível com o plano gratuito configurado.
+- O painel em **Integrações e APIs** apresenta somente estatísticas de chamadas e cache desta instalação; consultar o painel não chama os provedores.
+- A frequência padrão da sincronização Pluggy para novas instalações é de 4 horas. As chamadas Pluggy são espaçadas em pelo menos 1 segundo, com o intervalo persistido entre reinicializações, e a API Key é reutilizada por aproximadamente 115 minutos.
 
 Variáveis configuráveis no Compose:
 
 ```yaml
-BRAPI_LOCAL_30D_BUDGET: "10000"
 BRAPI_MAX_TICKERS_PER_REQUEST: "1"
 BRAPI_REQUEST_GAP_SECONDS: "0.35"
-HGBRASIL_LOCAL_24H_BUDGET: "300"
-DADOSB3_LOCAL_24H_BUDGET: "150"
 PLUGGY_REQUEST_GAP_SECONDS: "1.0"
 ```
 
-A HG Brasil usa limite local padrão de 300 chamadas por 24 horas, abaixo da cota gratuita publicada de 400 por dia; Dados B3 usa limite local padrão de 150 por 24 horas, abaixo da cota grátis publicada de 200 por dia. Os limites podem ser ajustados com `HGBRASIL_LOCAL_24H_BUDGET` e `DADOSB3_LOCAL_24H_BUDGET`; valor `0` desativa o limite local daquele provedor. Para a brapi, `BRAPI_LOCAL_30D_BUDGET=0` desativa o orçamento local, mas não é recomendado no plano gratuito. Mantenha `BRAPI_MAX_TICKERS_PER_REQUEST=1` no plano gratuito; aumente somente se o plano contratado permitir mais tickers por chamada.
-
-O orçamento é uma proteção local, não uma leitura oficial da cota do provedor. Outras aplicações usando o mesmo token não são contabilizadas. Consulte o painel do próprio provedor para conferir o saldo global.
+Os intervalos locais controlam somente o ritmo de envio. Não substituem as regras dos provedores nem criam limites acumulados de utilização.
 
 
+### Sincronização de proventos em segundo plano
+
+- A sincronização BRAPI e de calendários de proventos não é executada dentro da resposta HTTP do dashboard.
+- O dashboard, a importação B3 e a sincronização Pluggy apenas enfileiram ou reaproveitam uma execução em andamento.
+- A rota `POST /api/proventos/sincronizar` inicia a tarefa e retorna sem aguardar as chamadas de rede.
+- O andamento e o resultado podem ser consultados em `GET /api/proventos/sincronizar/status`.
+- Execuções concorrentes para a mesma carteira são consolidadas; mudanças no universo de tickers geram uma execução pendente após a atual.
+- Erros são registrados no estado da tarefa, sem bloquear o carregamento do dashboard.
 
 ### Histórico patrimonial em segundo plano
 

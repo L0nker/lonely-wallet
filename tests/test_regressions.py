@@ -354,26 +354,34 @@ class RegressionTests(unittest.TestCase):
             self.assertGreater(row['cooldown_until'], wallet.time.time())
             self.assertEqual(row['last_error'], 'network_error')
 
-    def test_brapi_budget_blocks_network_when_local_limit_is_reached(self):
-        with wallet.app.app_context(), patch.object(wallet, 'BRAPI_LOCAL_30D_BUDGET', 1),              patch.object(wallet.requests, 'get') as mocked:
-            wallet._api_record_request('brapi', 'https://brapi.dev/api/quote/USED4', 200)
-            response = wallet._brapi_get('https://brapi.dev/api/quote/BLOCK4',
-                params={'unique': 'budget-test'}, cache_ttl=3600, stale_ttl=3600)
-            self.assertEqual(response.status_code, 429)
-            mocked.assert_not_called()
+    def test_request_history_is_monitoring_only_and_does_not_create_local_quotas(self):
+        with wallet.app.app_context():
+            ok = wallet.requests.Response(); ok.status_code = 200; ok._content = b'{"ok":true}'
+            with patch.object(wallet.requests, 'get', return_value=ok) as mocked:
+                for idx in range(12):
+                    wallet._api_record_request('brapi', f'previous-{idx}', 200)
+                response = wallet._brapi_get('https://brapi.dev/api/quote/AFTER12',
+                    params={'unique': 'no-artificial-quota'}, cache_ttl=0, stale_ttl=3600)
+                self.assertEqual(response.status_code, 200)
+                mocked.assert_called_once()
+                usage = wallet._api_usage_snapshot()
+                self.assertFalse(usage['budget_enabled'])
+                self.assertIsNone(usage['local_budget'])
 
-    def test_hgbrasil_and_dadosb3_local_budgets_block_network(self):
+    def test_hgbrasil_and_dadosb3_request_history_does_not_block_network(self):
         with wallet.app.app_context():
             cases = (
-                ('hgbrasil', 'https://api.hgbrasil.com/finance', 'HGBRASIL_LOCAL_24H_BUDGET'),
-                ('dadosb3', 'https://dadosb3.com/indices/IFIX/precos', 'DADOSB3_LOCAL_24H_BUDGET'),
+                ('hgbrasil', 'https://api.hgbrasil.com/finance'),
+                ('dadosb3', 'https://dadosb3.com/indices/IFIX/precos'),
             )
-            for provider, url, setting in cases:
-                with self.subTest(provider=provider), patch.object(wallet, setting, 1), patch.object(wallet.requests, 'get') as mocked:
-                    wallet._api_record_request(provider, 'previous-request', 200)
-                    response = wallet._provider_get(provider, url, params={'unique': provider}, cache_ttl=3600)
-                    self.assertEqual(response.status_code, 429)
-                    mocked.assert_not_called()
+            for provider, url in cases:
+                with self.subTest(provider=provider):
+                    ok = wallet.requests.Response(); ok.status_code = 200; ok._content = b'{"ok":true}'
+                    with patch.object(wallet.requests, 'get', return_value=ok) as mocked:
+                        wallet._api_record_request(provider, 'previous-request', 200)
+                        response = wallet._provider_get(provider, url, params={'unique': provider}, cache_ttl=0)
+                        self.assertEqual(response.status_code, 200)
+                        mocked.assert_called_once()
 
     def test_api_usage_endpoint_uses_only_local_database(self):
         response = self.client.get('/api/integracoes/consumo')
@@ -381,6 +389,8 @@ class RegressionTests(unittest.TestCase):
         payload = response.get_json()['brapi']
         self.assertIn('requests_last_30_days', payload)
         self.assertIn('remaining_local_budget', payload)
+        self.assertIsNone(payload['remaining_local_budget'])
+        self.assertFalse(payload['budget_enabled'])
         self.assertIn('cache_hits', payload)
 
     def test_retired_market_apis_are_not_available(self):

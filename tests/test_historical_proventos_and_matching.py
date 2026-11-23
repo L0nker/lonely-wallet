@@ -55,7 +55,8 @@ def _load_matching_helpers(connection):
     names = {
         '_normalize_provento_category', '_pluggy_record_date',
         '_pluggy_match_tolerance', '_pluggy_confirmed_provento_exists',
-        '_mark_matching_api_forecast_paid',
+        '_mark_matching_api_forecast_paid', '_pluggy_amount_candidates',
+        '_pluggy_income_receipt_amount',
     }
     nodes = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names]
     namespace = {
@@ -124,6 +125,36 @@ class StrictPluggyMatchTests(unittest.TestCase):
                                 event_type='DIVIDENDO', record_date='2026-10-02'))
         self.assertTrue(exists('PETR4', '2026-10-15', 20.00,
                                event_type='DIVIDENDO', record_date='2026-10-01'))
+
+    def test_jcp_forecast_matches_gross_while_receipt_can_be_net(self):
+        mark = self.helpers['_mark_matching_api_forecast_paid']
+        self.connection.execute(
+            'INSERT INTO proventos_api VALUES(?,?,?,?,?,?,?)',
+            ('jcp-gross', 'PETR4', 'JCP', '2026-10-01', '2026-10-15', 100.00, 'A receber'),
+        )
+        self.connection.commit()
+        movement = {'type': 'INTEREST', 'description': 'JCP', 'amount': 100.00, 'netAmount': 85.00}
+        changed = mark('PETR4', '2026-10-15', 100.00, movement_type='INTEREST',
+                       description='JCP', raw_movement=movement,
+                       alternate_amounts=[100.00, 85.00])
+        self.assertEqual(changed, 1)
+        status = self.connection.execute(
+            'SELECT status FROM proventos_api WHERE event_key=?', ('jcp-gross',)
+        ).fetchone()[0]
+        self.assertEqual(status, 'Pago')
+
+    def test_income_receipt_prefers_pluggy_net_amount_when_available(self):
+        receipt_amount = self.helpers['_pluggy_income_receipt_amount']
+        self.assertEqual(receipt_amount({'amount': 100.00, 'netAmount': 85.00}), 85.00)
+        self.assertEqual(receipt_amount({'amount': 100.00}), 100.00)
+
+    def test_pluggy_confirmation_checks_gross_and_net_values_from_raw_transaction(self):
+        exists = self.helpers['_pluggy_confirmed_provento_exists']
+        self.add_pluggy(amount=85.00, movement_type='INTEREST', description='JCP',
+                        raw=json.dumps({'type':'INTEREST','description':'JCP',
+                                        'amount':100.00,'netAmount':85.00}))
+        self.assertTrue(exists('PETR4', '2026-10-15', 100.00, event_type='JCP'))
+        self.assertTrue(exists('PETR4', '2026-10-15', 85.00, event_type='JCP'))
 
     def test_only_best_matching_forecast_is_marked_paid(self):
         mark = self.helpers['_mark_matching_api_forecast_paid']
