@@ -1,0 +1,66 @@
+services:
+  lonely-wallet:
+    image: lonker/lonely-wallet:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lonely-wallet
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=4).read()
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    security_opt:
+      - no-new-privileges:true
+    network_mode: bridge
+    ports:
+      - "8085:8080"
+    environment:
+      BRAPI_TOKEN: ""
+      BRAPI_LOCAL_30D_BUDGET: "10000"
+      BRAPI_MAX_TICKERS_PER_REQUEST: "1"
+      BRAPI_REQUEST_GAP_SECONDS: "0.35"
+      HGBRASIL_LOCAL_24H_BUDGET: "300"
+      DADOSB3_LOCAL_24H_BUDGET: "150"
+      PLUGGY_REQUEST_GAP_SECONDS: "1.0"
+      ASSETS_DB_PATH: /data/ativos.db
+      TOKEN_DB_PATH: /data/tokens.db
+      DB_PATH: /data/carteira.db # caminho legado usado somente na migração inicial
+      TZ: America/Sao_Paulo
+    volumes:
+      - /DATA/AppData/lonely-wallet/data:/data
+    labels:
+      icon: "/static/lonely-wallet-logo.png?v=4.2.33"
+    deploy:
+      resources:
+        limits:
+          memory: 4GB
+          cpus: "1.00"
+        reservations:
+          memory: 256MB
+          cpus: "0.00"
+
+x-casaos:
+  hostname: ""
+  architectures:
+    - amd64
+  author: Lonely Wallet
+  category: Finance
+  description:
+    pt_BR: Carteira pessoal para acompanhar investimentos, posições e proventos.
+    en_US: Personal investment portfolio dashboard.
+  developer: Lonely Wallet
+  icon: "/static/lonely-wallet-logo.png?v=4.2.33"
+  index: /
+  is_uncontrolled: false
+  main: lonely-wallet
+  port_map: "8085"
+  scheme: http
+  title:
+    custom: Lonely Wallet
