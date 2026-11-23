@@ -1,18 +1,33 @@
-# Lonely Wallet v4.2.35
+# Lonely Wallet v4.2.36
 
-## Correção da sincronização Pluggy
+## Correção de concorrência SQLite e sincronização Pluggy
 
-- Reforçado o registro local das chamadas de API com serialização de gravações e tentativas adicionais em caso de bloqueio transitório do SQLite.
-- A sincronização continua bloqueada quando o registro de segurança falha, evitando chamadas externas sem contabilização.
-- Melhorado o log interno para identificar provedor, endpoint e causa do erro sem registrar credenciais.
-- Adicionado teste de regressão para confirmar o registro e retorno do identificador da chamada.
-
+- Corrigido o ciclo de bloqueio em que a sincronização mantinha uma transação de escrita aberta em `ativos.db` e tentava registrar a próxima chamada Pluggy por uma segunda conexão ao mesmo arquivo.
+- Antes de registrar uma nova chamada Pluggy, as gravações locais pendentes da sincronização são confirmadas, liberando o bloqueio do SQLite sem desativar o registro de segurança.
+- A sincronização continua bloqueada quando não é possível registrar uma chamada, preservando o comportamento de falha segura.
+- O processamento de operações agendadas passou a consultar primeiro se há operações vencidas e evita executar `UPDATE` sem necessidade.
+- Os erros transitórios `database is locked` / `database is busy` no processamento de operações agendadas não derrubam mais o carregamento do dashboard; as operações permanecem pendentes para nova tentativa.
+- Removido o comando redundante `PRAGMA journal_mode=WAL` da abertura de cada conexão de requisição; o modo WAL permanece configurado na inicialização do banco.
+- Incluída migração compatível para adicionar a coluna `endpoint` em tabelas antigas de cache e registro de chamadas, sem apagar os registros existentes.
+- Corrigido o diretório HOME do processo Gunicorn para evitar a tentativa de criar `/root/.gunicorn` pelo usuário não privilegiado do container.
+- Adicionados testes de regressão para confirmar transações pendentes antes do registro Pluggy e promoção de operações agendadas.
 
 **Gerenciador pessoal de investimentos | Docker / ZimaOS | Português (Brasil)**
 
-Esta versão parte da base estável v4.2.32. Mantém a interface, as regras financeiras, a importação B3 e o fluxo de carregamento do dashboard, com otimizações específicas para reduzir chamadas repetidas às APIs e proteger as cotas de planos gratuitos.
+Esta versão parte da base v4.2.35 e preserva a interface, as regras financeiras, as integrações, os dados e as credenciais existentes.
 
 As consultas da brapi passam a usar cache persistente em SQLite, orçamento local móvel de 30 dias, uma chamada por ticker, concorrência serializada e intervalo mínimo entre chamadas. As respostas recentes podem ser reutilizadas após reinicializações e, durante indisponibilidades temporárias, respostas anteriores dentro da janela de contingência podem ser reaproveitadas. A sincronização Pluggy para novas instalações passa a ter frequência padrão de quatro horas; preferências já salvas pelo usuário são preservadas.
+
+## Atualizações da versão 4.2.36
+
+- Corrigido o ciclo de bloqueio SQLite entre gravações da sincronização Pluggy e o registro de chamadas de API em conexão separada.
+- Gravações locais pendentes são confirmadas antes da chamada Pluggy seguinte, mantendo a contabilização obrigatória e o bloqueio seguro em caso de falha.
+- Operações agendadas só são atualizadas quando existe ao menos um registro vencido; conflitos transitórios no processamento de rotina não provocam HTTP 500 no dashboard.
+- Mantido o WAL configurado na inicialização, sem reexecutar `PRAGMA journal_mode=WAL` em toda conexão web.
+- Adicionada migração da coluna `endpoint` para bancos persistentes antigos nas tabelas `api_response_cache` e `api_request_log`.
+- Gunicorn usa `/tmp` como HOME para seu socket de controle, evitando erro de permissão em `/root/.gunicorn`.
+- Incluídos testes de regressão para as correções de concorrência e operações agendadas.
+- Build Docker e sincronização real com a Pluggy precisam ser confirmados no ZimaOS.
 
 ## Atualizações da versão 4.2.35
 
@@ -24,7 +39,7 @@ As consultas da brapi passam a usar cache persistente em SQLite, orçamento loca
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.35 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.36 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
 - **Persistência:** SQLite, com bancos separados para ativos e tokens
 - **Porta:** `8085` no host e `8080` no container
@@ -54,7 +69,7 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve apresentar `ok: true` e `version: 4.2.35`.
+O retorno deve apresentar `ok: true` e `version: 4.2.36`.
 
 **Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
 

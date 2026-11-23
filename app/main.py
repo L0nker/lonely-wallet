@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import requests
 from cryptography.fernet import Fernet, InvalidToken
 from openpyxl import load_workbook, Workbook
-from flask import Flask, g, jsonify, render_template, request, send_file, session, redirect, url_for
+from flask import Flask, g, has_app_context, jsonify, render_template, request, send_file, session, redirect, url_for
 from werkzeug.exceptions import RequestEntityTooLarge
 
 app = Flask(__name__)
@@ -364,6 +364,26 @@ def _api_cache_store(cache_key, provider, endpoint, payload, status_code, ttl, s
 
 _API_REQUEST_LOG_LOCK = threading.RLock()
 
+def _commit_pending_pluggy_writes_before_request_log(provider):
+    """Release the portfolio DB write lock before logging a Pluggy HTTP call.
+
+    Pluggy synchronization imports data into the same SQLite file used by the
+    request log. Without this commit, a sync could write an investment row and
+    then wait for a separate connection to insert its API log entry, while its
+    own uncommitted transaction held SQLite's single-writer lock.
+    """
+    if str(provider or '').lower() != 'pluggy' or not has_app_context():
+        return False
+    try:
+        connection = g.get('db')
+        if connection is not None and connection.in_transaction:
+            connection.commit()
+            return True
+    except (sqlite3.Error, RuntimeError) as exc:
+        app.logger.warning('Não foi possível concluir a gravação local antes da chamada Pluggy: %s', exc)
+        raise
+    return False
+
 
 def _api_record_request(provider, endpoint, status_code=0):
     """Registra o consumo com retries curtos para contornar locks SQLite transitórios.
@@ -373,6 +393,9 @@ def _api_record_request(provider, endpoint, status_code=0):
     """
     request_id = None
     last_error = None
+    # A sincronização Pluggy precisa encerrar suas gravações pendentes antes
+    # de usar outra conexão para registrar a chamada na mesma base SQLite.
+    _commit_pending_pluggy_writes_before_request_log(provider)
     # Serializa writes locais e tenta novamente quando outro worker está gravando.
     with _API_REQUEST_LOG_LOCK:
         for attempt in range(4):
@@ -716,7 +739,6 @@ def db():
     if 'db' not in g:
         g.db = sqlite3.connect(DB_PATH, timeout=15)
         g.db.execute('PRAGMA busy_timeout=15000')
-        g.db.execute('PRAGMA journal_mode=WAL')
         g.db.execute('PRAGMA synchronous=NORMAL')
         g.db.row_factory = sqlite3.Row
         g.db.execute('PRAGMA foreign_keys=ON')
@@ -1137,6 +1159,14 @@ def init_db():
     b3cols = {row[1] for row in con.execute('PRAGMA table_info(b3_importados)').fetchall()}
     if 'lote_id' not in b3cols: con.execute('ALTER TABLE b3_importados ADD COLUMN lote_id TEXT')
     if 'registro_id' not in b3cols: con.execute('ALTER TABLE b3_importados ADD COLUMN registro_id INTEGER')
+
+    # Upgrade older persistent installations without discarding their API cache.
+    cache_columns = {row[1] for row in con.execute('PRAGMA table_info(api_response_cache)').fetchall()}
+    if 'endpoint' not in cache_columns:
+        con.execute("ALTER TABLE api_response_cache ADD COLUMN endpoint TEXT NOT NULL DEFAULT ''")
+    request_columns = {row[1] for row in con.execute('PRAGMA table_info(api_request_log)').fetchall()}
+    if 'endpoint' not in request_columns:
+        con.execute("ALTER TABLE api_request_log ADD COLUMN endpoint TEXT NOT NULL DEFAULT ''")
     con.commit(); con.close()
 
 
@@ -3585,29 +3615,56 @@ def next_b3_session(requested):
     return candidate
 
 
+_DUE_OPERATIONS_LOCK = threading.Lock()
+
+def _promote_due_operations(con, now=None):
+    """Promote due scheduled operations without taking needless write locks."""
+    now = now or datetime.now(TZ).isoformat(timespec='minutes')
+    with _DUE_OPERATIONS_LOCK:
+        due = con.execute(
+            "SELECT 1 FROM operacoes WHERE status='agendada' AND data_execucao<=? LIMIT 1", (now,)
+        ).fetchone()
+        if not due:
+            return 0
+        cursor = con.execute(
+            "UPDATE operacoes SET status='executada', data=substr(data_execucao,1,10) WHERE status='agendada' AND data_execucao<=?",
+            (now,)
+        )
+        changed = max(0, int(cursor.rowcount or 0))
+        con.commit()
+        return changed
+
+
 def process_due_operations():
-    now=datetime.now(TZ).isoformat(timespec='minutes')
-    con=db()
-    con.execute("UPDATE operacoes SET status='executada', data=substr(data_execucao,1,10) WHERE status='agendada' AND data_execucao<=?",(now,))
-    con.commit()
+    con = db()
+    try:
+        return _promote_due_operations(con)
+    except sqlite3.OperationalError as exc:
+        message = str(exc).lower()
+        if 'locked' in message or 'busy' in message:
+            # This is housekeeping; leave due rows pending for the next request/tick
+            # instead of making the entire dashboard return HTTP 500.
+            app.logger.warning('Operações agendadas aguardando liberação do SQLite: %s', exc)
+            try: con.rollback()
+            except sqlite3.Error: pass
+            return 0
+        raise
 
 
 def scheduler_loop():
     # Promove operações agendadas automaticamente quando chega o horário previsto.
     while True:
-        con = None
         try:
-            now=datetime.now(TZ).isoformat(timespec='minutes')
-            con=sqlite3.connect(DB_PATH,timeout=10)
-            con.execute("UPDATE operacoes SET status='executada', data=substr(data_execucao,1,10) WHERE status='agendada' AND data_execucao<=?",(now,))
-            con.commit()
+            with app.app_context():
+                _promote_due_operations(db())
+        except sqlite3.OperationalError as exc:
+            message = str(exc).lower()
+            if 'locked' in message or 'busy' in message:
+                app.logger.warning('Agendador de operações aguardando liberação do SQLite: %s', exc)
+            else:
+                app.logger.exception('Falha no agendador de operações')
         except Exception:
-            if con is not None:
-                try: con.rollback()
-                except Exception: pass
-        finally:
-            if con is not None:
-                con.close()
+            app.logger.exception('Falha no agendador de operações')
         time.sleep(30)
 
 

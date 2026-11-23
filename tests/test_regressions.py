@@ -512,6 +512,43 @@ class RegressionTests(unittest.TestCase):
         template = (Path(wallet.__file__).resolve().parents[1] / 'app' / 'templates' / 'index.html').read_text(encoding='utf-8')
         self.assertIn('Lonely Wallet v{{ app_version }}', template)
 
+    def test_pluggy_api_log_commits_pending_portfolio_writes(self):
+        with wallet.app.app_context():
+            con = wallet.db()
+            key = 'test_pluggy_commit_before_api_log'
+            con.execute('INSERT OR REPLACE INTO app_settings(key,value) VALUES(?,?)', (key, 'pending'))
+            self.assertTrue(con.in_transaction)
+            request_id = wallet._api_record_request('pluggy', 'GET:regression-test', 0)
+            self.assertIsNotNone(request_id)
+            self.assertFalse(con.in_transaction)
+            row = con.execute('SELECT value FROM app_settings WHERE key=?', (key,)).fetchone()
+            self.assertEqual(row['value'], 'pending')
+            con.execute('DELETE FROM app_settings WHERE key=?', (key,))
+            con.commit()
+
+    def test_process_due_operations_does_not_write_when_nothing_is_due(self):
+        with wallet.app.app_context():
+            con = wallet.db()
+            before = con.total_changes
+            self.assertEqual(wallet.process_due_operations(), 0)
+            self.assertEqual(con.total_changes, before)
+            self.assertFalse(con.in_transaction)
+
+    def test_process_due_operations_promotes_due_rows(self):
+        with wallet.app.app_context():
+            con = wallet.db()
+            due_at = (datetime.datetime.now(wallet.TZ) - datetime.timedelta(minutes=5)).isoformat(timespec='minutes')
+            con.execute(
+                "INSERT INTO operacoes(ticker,tipo,lado,quantidade,preco,data,custos,status,data_registro,data_execucao,detalhes) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                ('LOCK4','acao','compra',1,10,due_at[:10],0,'agendada',due_at,due_at,'{}')
+            )
+            con.commit()
+            self.assertEqual(wallet.process_due_operations(), 1)
+            row = con.execute("SELECT status,data FROM operacoes WHERE ticker='LOCK4'").fetchone()
+            self.assertEqual(row['status'], 'executada')
+            self.assertEqual(row['data'], due_at[:10])
+
 
 if __name__ == '__main__':
     unittest.main()

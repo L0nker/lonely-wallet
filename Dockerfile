@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 WORKDIR /srv
-ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 DB_PATH=/data/carteira.db DATA_DIR=/data
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 HOME=/tmp DB_PATH=/data/carteira.db DATA_DIR=/data
 COPY requirements.txt .
 RUN pip install --no-cache-dir --disable-pip-version-check -r requirements.txt \
     && groupadd --gid 10001 app \
