@@ -1,16 +1,16 @@
-# Lonely Wallet v4.2.33
+# Lonely Wallet v4.2.38
 
 **Gerenciador pessoal de investimentos | Docker / ZimaOS | Português (Brasil)**
 
-Esta versão parte da base estável v4.2.32. Mantém a interface, as regras financeiras, a importação B3 e o fluxo de carregamento do dashboard, com otimizações específicas para reduzir chamadas repetidas às APIs e proteger as cotas de planos gratuitos.
+Esta versão corrige a inicialização do armazenamento de APIs em instalações que possuem metadados antigos no `ativos.db`, além de configurar o socket de controle do Gunicorn em um diretório gravável pelo usuário não privilegiado. Mantém a interface, as regras financeiras, a importação B3 e o fluxo de carregamento do dashboard da versão anterior.
 
 As consultas da brapi passam a usar cache persistente em SQLite, orçamento local móvel de 30 dias, uma chamada por ticker, concorrência serializada e intervalo mínimo entre chamadas. As respostas recentes podem ser reutilizadas após reinicializações e, durante indisponibilidades temporárias, respostas anteriores dentro da janela de contingência podem ser reaproveitadas. A sincronização Pluggy para novas instalações passa a ter frequência padrão de quatro horas; preferências já salvas pelo usuário são preservadas.
 
 ## 1. Informações da aplicação
 
-- **Versão:** 4.2.33 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
+- **Versão:** 4.2.38 (`VERSION` é a fonte única da versão exibida no rodapé e enviada no User-Agent)
 - **Backend:** Python 3.12, Flask e Gunicorn
-- **Persistência:** SQLite, com bancos separados para ativos e tokens
+- **Persistência:** SQLite, com bancos separados para ativos, tokens e estado das APIs
 - **Porta:** `8085` no host e `8080` no container
 - **Dados persistentes:** `/DATA/AppData/lonely-wallet/data` no host, montado em `/data`
 - **Container:** executa com usuário/grupo não privilegiado `app` (UID/GID `10001`) após preparar as permissões do volume
@@ -38,7 +38,7 @@ docker compose up -d --build
 curl http://IP_DO_SERVIDOR:8085/api/health
 ```
 
-O retorno deve apresentar `ok: true` e `version: 4.2.33`.
+O retorno deve apresentar `ok: true` e `version: 4.2.38`. O estado de cache e consumo das APIs é mantido em `/data/api_state.db`.
 
 **Não apague nem recrie a pasta `/DATA/AppData/lonely-wallet/data`.** A atualização substitui o código e a imagem, não os bancos, tokens, credenciais ou configurações persistidos nesse volume.
 
@@ -48,6 +48,7 @@ O retorno deve apresentar `ok: true` e `version: 4.2.33`.
 |---|---|
 | `ativos.db` | Operações, posições, proventos e dados da carteira |
 | `tokens.db` | PIN, autenticação, credenciais e configurações sensíveis |
+| `api_state.db` | Cache HTTP, limites, cooldowns e histórico de consumo das APIs |
 | `carteira.db` | Banco legado, preservado para migração/compatibilidade quando existir |
 | `quotes_last_valid.json` | Últimas cotações válidas salvas |
 | `dashboard_cache.json` | Snapshot completo do dashboard, invalidado quando os bancos mudam |
@@ -252,9 +253,91 @@ BRAPI_REQUEST_GAP_SECONDS: "0.35"
 HGBRASIL_LOCAL_24H_BUDGET: "300"
 DADOSB3_LOCAL_24H_BUDGET: "150"
 PLUGGY_REQUEST_GAP_SECONDS: "1.0"
+PLUGGY_LOCAL_24H_BUDGET: "500"
+PLUGGY_LOCAL_30D_BUDGET: "5000"
+PLUGGY_MAX_PAGES: "100"
+PLUGGY_PAGE_SIZE: "500"
+FRED_LOCAL_24H_BUDGET: "300"
+FRED_LOCAL_30D_BUDGET: "5000"
 ```
 
 A HG Brasil usa limite local padrão de 300 chamadas por 24 horas, abaixo da cota gratuita publicada de 400 por dia; Dados B3 usa limite local padrão de 150 por 24 horas, abaixo da cota grátis publicada de 200 por dia. Os limites podem ser ajustados com `HGBRASIL_LOCAL_24H_BUDGET` e `DADOSB3_LOCAL_24H_BUDGET`; valor `0` desativa o limite local daquele provedor. Para a brapi, `BRAPI_LOCAL_30D_BUDGET=0` desativa o orçamento local, mas não é recomendado no plano gratuito. Mantenha `BRAPI_MAX_TICKERS_PER_REQUEST=1` no plano gratuito; aumente somente se o plano contratado permitir mais tickers por chamada.
 
 O orçamento é uma proteção local, não uma leitura oficial da cota do provedor. Outras aplicações usando o mesmo token não são contabilizadas. Consulte o painel do próprio provedor para conferir o saldo global.
 
+
+
+## 13. Correções e validação da v4.2.36
+
+### Estabilidade da migração SQLite
+
+- A migração do armazenamento de APIs inspeciona `PRAGMA table_info` antes de consultar tabelas legadas.
+- Schemas antigos sem `endpoint`, `credential_hash`, `stale_hits` ou campos opcionais de estado recebem valores padrão seguros.
+- O schema já existente de `api_state.db` também é atualizado com colunas ausentes antes da criação dos índices.
+- O marcador `legacy_assets_migrated_v2` só é gravado após a cópia ser concluída; a execução pode ser repetida sem duplicar os registros migrados.
+- O histórico antigo de cache, requisições, estatísticas e cooldowns é preservado quando as colunas de origem estão disponíveis.
+
+### Inicialização do Gunicorn
+
+- `HOME` agora aponta para `/home/app`, diretório pertencente ao usuário não privilegiado da aplicação.
+- `XDG_RUNTIME_DIR` aponta para `/tmp/lonely-wallet-runtime`, criado com permissões restritas e proprietário `app` pelo entrypoint.
+- O socket de controle do Gunicorn é definido explicitamente em `/tmp/lonely-wallet-runtime/gunicorn.ctl`, evitando tentativas de gravação em `/root/.gunicorn` após a redução de privilégios.
+
+### Proteções de consumo das APIs mantidas
+
+- Preservados os orçamentos locais, caches persistentes, cooldowns e controles por credencial da versão 4.2.35.
+- Preservada a validação estrita da paginação Pluggy e a sinalização de dados antigos reutilizados do cache.
+- A rotina de migração do `api_state.db` continua separada do banco financeiro `ativos.db`.
+
+### Validação da v4.2.36
+
+- 4 testes do entrypoint e preparação das permissões aprovados, incluindo `HOME` e `XDG_RUNTIME_DIR`.
+- 3 testes de backup SQLite aprovados.
+- 5 testes do fornecedor/validação do Chart.js aprovados.
+- Teste isolado da migração de schemas antigos sem `endpoint` aprovado, incluindo atualização de destino preexistente e idempotência.
+- Compilação sintática Python aprovada para `app/main.py`, entrypoint, backup e testes alterados.
+- Docker Compose YAML analisado e válido.
+- Integridade do pacote ZIP conferida após a geração.
+- A suíte integrada `tests/test_regressions.py` não foi executada porque Flask não está instalado neste ambiente.
+- Build Docker real e validação final no ZimaOS não foram executados neste ambiente.
+
+**Atualização:** mantenha o volume `/DATA/AppData/lonely-wallet/data:/data`. Não apague `ativos.db`, `tokens.db` ou `api_state.db`. A atualização corrige o schema e a migração automaticamente, preservando os dados financeiros e o histórico de consumo.
+
+
+## Lonely Wallet v4.2.37
+
+### Estabilidade SQLite e sincronizações
+
+- A sincronização Pluggy confirma as gravações locais antes de executar novas chamadas HTTP e grava as movimentações em lotes curtos.
+- A promoção de operações agendadas usa conexão SQLite isolada, verifica a existência de operações vencidas e evita `UPDATE` quando não há trabalho.
+- A sincronização de proventos possui exclusão mútua por thread e lease persistente no `api_state.db`, evitando execuções duplicadas entre workers.
+- As gravações de proventos são confirmadas em lotes curtos.
+- Falhas complementares de proventos ou bloqueios transitórios na leitura final não derrubam o dashboard quando existe um retrato anterior válido.
+- A interface limita as tentativas automáticas e libera o último estado local disponível após falhas repetidas.
+
+### Regra de origem dos proventos
+
+- **Pagos/recebidos:** contabilizados exclusivamente a partir de transações de proventos importadas pela Pluggy. Lançamentos manuais, importações B3 e respostas pagas de outras APIs não confirmam recebimento. A identificação considera a descrição da movimentação para classificar corretamente JCP, dividendos e rendimentos.
+- **A receber:** eventos anunciados pelas fontes integradas que disponibilizam calendário de proventos são exibidos como pendentes até existir confirmação Pluggy. Nesta versão, o calendário externo implementado é o da BRAPI v2; a cotação BRAPI v1 também é usada como fallback quando retorna `cashDividends`. Importações B3 e lançamentos manuais futuros também permanecem pendentes.
+- HG Brasil, Dados B3 (séries de índices), FRED, BCB, IBGE e Tesouro são usados para cotações ou indicadores e não são tratados como calendários de proventos quando não fornecem eventos de pagamento.
+- Eventos anunciados por várias fontes são deduplicados por ativo, data de pagamento, tipo normalizado e valor. Correspondências já confirmadas pela Pluggy são removidas da lista pendente, com tolerância para pequenas diferenças de valor e data. Transações Pluggy com IDs diferentes permanecem distintas para preservar recebimentos legítimos em contas diferentes.
+- Quando a Pluggy confirma um evento previamente anunciado por outra API, o registro existente é preservado sem duplicar o pagamento.
+
+### Atualização
+
+- Base: Lonely Wallet v4.2.36.
+- Manter os bancos `ativos.db`, `tokens.db` e `api_state.db`, além dos arquivos WAL.
+- Manter o volume `/DATA/AppData/lonely-wallet/data:/data`.
+- Reconstruir a imagem Docker para aplicar as alterações.
+
+
+## 14. Correções de proventos e gráfico (v4.2.38)
+
+- Proventos recebidos são confirmados exclusivamente por transações de proventos importadas pela Pluggy; outras fontes não transformam um anúncio em pagamento recebido.
+- Eventos “A receber” são considerados somente a partir do primeiro dia do mês corrente. Quando o mês de pagamento termina sem confirmação pela Pluggy, o evento expirado deixa de aparecer nas previsões, totais, histórico pendente e gráficos.
+- Eventos do mês corrente permanecem visíveis até o fechamento do mês, mesmo que o dia previsto já tenha passado; eventos dos meses futuros também permanecem.
+- O card Evolução de Proventos usa colunas empilhadas para recebidos e a receber. O hover trabalha por índice e destaca os dois segmentos da coluna inteira.
+- O tooltip apresenta mês/ano, valor a receber, valor recebido e total combinado, seguindo o comportamento visual de referência fornecido pelo usuário.
+- Clicar em qualquer parte da coluna abre a distribuição combinada daquele mês, com detalhamento por ativo ou por tipo de provento.
+- O filtro “Últimos 12 meses” mantém os recebimentos do período histórico e inclui os pagamentos pendentes a partir do mês corrente.
+- A atualização não altera o histórico bruto nem exclui registros das APIs; apenas deixa de projetar eventos pendentes cujo mês já terminou sem confirmação.

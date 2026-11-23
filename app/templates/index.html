@@ -2354,6 +2354,16 @@ function hideDashboardDataWait(){
 function scheduleDashboardInitialRetry(){
  if(dashboardInitialRetryTimer)return;
  dashboardInitialRetryAttempt++;
+ if(dashboardInitialRetryAttempt>4){
+  const retry=document.getElementById('dashboardDataWaitRetry');
+  const title=document.getElementById('dashboardDataWaitTitle');
+  const message=document.getElementById('dashboardDataWaitMessage');
+    setDashboardDataWait('Verifique a conexão com o servidor e tente novamente. A aplicação não continuará repetindo chamadas automaticamente.');
+  if(title)title.textContent='Não foi possível carregar a carteira';
+  if(message)message.textContent='Verifique a conexão com o servidor e tente novamente. A aplicação não continuará repetindo chamadas automaticamente.';
+  if(retry)retry.style.display='inline-flex';
+  return;
+ }
  setDashboardDataWait('A conexão está demorando para responder. A carteira tentará carregar novamente automaticamente.');
  const delay=dashboardRetryDelay(dashboardInitialRetryAttempt);
  dashboardInitialRetryTimer=setTimeout(()=>{
@@ -2364,6 +2374,24 @@ function scheduleDashboardInitialRetry(){
 function scheduleDashboardFullRetry(showWait=true){
  if(dashboardFullRetryTimer)return;
  dashboardFullRetryAttempt++;
+ if(dashboardFullRetryAttempt>3){
+  if(state&&Array.isArray(state.itens)){
+   render();
+   applyPositionColumnPrefs();
+   hideDashboardDataWait();
+   const updated=document.getElementById('updated');
+   if(updated)updated.textContent='Dados locais exibidos · atualização completa pendente';
+   toast('A atualização complementar falhou após três tentativas. A carteira foi liberada com os últimos dados locais disponíveis.');
+  }else{
+   const title=document.getElementById('dashboardDataWaitTitle');
+   const message=document.getElementById('dashboardDataWaitMessage');
+   const retry=document.getElementById('dashboardDataWaitRetry');
+   if(title)title.textContent='Atualização pendente';
+   if(message)message.textContent='Não foi possível concluir a atualização. Verifique os logs do servidor e tente novamente manualmente.';
+   if(retry)retry.style.display='inline-flex';
+  }
+  return;
+ }
  if(showWait)setDashboardDataWait('Estamos concluindo a atualização. Uma nova tentativa será feita automaticamente.');
  else{
   const updated=document.getElementById('updated');
@@ -2827,7 +2855,7 @@ function renderPositionGroups(rows,hostId='summaryGroups',summaryMode=true){
   }],
   ['quantidade','Quant.',i=>`<td data-col="quantidade">${Number(i.quantidade).toLocaleString('pt-BR',{maximumFractionDigits:4})}</td>`],
   ['preco_medio','Preço Médio',i=>`<td data-col="preco_medio">${brl(i.preco_medio)}</td>`],
-  ['preco_atual','Preço Atual',i=>{const hasReference=Boolean(i.cotacao_referencia_disponivel||i.cotacao_disponivel);const priceText=hasReference&&Number(i.preco_atual)>0?`<span class="price-update-tooltip-trigger" data-hint="${escapeHTML(quoteUpdatedHint(i.cotacao_ultima_atualizacao))}" aria-label="${escapeHTML(quoteUpdatedHint(i.cotacao_ultima_atualizacao))}" onmouseenter="showVariationMoneyTooltip(event,this)" onmousemove="moveVariationMoneyTooltip(event,this)" onmouseleave="hideVariationMoneyTooltip()" onfocus="showVariationMoneyTooltip(event,this)" onblur="hideVariationMoneyTooltip()" tabindex="0">${brl(i.preco_atual)}</span>`:(i.tipo==='renda_fixa'?(i.aviso_calculo==='Indexador ou taxa não informado'?'Informe o indexador':'Cálculo indisponível'):'Sem cotação');return `<td data-col="preco_atual">${priceText}${i.tipo==='renda_fixa'&&i.cotacao_disponivel?`<div class="mini">${i.valor_atual_origem==='Indexador'?'Calculado pelo indexador':i.valor_atual_origem==='Saldo atual informado pela instituição'?'Saldo informado pela instituição':''}</div>`:''}</td>`;}],
+  ['preco_atual','Preço Atual',i=>{const hasReference=Boolean(i.cotacao_referencia_disponivel||i.cotacao_disponivel);const priceText=hasReference&&Number(i.preco_atual)>0?`<span class="price-update-tooltip-trigger" data-hint="${escapeHTML(quoteUpdatedHint(i.cotacao_ultima_atualizacao,i.cotacao_desatualizada))}" aria-label="${escapeHTML(quoteUpdatedHint(i.cotacao_ultima_atualizacao,i.cotacao_desatualizada))}" onmouseenter="showVariationMoneyTooltip(event,this)" onmousemove="moveVariationMoneyTooltip(event,this)" onmouseleave="hideVariationMoneyTooltip()" onfocus="showVariationMoneyTooltip(event,this)" onblur="hideVariationMoneyTooltip()" tabindex="0">${brl(i.preco_atual)}</span>`:(i.tipo==='renda_fixa'?(i.aviso_calculo==='Indexador ou taxa não informado'?'Informe o indexador':'Cálculo indisponível'):'Sem cotação');return `<td data-col="preco_atual">${priceText}${i.tipo==='renda_fixa'&&i.cotacao_disponivel?`<div class="mini">${i.valor_atual_origem==='Indexador'?'Calculado pelo indexador':i.valor_atual_origem==='Saldo atual informado pela instituição'?'Saldo informado pela instituição':''}</div>`:''}</td>`;}],
   ['preco_alvo','Meu Preço-Alvo',i=>`<td data-col="preco_alvo">—</td>`],
   ['preco_graham','Preço Justo (Graham)',i=>`<td data-col="preco_graham">—</td>`],
   ['preco_teto_bazin','Preço-teto (Bazin)',i=>`<td data-col="preco_teto_bazin">${i.preco_teto_bazin?brl(i.preco_teto_bazin):'—'}</td>`],
@@ -2959,15 +2987,19 @@ function moveIdealBalanceTooltip(event,el){
  if(tip && document.activeElement!==el)showIdealBalanceTooltip(event,el);
 }
 
-function quoteUpdatedHint(value){
- if(!value)return 'Data da última atualização não disponível';
- const raw=String(value);
- // Datas de candles diários são datas de pregão, não horários locais.
- const dayOnly=raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
- if(dayOnly)return `Última atualização: ${dayOnly[3]}/${dayOnly[2]}/${dayOnly[1]}`;
- const parsed=new Date(raw);
- if(Number.isNaN(parsed.getTime()))return 'Data da última atualização não disponível';
- return `Última atualização: ${parsed.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'})}`;
+function quoteUpdatedHint(value,isStale=false){
+ let updated='Data da última atualização não disponível';
+ if(value){
+  const raw=String(value);
+  // Datas de candles diários são datas de pregão, não horários locais.
+  const dayOnly=raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(dayOnly)updated=`Última atualização real: ${dayOnly[3]}/${dayOnly[2]}/${dayOnly[1]}`;
+  else{
+   const parsed=new Date(raw);
+   if(!Number.isNaN(parsed.getTime()))updated=`Última atualização real: ${parsed.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'})}`;
+  }
+ }
+ return isStale?`⚠ Cotação antiga reutilizada de cache/último valor válido. Não foi confirmada nesta atualização. ${updated}`:updated;
 }
 
 function variationMoneyHint(item,change){
@@ -3352,10 +3384,11 @@ function buildProvDistribution(records,title){
  };
  const titleEl=document.getElementById('provDistributionTitle');if(titleEl)titleEl.textContent=title||'Distribuição de proventos em 12 meses';
 }
-function openProvDistributionForBar(key,mode,status='Pago'){
+function openProvDistributionForBar(key,mode){
  const d=state.proventos_dashboard||{},typeSelect=document.getElementById('provTypeFilter'),assetSelect=document.getElementById('provAssetFilter');
  const selectedType=typeSelect?.value||'todos',selectedAsset=assetSelect?.value||'todos';
- const source=status==='A receber'?(d.a_receber||[]):(d.recebidos||[]);
+ // Um clique em qualquer segmento seleciona a coluna inteira: recebidos + a receber.
+ const source=[...(d.recebidos||[]),...(d.a_receber||[])];
  const records=source.filter(x=>{
   const date=String(x.data_pagamento||'');if(!/^\d{4}-\d{2}-\d{2}$/.test(date))return false;
   const dt=new Date(date+'T12:00:00');
@@ -3363,8 +3396,8 @@ function openProvDistributionForBar(key,mode,status='Pago'){
   const kind=x.tipo_ativo||((state.itens||[]).find(i=>i.ticker===x.ticker)||{}).tipo||'outros';
   return bucket===key&&(selectedType==='todos'||kind===selectedType)&&(selectedAsset==='todos'||x.ticker===selectedAsset);
  });
- const title=mode==='anual'?`Distribuição de proventos ${status==='A receber'?'a receber':'recebidos'} em ${key}`:`Distribuição de proventos ${status==='A receber'?'a receber':'recebidos'} em ${key.slice(5,7)}/${key.slice(0,4)}`;
- provDistributionStatus=status;
+ const title=mode==='anual'?`Distribuição dos proventos em ${key} · recebidos e a receber`:`Distribuição dos proventos em ${key.slice(5,7)}/${key.slice(0,4)} · recebidos e a receber`;
+ provDistributionStatus='Todos';
  buildProvDistribution(records,title);
  const back=document.getElementById('provDistributionBack');
  if(back){back.style.display='flex';setProvDistributionMode(provDistributionMode||'ativo');}
@@ -3544,8 +3577,9 @@ function renderProventosDashboard(){
   const imported=Number(sync.importados||0);
   const ignored=Number(sync.ignorados||0);
   const errors=Array.isArray(sync.erros)?sync.erros:[];
+  const staleWarning=sync.dados_desatualizados?`<span class="prov-sync-stale">⚠ ${escapeHTML(sync.aviso_cache||'Parte dos dados foi reutilizada de cache antigo. Confira a última consulta real da fonte.')} (${Number(sync.fontes_de_cache_antigo||0)} fonte(s), ${Number(sync.eventos_de_cache_antigo||0)} evento(s))</span>`:'';
   const errorDetails=errors.length?`<details class="prov-sync-details"><summary>Detalhes técnicos (${errors.length})</summary><div>${errors.map(error=>`<p>${escapeHTML(String(error))}</p>`).join('')}</div></details>`:'';
-  syncStatus.innerHTML=`<span class="prov-sync-summary">${imported} evento(s) novo(s) · ${ignored} ignorado(s) · Atualizado: ${escapeHTML(when)}</span>${errorDetails}`;
+  syncStatus.innerHTML=`<span class="prov-sync-summary">${imported} evento(s) novo(s) · ${ignored} ignorado(s) · Última consulta real: ${escapeHTML(when)}</span>${staleWarning}${errorDetails}`;
  }
  const distNames=Object.keys(distribution).sort((a,b)=>distribution[b]-distribution[a]);
  const distValues=distNames.map(k=>distribution[k]);
@@ -3567,9 +3601,15 @@ function renderProventosDashboard(){
   const date=String(x.data_pagamento||'');if(!validDate(date))return false;
   const dt=new Date(date+'T12:00:00'),year=date.slice(0,4),dateKey=date.slice(0,7);
   if(chartRange==='ano_atual')return Number(year)===now.getFullYear();
-  if(chartRange==='12m'){const cutoff=new Date(first.getFullYear(),first.getMonth()-11,1);return dt>=cutoff&&date<=todayISO;}
-  if(chartRange==='5a')return Number(year)>=now.getFullYear()-4&&Number(year)<=now.getFullYear();
-  if(chartRange==='futuros')return x.status==='A receber'&&date>=todayISO;
+  if(chartRange==='12m'){
+   if(x.status==='A receber')return date>=`${first.getFullYear()}-${String(first.getMonth()+1).padStart(2,'0')}-01`;
+   const cutoff=new Date(first.getFullYear(),first.getMonth()-11,1);return dt>=cutoff&&date<=todayISO;
+  }
+  if(chartRange==='5a'){
+   if(x.status==='A receber')return date>=`${first.getFullYear()}-${String(first.getMonth()+1).padStart(2,'0')}-01`;
+   return Number(year)>=now.getFullYear()-4&&Number(year)<=now.getFullYear()&&date<=todayISO;
+  }
+  if(chartRange==='futuros')return x.status==='A receber'&&date>=`${first.getFullYear()}-${String(first.getMonth()+1).padStart(2,'0')}-01`;
   if(chartRange==='recebidos')return x.status==='Pago';
   if(chartRange==='todos')return true;
   if(chartRange.startsWith('ano:'))return year===chartRange.slice(4);
@@ -3595,7 +3635,42 @@ function renderProventosDashboard(){
  renderProvChartPeriodMenu(availableYears);
  const labelsChart=keys.map(k=>mode==='anual'?k:`${k.slice(5,7)}/${k.slice(0,4)}`);
  const got=keys.map(k=>Number((sums[k]?.recebido||0).toFixed(2))),due=keys.map(k=>Number((sums[k]?.a_receber||0).toFixed(2)));
- chart('provMonthlyChart','bar',{labels:labelsChart,datasets:[{label:'Proventos recebidos',data:got,backgroundColor:'#477bd0',borderRadius:4,stack:'proventos'},{label:'Proventos a receber',data:due,backgroundColor:'#b9c9e8',borderRadius:4,stack:'proventos'}]},{onClick:(event,elements)=>{if(!elements?.length)return;const hit=elements[0],index=hit.index;if(index>=0&&keys[index])openProvDistributionForBar(keys[index],mode,hit.datasetIndex===1?'A receber':'Pago');},onHover:(event,elements)=>{if(event?.native?.target)event.native.target.style.cursor=elements?.length?'pointer':'default';},plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${brl(ctx.raw||0)}`}}},scales:{x:{stacked:true,ticks:{color:'#8f99a8'},grid:{display:false}},y:{stacked:true,beginAtZero:true,ticks:{color:'#8f99a8',callback:v=>'R$ '+Number(v).toLocaleString('pt-BR')},grid:{color:'#303541'}}}});
+ chart('provMonthlyChart','bar',{
+  labels:labelsChart,
+  datasets:[
+   {label:'Proventos recebidos',data:got,backgroundColor:'#477bd0',hoverBackgroundColor:'#6797e5',borderRadius:4,stack:'proventos'},
+   {label:'Proventos a receber',data:due,backgroundColor:'#b9c9e8',hoverBackgroundColor:'#d4def2',borderRadius:4,stack:'proventos'}
+  ]
+ },{
+  interaction:{mode:'index',intersect:false,axis:'x'},
+  hover:{mode:'index',intersect:false},
+  onClick:(event,elements)=>{
+   if(!elements?.length)return;
+   const index=elements[0].index;
+   if(index>=0&&keys[index])openProvDistributionForBar(keys[index],mode);
+  },
+  onHover:(event,elements)=>{if(event?.native?.target)event.native.target.style.cursor=elements?.length?'pointer':'default';},
+  plugins:{
+   legend:{display:false},
+   tooltip:{
+    mode:'index',intersect:false,displayColors:true,bodySpacing:7,
+    itemSort:(a,b)=>b.datasetIndex-a.datasetIndex,
+    callbacks:{
+     title:items=>items?.length?items[0].label:'',
+     label:ctx=>[ctx.dataset.label,brl(ctx.parsed?.y??ctx.raw??0)],
+     afterBody:items=>{
+      if(!items?.length)return [];
+      const index=items[0].dataIndex,total=Number(got[index]||0)+Number(due[index]||0);
+      return ['Total',brl(total)];
+     }
+    }
+   }
+  },
+  scales:{
+   x:{stacked:true,ticks:{color:'#8f99a8'},grid:{display:false}},
+   y:{stacked:true,beginAtZero:true,ticks:{color:'#8f99a8',callback:v=>'R$ '+Number(v).toLocaleString('pt-BR')},grid:{color:'#303541'}}
+  }
+ });
  const totalReceived=got.reduce((a,b)=>a+b,0);
  const totalUpcoming=due.reduce((a,b)=>a+b,0);
  const totalFiltered=totalReceived+totalUpcoming;
@@ -3730,7 +3805,7 @@ function openProvDistributionModal(){
  back.style.display='flex';setProvDistributionMode(provDistributionMode||'ativo');
 }
 function closeProvDistributionModal(){const back=document.getElementById('provDistributionBack');if(back)back.style.display='none';}
-function setProvDistributionMode(mode){provDistributionMode=mode;document.getElementById('provDistAssetTab')?.classList.toggle('active',mode==='ativo');document.getElementById('provDistTypeTab')?.classList.toggle('active',mode==='tipo');const items=provDistributionData[mode]||[];const total=items.reduce((sum,x)=>sum+Number(x.value||0),0);const totalEl=document.getElementById('provDistributionTotal');if(totalEl){totalEl.textContent=brl(total);totalEl.style.color=side==='venda'?'#ef6680':'#00d4a0';}const list=document.getElementById('provDistributionDetailList');if(list)list.innerHTML=items.length?items.map(item=>`<div class="prov-distribution-item" data-tooltip="${provDistributionStatus==='A receber'?'Previsto':'Recebido'}: ${brl(item.value)}"><span><i style="background:${item.color}"></i>${escapeHTML(item.name)}</span><b>${pct(total?item.value/total*100:0)}</b></div>`).join(''):`<div class="empty">Nenhum provento ${provDistributionStatus==='A receber'?'previsto':'recebido'} no período.</div>`;chart('provDistributionDetailChart','doughnut',{labels:items.map(x=>x.name),datasets:[{data:items.map(x=>x.value),backgroundColor:items.map(x=>x.color),borderWidth:0}]},{cutout:'48%',plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${ctx.label}: ${brl(ctx.raw||0)}`}}}});}
+function setProvDistributionMode(mode){provDistributionMode=mode;document.getElementById('provDistAssetTab')?.classList.toggle('active',mode==='ativo');document.getElementById('provDistTypeTab')?.classList.toggle('active',mode==='tipo');const items=provDistributionData[mode]||[];const total=items.reduce((sum,x)=>sum+Number(x.value||0),0);const totalEl=document.getElementById('provDistributionTotal');if(totalEl){totalEl.textContent=brl(total);totalEl.style.color=side==='venda'?'#ef6680':'#00d4a0';}const list=document.getElementById('provDistributionDetailList');const distributionLabel=provDistributionStatus==='A receber'?'A receber':provDistributionStatus==='Todos'?'No período':'Recebido';if(list)list.innerHTML=items.length?items.map(item=>`<div class="prov-distribution-item" data-tooltip="${distributionLabel}: ${brl(item.value)}"><span><i style="background:${item.color}"></i>${escapeHTML(item.name)}</span><b>${pct(total?item.value/total*100:0)}</b></div>`).join(''):`<div class="empty">Nenhum provento ${provDistributionStatus==='A receber'?'previsto':provDistributionStatus==='Todos'?'encontrado':'recebido'} no período.</div>`;chart('provDistributionDetailChart','doughnut',{labels:items.map(x=>x.name),datasets:[{data:items.map(x=>x.value),backgroundColor:items.map(x=>x.color),borderWidth:0}]},{cutout:'48%',plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${ctx.label}: ${brl(ctx.raw||0)}`}}}});}
 
 const chartPalette=['#78b7f5','#f3d978','#42d49b','#b59af3','#ed8e9c','#74d7d2','#d7a36a','#e8a56b','#a8b7cb','#d98ad0','#f28f5b','#88c1a8','#c49aeb','#d9c46a','#78a8d8','#e57da9','#9cc36b','#b6a0d8'];
 function sumAssetCapitalGain(items){
@@ -4294,9 +4369,11 @@ function renderRentabilidadePage(){
   const missingAssets=Array.isArray(performance.ativos_sem_historico)?performance.ativos_sem_historico:[];
   const coveredAssets=Number(performance.ativos_com_historico||0),assetTotal=Number(performance.total_ativos||0);
   const coverageText=(assetTotal?` Cobertura de histórico: ${coveredAssets}/${assetTotal} ativos.`:'')+(missingAssets.length?' Sem histórico: '+missingAssets.join(', ')+'.':'');
+  const staleHistory=Object.entries(performance.fontes_historico||{}).filter(([,meta])=>meta?.dados_desatualizados).map(([ticker])=>ticker);
+  const staleHistoryText=staleHistory.length?' Histórico reutilizado de cache antigo: '+staleHistory.join(', ')+'. Confira a última consulta real da fonte.':'';
   note.textContent=allTypesSelected
-   ?(chartRows.length?'A linha da carteira utiliza movimentações Pluggy/B3 e preços históricos disponíveis. Os índices são exibidos independentemente da cobertura histórica dos ativos. ':'Ainda não há histórico de preços suficiente para a carteira. Os índices são exibidos conforme a disponibilidade das fontes. ')+coverageText
-   :'Série histórica da classe selecionada, calculada somente com os ativos que possuem histórico disponível. Dados ausentes não são interpolados.'+coverageText+ipcaInfo+(activeSources.length?' Fontes: '+activeSources.join(' | '):'');
+   ?(chartRows.length?'A linha da carteira utiliza movimentações Pluggy/B3 e preços históricos disponíveis. Os índices são exibidos independentemente da cobertura histórica dos ativos. ':'Ainda não há histórico de preços suficiente para a carteira. Os índices são exibidos conforme a disponibilidade das fontes. ')+coverageText+staleHistoryText
+   :'Série histórica da classe selecionada, calculada somente com os ativos que possuem histórico disponível. Dados ausentes não são interpolados.'+coverageText+staleHistoryText+ipcaInfo+(activeSources.length?' Fontes: '+activeSources.join(' | '):'');
  }
  // A ausência temporária de dados não deve bloquear a interação da legenda.
  const datasets=[];
@@ -4618,7 +4695,7 @@ async function loadAPIUsage(){
   const last=item.last_request_epoch?new Date(Number(item.last_request_epoch)*1000).toLocaleString('pt-BR'):'Nenhuma chamada registrada';
   const labels={pluggy:'Pluggy',hgbrasil:'HG Brasil',dadosb3:'Dados B3',fred:'FRED',yahoo:'Yahoo Finance'};
   const otherUsage=Object.entries(item.providers||{}).filter(([name])=>name!=='brapi').map(([name,stats])=>`${escapeHTML(labels[name]||name)}: ${Number(stats.requests_last_30_days||0).toLocaleString('pt-BR')}`).join(' · ');
-  const otherBudgets=Object.entries(item.provider_budgets||{}).filter(([name])=>name!=='brapi').map(([name,row])=>`${escapeHTML(labels[name]||name)}: ${Number(row.requests||0).toLocaleString('pt-BR')}/${row.enabled?Number(row.local_budget||0).toLocaleString('pt-BR'):'sem limite local'} em ${Number(row.window_hours||24)}h`).join(' · ');
+  const otherBudgets=Object.entries(item.provider_budgets||{}).filter(([name])=>name!=='brapi').map(([name,row])=>{const daily=`${Number(row.requests||0).toLocaleString('pt-BR')}/${row.enabled?Number(row.local_budget||0).toLocaleString('pt-BR'):'sem limite local'} em ${Number(row.window_hours||24)}h`;const monthly=Number.isFinite(Number(row.local_budget_30d))?` · 30d ${Number(row.requests_30d||0).toLocaleString('pt-BR')}/${Number(row.local_budget_30d||0).toLocaleString('pt-BR')}`:'';return `${escapeHTML(labels[name]||name)}: ${daily}${monthly}`;}).join(' · ');
   host.innerHTML=`<div class="panelhead"><div><h3 style="margin:0">Consumo local das APIs</h3><div class="mini">Estatísticas desta instalação. A consulta não consome cota externa.</div></div><button class="ghost" type="button" onclick="loadAPIUsage()">↻ Atualizar</button></div><div class="api-usage-grid"><div><span class="mini">brapi · chamadas / 30 dias</span><strong>${used.toLocaleString('pt-BR')}</strong></div><div><span class="mini">Orçamento interno brapi</span><strong>${item.budget_enabled?budget.toLocaleString('pt-BR'):'Sem limite local'}</strong></div><div><span class="mini">Saldo do orçamento</span><strong>${remaining===null?'—':remaining.toLocaleString('pt-BR')}</strong></div><div><span class="mini">Cache brapi reutilizado</span><strong>${Number(item.cache_hits||0).toLocaleString('pt-BR')} <small>· antigo ${Number(item.stale_cache_hits||0).toLocaleString('pt-BR')}</small></strong></div></div>${item.budget_enabled?`<div class="api-usage-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent.toFixed(1)}"><span style="width:${percent.toFixed(1)}%"></span></div>`:''}<div class="mini">Última chamada brapi: ${escapeHTML(last)}. ${escapeHTML(item.note||'')}</div>${otherBudgets?`<div class="mini" style="margin-top:7px"><b>Orçamentos locais · uso e limite:</b> ${otherBudgets}</div>`:''}${otherUsage?`<div class="mini" style="margin-top:7px"><b>Outras fontes · chamadas nos últimos 30 dias:</b> ${otherUsage}</div>`:''}`;
  }catch(error){host.innerHTML=`<div class="mini">Não foi possível carregar o consumo local: ${escapeHTML(error.message||'erro desconhecido')}</div>`;}
 }
@@ -6113,6 +6190,7 @@ body.light-theme .prov-chart-period-menu .period-section{color:#202633!important
 
 
 .prov-sync-summary{display:block;color:var(--muted,#8f9bad);font-size:11px;line-height:1.45;margin-top:5px}
+.prov-sync-stale{display:block;color:var(--warning,#e8aa45);font-size:11px;line-height:1.45;margin-top:4px}
 .prov-sync-details{margin-top:4px;font-size:11px;color:var(--muted,#8f9bad)}
 .prov-sync-details summary{cursor:pointer;display:inline-block;color:var(--muted,#8f9bad)}
 .prov-sync-details>div{max-height:180px;overflow:auto;margin-top:6px;padding:8px 10px;border:1px solid var(--border,#343b49);border-radius:8px;background:var(--panel,#20242d)}

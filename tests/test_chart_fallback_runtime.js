@@ -11,7 +11,7 @@ const context2d = {
   moveTo: (...args) => operations.push(['moveTo', ...args]),
   lineTo: (...args) => operations.push(['lineTo', ...args]),
   stroke: () => operations.push(['stroke']),
-  fill: () => operations.push(['fill']),
+  fill: () => operations.push(['fill', context2d.fillStyle]),
   arc: (...args) => operations.push(['arc', ...args]),
   closePath: () => operations.push(['closePath']),
   rect: (...args) => operations.push(['rect', ...args]),
@@ -129,6 +129,50 @@ assert.ok(tooltipElements[0].textContent.includes('Valor formatado: 10'), 'toolt
 tooltipCanvas._handlers.mouseleave();
 assert.strictEqual(tooltipElements.length, 0, 'tooltip should hide when pointer leaves the canvas');
 
+let activeStackedElements = [], clickedStackedElements = [];
+const stackedTooltipCanvas = canvas('stacked-tooltip');
+const stackedTooltipChart = new window.Chart(stackedTooltipCanvas, {
+  type: 'bar',
+  data: { labels: ['11/2026'], datasets: [
+    { label: 'Proventos recebidos', data: [58.90], backgroundColor: '#477bd0', hoverBackgroundColor: '#6797e5' },
+    { label: 'Proventos a receber', data: [46.60], backgroundColor: '#b9c9e8', hoverBackgroundColor: '#d4def2' },
+  ] },
+  options: {
+    animation: false,
+    interaction: { mode: 'index', intersect: false, axis: 'x' },
+    hover: { mode: 'index', intersect: false },
+    onHover: (event, elements) => { activeStackedElements = elements; },
+    onClick: (event, elements) => { clickedStackedElements = elements; },
+    scales: { x: { stacked: true }, y: { stacked: true } },
+    plugins: { tooltip: {
+      mode: 'index', intersect: false,
+      itemSort: (a, b) => b.datasetIndex - a.datasetIndex,
+      callbacks: {
+        title: items => items[0].label,
+        label: context => [context.dataset.label, `R$ ${Number(context.raw).toFixed(2)}`],
+        afterBody: items => ['Total', `R$ ${items.reduce((sum, item) => sum + Number(item.raw || 0), 0).toFixed(2)}`],
+      },
+    } },
+  },
+});
+const bottomSegment = stackedTooltipChart._hits.find(hit => hit.datasetIndex === 0);
+stackedTooltipCanvas._handlers.mousemove({
+  clientX: bottomSegment.x + bottomSegment.width / 2,
+  clientY: bottomSegment.y + Math.max(1, bottomSegment.height / 2),
+});
+assert.strictEqual(activeStackedElements.length, 2, 'stacked hover should activate both datasets in the selected column');
+assert.strictEqual(stackedTooltipChart._hoverIndex, 0, 'the full column index should become active');
+assert.ok(operations.some(item => item[0] === 'fill' && item[1] === '#6797e5'), 'the received segment should use its hover color');
+assert.ok(operations.some(item => item[0] === 'fill' && item[1] === '#d4def2'), 'the pending segment should use its hover color');
+assert.ok(tooltipElements[0].textContent.includes('11/2026') && tooltipElements[0].textContent.includes('Proventos a receber') && tooltipElements[0].textContent.includes('Proventos recebidos') && tooltipElements[0].textContent.includes('R$ 105.50'), 'stacked tooltip should show month, both statuses and total');
+stackedTooltipCanvas._handlers.click({
+  clientX: bottomSegment.x + bottomSegment.width / 2,
+  clientY: bottomSegment.y + Math.max(1, bottomSegment.height / 2),
+});
+assert.strictEqual(clickedStackedElements.length, 2, 'clicking either stacked segment should select the whole column');
+stackedTooltipCanvas._handlers.mouseleave();
+assert.strictEqual(stackedTooltipChart._hoverIndex, null, 'column highlighting should clear when pointer leaves the chart');
+
 const donut = new window.Chart(canvas('donut'), {
   type: 'doughnut',
   data: { labels: ['Ações', 'FIIs'], datasets: [{ data: [60, 40], backgroundColor: ['#20bd82', '#78b7f5'] }] },
@@ -144,4 +188,4 @@ assert.strictEqual(successWindow.Chart, existingChart, 'fallback must not replac
 
 bar.destroy();
 assert.strictEqual(window.Chart.instances['stacked-bar'], undefined);
-console.log('Chart loader + fallback runtime: 9 verificações aprovadas.');
+console.log('Chart loader + fallback runtime: 16 verificações aprovadas.');

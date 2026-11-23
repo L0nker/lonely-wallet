@@ -1,5 +1,6 @@
 """Regression tests for Lonely Wallet 4.2.x security and financial fixes."""
 import os
+import sqlite3
 import tempfile
 import unittest
 import datetime
@@ -37,12 +38,19 @@ class RegressionTests(unittest.TestCase):
             # imported opening balances from leaking into IRPF/position tests.
             for table in (
                 'b3_importados', 'b3_import_lotes', 'proventos_api', 'proventos',
-                'operacoes', 'saldos_importados', 'irpf_lancamentos',
-                'api_response_cache', 'api_request_log', 'api_cache_stats', 'api_provider_state'
+                'operacoes', 'saldos_importados', 'irpf_lancamentos'
             ):
                 con.execute(f'DELETE FROM {table}')
             con.execute("DELETE FROM app_settings WHERE key='pluggy_sync_interval'")
             con.commit()
+            api_con = wallet._api_cache_connection()
+            try:
+                for table in ('api_response_cache','api_request_log','api_cache_stats',
+                              'api_provider_state','api_provider_state_scoped'):
+                    api_con.execute(f'DELETE FROM {table}')
+                api_con.commit()
+            finally:
+                api_con.close()
 
     def test_00_setup_fixture_leaves_a_balance_for_next_test_to_check(self):
         with wallet.app.app_context():
@@ -79,6 +87,142 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()['interval_minutes'], 240)
 
+    def test_api_cache_row_and_hit_metrics_are_available(self):
+        now = wallet.time.time()
+        with wallet.app.app_context():
+            wallet._api_cache_store('cache-row-test', 'brapi', '/quote', b'{"ok":true}', 200, 60, 120)
+            row = wallet._api_cache_row('cache-row-test')
+            self.assertIsNotNone(row)
+            self.assertEqual(row['payload'], b'{"ok":true}')
+            self.assertEqual(row['status_code'], 200)
+            self.assertGreater(row['expires_at'], now)
+            wallet._api_cache_record_hit('brapi', stale=False)
+            wallet._api_cache_record_hit('brapi', stale=True)
+            con = wallet._api_cache_connection()
+            try:
+                stats = con.execute('SELECT fresh_hits,stale_hits FROM api_cache_stats WHERE provider=?', ('brapi',)).fetchone()
+                self.assertEqual((stats['fresh_hits'], stats['stale_hits']), (1, 1))
+            finally:
+                con.close()
+
+    def test_legacy_api_metadata_migrates_once_to_api_state_database(self):
+        with tempfile.TemporaryDirectory(prefix='lw-api-migrate-') as temp:
+            source = Path(temp) / 'ativos-legacy.db'
+            target = Path(temp) / 'api_state.db'
+            con = sqlite3.connect(source)
+            con.executescript('''
+                CREATE TABLE api_response_cache(cache_key TEXT PRIMARY KEY,provider TEXT,endpoint TEXT,payload BLOB,status_code INTEGER,fetched_at REAL,expires_at REAL,stale_until REAL);
+                CREATE TABLE api_request_log(id INTEGER PRIMARY KEY,provider TEXT,endpoint TEXT,requested_at REAL,status_code INTEGER,credential_hash TEXT);
+                CREATE TABLE api_cache_stats(provider TEXT PRIMARY KEY,fresh_hits INTEGER,stale_hits INTEGER);
+                CREATE TABLE api_provider_state(provider TEXT PRIMARY KEY,cooldown_until REAL,last_status_code INTEGER,last_error TEXT);
+                CREATE TABLE api_provider_state_scoped(provider TEXT,credential_hash TEXT,scope TEXT,cooldown_until REAL,last_status_code INTEGER,last_error TEXT,PRIMARY KEY(provider,credential_hash,scope));
+            ''')
+            con.execute('INSERT INTO api_response_cache VALUES(?,?,?,?,?,?,?,?)', ('legacy-cache','brapi','/quote',b'{ }',200,1,2,3))
+            con.execute('INSERT INTO api_request_log VALUES(?,?,?,?,?,?)', (7,'pluggy','GET:items',100,200,'old-token-hash'))
+            con.execute('INSERT INTO api_cache_stats VALUES(?,?,?)', ('brapi',4,2))
+            con.commit(); con.close()
+            with patch.object(wallet, 'DB_PATH', str(source)), patch.object(wallet, 'API_STATE_DB_PATH', str(target)):
+                wallet.init_api_state_db()
+                api_con = sqlite3.connect(target)
+                try:
+                    self.assertIsNotNone(api_con.execute('SELECT 1 FROM api_response_cache WHERE cache_key=?', ('legacy-cache',)).fetchone())
+                    self.assertEqual(api_con.execute('SELECT COUNT(*) FROM api_request_log WHERE id=7').fetchone()[0], 1)
+                    self.assertEqual(api_con.execute('SELECT fresh_hits,stale_hits FROM api_cache_stats WHERE provider=?', ('brapi',)).fetchone(), (4,2))
+                finally:
+                    api_con.close()
+                # The marker prevents a later startup from replaying old counters.
+                con = sqlite3.connect(source)
+                con.execute('INSERT INTO api_request_log VALUES(?,?,?,?,?,?)', (8,'pluggy','GET:items',101,200,'old-token-hash'))
+                con.commit(); con.close()
+                wallet.init_api_state_db()
+                api_con = sqlite3.connect(target)
+                try:
+                    self.assertEqual(api_con.execute('SELECT COUNT(*) FROM api_request_log').fetchone()[0], 1)
+                finally:
+                    api_con.close()
+
+    def test_legacy_api_schema_without_endpoint_migrates_with_defaults(self):
+        with tempfile.TemporaryDirectory(prefix='lw-api-old-schema-') as temp:
+            source = Path(temp) / 'ativos-legacy.db'
+            target = Path(temp) / 'api_state.db'
+            source_con = sqlite3.connect(source)
+            source_con.executescript("""
+                CREATE TABLE api_response_cache(
+                    cache_key TEXT PRIMARY KEY, provider TEXT, payload BLOB,
+                    status_code INTEGER, fetched_at REAL, expires_at REAL, stale_until REAL
+                );
+                CREATE TABLE api_request_log(
+                    id INTEGER PRIMARY KEY, provider TEXT, requested_at REAL, status_code INTEGER
+                );
+                CREATE TABLE api_cache_stats(provider TEXT PRIMARY KEY, fresh_hits INTEGER);
+                CREATE TABLE api_provider_state(provider TEXT PRIMARY KEY);
+            """)
+            source_con.execute(
+                'INSERT INTO api_response_cache VALUES(?,?,?,?,?,?,?)',
+                ('legacy-no-endpoint', 'hgbrasil', b'{"ok":true}', 200, 10, 20, 30)
+            )
+            source_con.execute(
+                'INSERT INTO api_request_log VALUES(?,?,?,?)',
+                (11, 'pluggy', 12, 200)
+            )
+            source_con.execute(
+                'INSERT INTO api_cache_stats VALUES(?,?)', ('hgbrasil', 9)
+            )
+            source_con.execute('INSERT INTO api_provider_state(provider) VALUES(?)', ('pluggy',))
+            source_con.commit()
+            source_con.close()
+
+            # Simulate a target database created by an older, incomplete schema.
+            target_con = sqlite3.connect(target)
+            target_con.executescript("""
+                CREATE TABLE api_response_cache(
+                    cache_key TEXT PRIMARY KEY, provider TEXT, payload BLOB,
+                    status_code INTEGER, fetched_at REAL, expires_at REAL, stale_until REAL
+                );
+                CREATE TABLE api_request_log(
+                    id INTEGER PRIMARY KEY, provider TEXT, requested_at REAL, status_code INTEGER
+                );
+                CREATE TABLE api_cache_stats(provider TEXT PRIMARY KEY, fresh_hits INTEGER);
+                CREATE TABLE api_provider_state(provider TEXT PRIMARY KEY);
+            """)
+            target_con.commit()
+            target_con.close()
+
+            with patch.object(wallet, 'DB_PATH', str(source)), patch.object(wallet, 'API_STATE_DB_PATH', str(target)):
+                wallet.init_api_state_db()
+                con = sqlite3.connect(target)
+                try:
+                    cache = con.execute(
+                        'SELECT endpoint,payload,fetched_at,expires_at,stale_until FROM api_response_cache WHERE cache_key=?',
+                        ('legacy-no-endpoint',)
+                    ).fetchone()
+                    self.assertEqual(cache, ('', b'{"ok":true}', 10.0, 20.0, 30.0))
+                    request_row = con.execute(
+                        'SELECT endpoint,credential_hash,requested_at,status_code FROM api_request_log WHERE id=11'
+                    ).fetchone()
+                    self.assertEqual(request_row, ('', 'legacy', 12.0, 200))
+                    stats = con.execute(
+                        'SELECT fresh_hits,stale_hits FROM api_cache_stats WHERE provider=?', ('hgbrasil',)
+                    ).fetchone()
+                    self.assertEqual(stats, (9, 0))
+                    state = con.execute(
+                        'SELECT cooldown_until,last_status_code,last_error FROM api_provider_state WHERE provider=?',
+                        ('pluggy',)
+                    ).fetchone()
+                    self.assertEqual(state, (0.0, 0, ''))
+                finally:
+                    con.close()
+                wallet.init_api_state_db()
+                con = sqlite3.connect(target)
+                try:
+                    self.assertEqual(con.execute('SELECT COUNT(*) FROM api_request_log').fetchone()[0], 1)
+                finally:
+                    con.close()
+
+    def test_api_state_database_is_separate_from_financial_database(self):
+        self.assertNotEqual(os.path.abspath(wallet.API_STATE_DB_PATH), os.path.abspath(wallet.DB_PATH))
+        self.assertTrue(Path(wallet.API_STATE_DB_PATH).exists())
+
     def test_brapi_response_cache_persists_and_avoids_repeat_request(self):
         payload = {'results': [{'symbol': 'CACHE4', 'regularMarketPrice': 12.34}]}
         response = wallet.requests.Response()
@@ -104,15 +248,18 @@ class RegressionTests(unittest.TestCase):
 
     def test_pluggy_request_gap_uses_persisted_request_log(self):
         with wallet.app.app_context():
-            con = wallet.db()
-            now = wallet.time.time()
-            con.execute(
-                'INSERT INTO api_request_log(provider,endpoint,requested_at,status_code) VALUES(?,?,?,?)',
-                ('pluggy', 'GET:investments', now - 0.2, 200)
-            )
-            con.commit()
+            con = wallet._api_cache_connection()
+            try:
+                now = wallet.time.time()
+                con.execute(
+                    'INSERT INTO api_request_log(provider,endpoint,requested_at,status_code,credential_hash) VALUES(?,?,?,?,?)',
+                    ('pluggy', 'GET:investments', now - 0.2, 200, 'public')
+                )
+                con.commit()
+            finally:
+                con.close()
             with patch.object(wallet.time, 'sleep') as sleep:
-                wallet._provider_wait_for_gap('pluggy')
+                wallet._provider_wait_for_gap('pluggy', 'public')
             self.assertEqual(sleep.call_count, 1)
             self.assertGreater(sleep.call_args.args[0], 0)
             self.assertLessEqual(sleep.call_args.args[0], wallet.PLUGGY_REQUEST_GAP_SECONDS)
@@ -123,16 +270,192 @@ class RegressionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 wallet._provider_wait_for_gap('pluggy')
 
+    def test_budget_reservation_is_atomic_and_scoped_per_credential(self):
+        with wallet.app.app_context(), patch.object(wallet, 'PLUGGY_LOCAL_24H_BUDGET', 1), patch.object(wallet, 'PLUGGY_REQUEST_GAP_SECONDS', 0):
+            first = wallet._api_record_request('pluggy', 'GET:items', 200, 'credential-a', enforce_budget=True)
+            blocked = wallet._api_record_request('pluggy', 'GET:items', 200, 'credential-a', enforce_budget=True)
+            separate_token = wallet._api_record_request('pluggy', 'GET:items', 200, 'credential-b', enforce_budget=True)
+            self.assertIsNotNone(first)
+            self.assertIsNone(blocked)
+            self.assertIsNotNone(separate_token)
+
+    def test_request_gap_is_reserved_atomically_across_workers(self):
+        with wallet.app.app_context(), patch.object(wallet, 'PLUGGY_REQUEST_GAP_SECONDS', 30):
+            first = wallet._api_record_request('pluggy', 'GET:items', 200, 'credential-gap', enforce_budget=True)
+            second = wallet._api_record_request('pluggy', 'GET:items', 200, 'credential-gap', enforce_budget=True)
+            self.assertIsNotNone(first)
+            self.assertIsNone(second)
+            self.assertGreater(wallet._provider_gap_remaining('pluggy', 'credential-gap'), 0)
+
+    def test_brapi_cache_key_normalizes_query_and_authorization_token(self):
+        token = 'brapi-cache-key-normalization-test'
+        with wallet.app.app_context():
+            query_key = wallet._api_response_cache_key(
+                'brapi', 'https://brapi.dev/api/quote/TEST3', {'token': token}, {})
+            header_key = wallet._api_response_cache_key(
+                'brapi', 'https://brapi.dev/api/quote/TEST3', {}, {'Authorization': f'Bearer {token}'})
+            self.assertEqual(query_key, header_key)
+
+    def test_brapi_token_in_query_and_authorization_share_one_budget_identity(self):
+        token = 'brapi-token-fingerprint-test'
+        expected = wallet.hashlib.sha256(token.encode('utf-8')).hexdigest()[:24]
+        with wallet.app.app_context():
+            query_hash = wallet._provider_credential_hash('brapi', {'token':token}, {'Authorization':f'Bearer {token}'})
+            header_hash = wallet._provider_credential_hash('brapi', {}, {'Authorization':f'Bearer {token}'})
+            self.assertEqual(query_hash, expected)
+            self.assertEqual(header_hash, expected)
+            with patch.object(wallet, '_brapi_token', return_value=token):
+                self.assertEqual(wallet._current_provider_credential_hash('brapi'), expected)
+
+    def test_400_cooldown_is_scoped_to_exact_request(self):
+        with wallet.app.app_context():
+            wallet._provider_apply_failure_cooldown('brapi', 400, '/quote', {'symbols':'BAD3'}, 'token-a')
+            same_request = wallet._provider_get_cooldown('brapi', 'token-a', '/quote', {'symbols':'BAD3'})
+            other_request = wallet._provider_get_cooldown('brapi', 'token-a', '/quote', {'symbols':'GOOD3'})
+            self.assertGreater(same_request, wallet.time.time())
+            self.assertEqual(other_request, 0)
+
+    def test_5xx_cooldown_is_credential_scoped(self):
+        with wallet.app.app_context():
+            wallet._provider_apply_failure_cooldown('brapi', 503, '/quote', {'symbols':'BAD3'}, 'token-a')
+            same_credential = wallet._provider_get_cooldown('brapi', 'token-a', '/quote', {'symbols':'GOOD3'})
+            other_credential = wallet._provider_get_cooldown('brapi', 'token-b', '/quote', {'symbols':'BAD3'})
+            self.assertGreater(same_credential, wallet.time.time())
+            self.assertEqual(other_credential, 0)
+
+    def test_401_cooldown_is_scoped_to_credential(self):
+        with wallet.app.app_context():
+            wallet._provider_apply_failure_cooldown('fred', 401, '/fred/series', {'series_id':'GDP'}, 'fred-token-a')
+            blocked = wallet._provider_get_cooldown('fred', 'fred-token-a', '/fred/series', {'series_id':'GDP'})
+            other_token = wallet._provider_get_cooldown('fred', 'fred-token-b', '/fred/series', {'series_id':'GDP'})
+            self.assertGreater(blocked, wallet.time.time())
+            self.assertEqual(other_token, 0)
+
+    def test_retry_after_http_date_is_respected_and_capped(self):
+        future = wallet.datetime.fromtimestamp(wallet.time.time() + 300, wallet.timezone.utc)
+        header = future.strftime('%a, %d %b %Y %H:%M:%S GMT')
+        with wallet.app.app_context():
+            wallet._provider_apply_failure_cooldown('fred', 429, '/fred/series', {}, 'fred-token', header)
+            until = wallet._provider_get_cooldown('fred', 'fred-token', '/fred/series', {})
+            self.assertGreater(until, wallet.time.time() + 200)
+            self.assertLessEqual(until, wallet.time.time() + 310)
+
+    def test_include_raw_403_does_not_block_fallback_without_include_raw(self):
+        with wallet.app.app_context():
+            endpoint = 'https://brapi.dev/api/v2/stocks/dividends'
+            raw_params = {'symbols':'TEST3', 'includeRaw':'true'}
+            plain_params = {'symbols':'TEST3'}
+            wallet._provider_apply_failure_cooldown('brapi', 403, endpoint, raw_params, 'brapi-token-a')
+            self.assertGreater(wallet._provider_get_cooldown('brapi', 'brapi-token-a', endpoint, raw_params), wallet.time.time())
+            self.assertEqual(wallet._provider_get_cooldown('brapi', 'brapi-token-a', endpoint, plain_params), 0)
+
+    def test_pluggy_pagination_limit_fails_before_consuming_all_pages(self):
+        with wallet.app.app_context(), patch.object(wallet, 'PLUGGY_MAX_PAGES', 2), patch.object(
+            wallet, '_pluggy_request', return_value={'results':[{'id':'one'}], 'totalPages':50}
+        ) as mocked:
+            with self.assertRaisesRegex(RuntimeError, 'acima do limite'):
+                wallet._pluggy_results('/v2/investments')
+            self.assertEqual(mocked.call_count, 1)
+
+    def test_pluggy_pagination_rejects_changing_total_pages(self):
+        responses = [
+            {'results':[{'id':'one'}], 'totalPages':2},
+            {'results':[{'id':'two'}], 'totalPages':3},
+        ]
+        with wallet.app.app_context(), patch.object(wallet, 'PLUGGY_MAX_PAGES', 5), patch.object(
+            wallet, '_pluggy_request', side_effect=responses
+        ) as mocked:
+            with self.assertRaisesRegex(RuntimeError, 'alterou o total de páginas'):
+                wallet._pluggy_results('/v2/investments')
+            self.assertEqual(mocked.call_count, 2)
+
+    def test_pluggy_pagination_rejects_missing_results_array(self):
+        with wallet.app.app_context(), patch.object(wallet, 'PLUGGY_MAX_PAGES', 5), patch.object(
+            wallet, '_pluggy_request', return_value={'totalPages':1}
+        ) as mocked:
+            with self.assertRaisesRegex(RuntimeError, 'ausente ou inválida'):
+                wallet._pluggy_results('/v2/investments')
+            self.assertEqual(mocked.call_count, 1)
+
+    def test_pluggy_empty_intermediate_page_is_not_accepted_as_complete(self):
+        with wallet.app.app_context(), patch.object(wallet, 'PLUGGY_MAX_PAGES', 5), patch.object(
+            wallet, '_pluggy_request', return_value={'results':[], 'totalPages':2}
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'página vazia'):
+                wallet._pluggy_results('/v2/investments')
+
+    def test_dividend_fetch_returns_stale_provenance_even_when_no_events(self):
+        response = wallet.requests.Response()
+        response.status_code = 200
+        response._content = b'{"results":[]}'
+        response.headers['X-LonelyWallet-Cache'] = 'stale'
+        response.headers['X-LonelyWallet-Fetched-At'] = str(wallet.time.time() - 86400)
+        with wallet.app.app_context(), patch.object(wallet, '_brapi_get', return_value=response):
+            events, errors, sources = wallet._fetch_brapi_dividend_events('acao', ['TEST3'], '2026-01-01')
+            self.assertEqual(events, [])
+            self.assertEqual(errors, [])
+            self.assertEqual(len(sources), 1)
+            self.assertTrue(sources[0]['stale'])
+
+    def test_stale_empty_dividend_response_does_not_advance_last_sync(self):
+        previous = '2026-11-01T10:00:00-03:00'
+        stale_epoch = wallet.time.time() - 3 * 86400
+        stale_meta = {'asset_type':'acao','symbols':['PETR4'],'stale':True,'fetched_at':str(stale_epoch),'endpoint':'brapi-dividends'}
+        with wallet.app.app_context():
+            wallet.db().execute(
+                "INSERT INTO integracao_estado(chave,valor) VALUES('brapi_proventos_ultima_sincronizacao',?) ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor",
+                (previous,)
+            )
+            wallet.db().commit()
+            with patch.object(wallet, '_fetch_brapi_dividend_events', side_effect=[([], [], [stale_meta]), ([], [], [])]), \
+                 patch.object(wallet, 'cotacao', return_value={}):
+                result = wallet.sync_brapi_proventos(force=True, quote_items=[], active_items=[{'ticker':'PETR4','tipo':'acao'}])
+            self.assertTrue(result['dados_desatualizados'])
+            self.assertEqual(result['fontes_de_cache_antigo'], 1)
+            self.assertIn('cache antigo', result['aviso_cache'])
+            saved = wallet.db().execute("SELECT valor FROM integracao_estado WHERE chave='brapi_proventos_ultima_sincronizacao'").fetchone()
+            self.assertEqual(saved['valor'], previous)
+
+    def test_cache_cleanup_removes_expired_rows_without_opening_api_page(self):
+        with wallet.app.app_context(), patch.object(wallet, '_API_CACHE_LAST_CLEANUP', 0):
+            con = wallet._api_cache_connection()
+            try:
+                now = wallet.time.time()
+                con.execute(
+                    "INSERT OR REPLACE INTO api_response_cache(cache_key,provider,endpoint,payload,status_code,fetched_at,expires_at,stale_until) VALUES(?,?,?,?,?,?,?,?)",
+                    ('expired-cache-row','brapi','/quote',b'{}',200,now-100000,now-90000,now-1)
+                )
+                con.execute(
+                    'INSERT INTO api_request_log(provider,endpoint,requested_at,status_code,credential_hash) VALUES(?,?,?,?,?)',
+                    ('brapi','/old',now-50*86400,200,'public')
+                )
+                con.commit()
+                wallet._api_cache_cleanup()
+                self.assertIsNone(con.execute('SELECT 1 FROM api_response_cache WHERE cache_key=?',('expired-cache-row',)).fetchone())
+                self.assertEqual(con.execute('SELECT COUNT(*) FROM api_request_log WHERE endpoint=?',('/old',)).fetchone()[0],0)
+            finally:
+                con.close()
+
+    def test_cache_cleanup_runs_on_normal_request(self):
+        with patch.object(wallet, '_api_cache_cleanup') as cleanup:
+            response = self.client.get('/api/auth/status')
+            self.assertEqual(response.status_code, 200)
+            cleanup.assert_called_once()
+
     def test_api_provider_cooldown_is_persisted_after_network_failure(self):
         with wallet.app.app_context():
             wallet._provider_set_cooldown('brapi', 45, 0, 'network_error')
-            row = wallet.db().execute(
-                'SELECT cooldown_until,last_status_code,last_error FROM api_provider_state WHERE provider=?',
-                ('brapi',)
-            ).fetchone()
-            self.assertIsNotNone(row)
-            self.assertGreater(row['cooldown_until'], wallet.time.time())
-            self.assertEqual(row['last_error'], 'network_error')
+            con = wallet._api_cache_connection()
+            try:
+                row = con.execute(
+                    "SELECT cooldown_until,last_status_code,last_error FROM api_provider_state_scoped WHERE provider=? AND credential_hash=? AND scope='provider'",
+                    ('brapi', 'public')
+                ).fetchone()
+                self.assertIsNotNone(row)
+                self.assertGreater(row['cooldown_until'], wallet.time.time())
+                self.assertEqual(row['last_error'], 'network_error')
+            finally:
+                con.close()
 
     def test_brapi_budget_blocks_network_when_local_limit_is_reached(self):
         with wallet.app.app_context(), patch.object(wallet, 'BRAPI_LOCAL_30D_BUDGET', 1),              patch.object(wallet.requests, 'get') as mocked:
@@ -298,21 +621,44 @@ class RegressionTests(unittest.TestCase):
             con.commit()
             self.assertTrue(wallet.sale_breaks_future_position('DELETEBUY4','2026-02-01',0.0,{int(purchase.lastrowid)}))
 
-    def test_paid_api_proventos_are_included_and_future_receipts_excluded(self):
+    def test_only_pluggy_confirms_paid_proventos_and_other_apis_remain_pending(self):
         with wallet.app.app_context():
             con = wallet.db()
             con.execute("DELETE FROM proventos_api WHERE upper(ticker)='PROVTEST4'")
             con.execute("DELETE FROM proventos WHERE upper(ticker)='PROVTEST4'")
+            con.execute("DELETE FROM pluggy_investment_transactions WHERE upper(ticker)='PROVTEST4'")
             stamp = wallet.datetime.now(wallet.TZ).isoformat(timespec='seconds')
             con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        ('PROVTEST4:PAID','PROVTEST4','fii','Rendimento','2026-01-10','2026-01-11','2026-01-15',1.0,20,20.0,'Pago','Teste',stamp))
+                        ('PROVTEST4:PAID','PROVTEST4','fii','Rendimento','2026-01-10','2026-01-11','2026-01-15',1.0,20,20.0,'Pago','BRAPI',stamp))
             con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        ('PROVTEST4:FUTURE','PROVTEST4','fii','Rendimento','2026-12-10','2026-12-11','2026-12-15',1.0,20,20.0,'A receber','Teste',stamp))
+                        ('PROVTEST4:FUTURE','PROVTEST4','fii','Rendimento','2026-12-10','2026-12-11','2026-12-15',1.0,20,20.0,'A receber','Dados B3',stamp))
+            con.execute("INSERT INTO pluggy_investment_transactions(transaction_id,item_id,investment_id,ticker,transaction_date,description,movement_type,quantity,unit_value,amount,import_state,imported_operation_id,raw_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        ('pluggy-paid-provtest4','pluggy-item-test','pluggy-investment-test','PROVTEST4','2026-01-15','Rendimento de fundo imobiliário','INTEREST',0,0,20.0,'provento_duplicado_ignorado',None,'{}',stamp))
             con.commit()
             records = wallet._received_proventos_records(['PROVTEST4'])
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]['valor_total'], 20.0)
             self.assertEqual(records[0]['status'], 'Pago')
+            self.assertEqual(records[0]['origem'], 'Pluggy')
+            pending = [
+                {'ticker':'PROVTEST4','status':'A receber','data_pagamento':'2026-01-15','valor_total':20.0,'tipo_evento':'Rendimento','origem':'BRAPI'},
+                {'ticker':'PROVTEST4','status':'A receber','data_pagamento':'2026-12-15','valor_total':20.0,'tipo_evento':'Rendimento','origem':'Dados B3'},
+                {'ticker':'PROVTEST4','status':'A receber','data_pagamento':'2026-12-15','valor_total':20.0,'tipo_evento':'Rendimento','origem':'HG Brasil'},
+            ]
+            deduped = wallet._dedupe_pending_proventos(pending, records)
+            self.assertEqual(len(deduped), 1)
+            self.assertEqual(deduped[0]['origem'], 'Dados B3')
+
+    def test_api_marked_paid_does_not_become_confirmed_without_pluggy(self):
+        with wallet.app.app_context():
+            con = wallet.db()
+            con.execute("DELETE FROM proventos_api WHERE upper(ticker)='ONLYAPI4'")
+            con.execute("DELETE FROM pluggy_investment_transactions WHERE upper(ticker)='ONLYAPI4'")
+            stamp = wallet.datetime.now(wallet.TZ).isoformat(timespec='seconds')
+            con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        ('ONLYAPI4:PAID','ONLYAPI4','acao','Dividendo','2026-01-10','2026-01-11','2026-01-15',1.0,20,20.0,'Pago','Fonte externa',stamp))
+            con.commit()
+            self.assertEqual(wallet._received_proventos_records(['ONLYAPI4']), [])
 
     def test_confirmed_proventos_total_adds_only_announced_payments_within_next_12_months(self):
         as_of = datetime.date(2026, 11, 22)

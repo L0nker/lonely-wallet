@@ -17,11 +17,15 @@ from pathlib import Path
 import requests
 
 VERSION = '4.6.1'
-APP_VERSION = '4.2.32'
+ROOT = Path(__file__).resolve().parents[1]
+VERSION_FILE = ROOT / 'VERSION'
+try:
+    APP_VERSION = VERSION_FILE.read_text(encoding='utf-8').strip() or 'desconhecida'
+except OSError:
+    APP_VERSION = 'desconhecida'
 URL = f'https://registry.npmjs.org/chart.js/-/chart.js-{VERSION}.tgz'
 # Matches npm's dist.integrity metadata for chart.js@4.6.1.
 EXPECTED_SRI = 'sha512-hJyniucsFmq//EvXYvJ6c6mahPoI3kaxdjVH8awTaJ/fDNWeSqqqArixMJWkWNN6fcYvPU3HneSANFNYtRi61g=='
-ROOT = Path(__file__).resolve().parents[1]
 VENDOR = ROOT / 'app' / 'static' / 'vendor'
 TARGET = VENDOR / 'chart.umd.min.js'
 CHECKSUM = VENDOR / 'chart.umd.min.js.sha256'
