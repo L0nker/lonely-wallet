@@ -16,7 +16,7 @@ class BackupAtomicTests(unittest.TestCase):
         self.data = self.root / 'data'
         self.out = self.root / 'out'
         self.data.mkdir()
-        for name in ('ativos.db', 'tokens.db', 'api_state.db'):
+        for name in ('ativos.db', 'tokens.db'):
             con = sqlite3.connect(self.data / name)
             con.execute('CREATE TABLE sample(value INTEGER)')
             con.execute('INSERT INTO sample VALUES (1)')
@@ -38,7 +38,6 @@ class BackupAtomicTests(unittest.TestCase):
         manifest = json.loads((folders[0] / 'manifest.json').read_text())
         self.assertIn('ativos.db', manifest['files'])
         self.assertTrue((folders[0] / 'tokens.db').exists())
-        self.assertTrue((folders[0] / 'api_state.db').exists())
 
     def test_backup_database_supports_special_path_characters(self):
         from scripts.backup import backup_database
