@@ -50,12 +50,16 @@ class RetryAfterHeaderTests(unittest.TestCase):
 
     def test_all_provider_429_paths_use_shared_parser(self):
         self.assertIn("_retry_after_seconds(retry_after", SOURCE)
-        self.assertIn("_retry_after_seconds(response.headers.get('Retry-After')", SOURCE)
-        self.assertIn("_retry_after_seconds(result.headers.get('Retry-After')", SOURCE)
-        self.assertEqual(SOURCE.count('_retry_after_seconds('), 7)  # definition + provider response/cooldown call sites
         self.assertNotIn("int(float(response.headers.get('Retry-After')", SOURCE)
         self.assertNotIn("int(float(result.headers.get('Retry-After')", SOURCE)
-        self.assertGreaterEqual(SOURCE.count("_retry_after_seconds(retry_header, default=30"), 3)
+        self.assertIn('def _pluggy_apply_retry_cooldown(response):', SOURCE)
+        self.assertGreaterEqual(SOURCE.count('_pluggy_apply_retry_cooldown('), 3)
+        pluggy_auth = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == '_pluggy_api_key')
+        pluggy_request = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == '_pluggy_request')
+        self.assertIn('_pluggy_apply_retry_cooldown(response)', ast.get_source_segment(SOURCE, pluggy_auth))
+        self.assertIn('_pluggy_apply_retry_cooldown(result)', ast.get_source_segment(SOURCE, pluggy_request))
+        pluggy_cooldown = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == '_pluggy_apply_retry_cooldown')
+        self.assertIn('_retry_after_seconds(', ast.get_source_segment(SOURCE, pluggy_cooldown))
 
     def test_official_indicator_providers_share_retry_after_handling(self):
         self.assertIn("_provider_json_get(\n                'bcb'", SOURCE)

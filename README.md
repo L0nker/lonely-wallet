@@ -1,30 +1,25 @@
-# Lonely Wallet v4.2.49
+# Lonely Wallet v4.2.50
 
-# Atualizações da versão 4.2.49
+# Atualizações da versão 4.2.50
 
-## Retry-After padronizado em todos os provedores
-- Mantida a função compartilhada `_retry_after_seconds()` para interpretar `Retry-After` em segundos ou data HTTP.
-- Aplicado o mesmo parser aos fluxos BRAPI/HG Brasil, Pluggy e autenticação Pluggy, em respostas 429 e 503.
-- Datas HTTP são convertidas em UTC; cabeçalhos inválidos usam espera padrão conservadora.
-- Mantida espera mínima de segurança para respostas 429 e preservados períodos longos informados pelo provedor.
+## Correção do Retry-After nas chamadas diretas da Pluggy
+- Criada a função compartilhada `_pluggy_apply_retry_cooldown(response)` para aplicar cooldown persistente às chamadas diretas da Pluggy.
+- A autenticação (`_pluggy_api_key`) e as consultas (`_pluggy_request`) utilizam o mesmo tratamento.
+- Respostas HTTP 408 e 425 respeitam `Retry-After` em segundos ou HTTP-date; quando o cabeçalho está ausente ou inválido, aplicam espera padrão de 30 segundos.
+- Respostas HTTP 429 mantêm espera mínima de 60 segundos e respeitam valores superiores informados pelo provedor.
+- Respostas HTTP 5xx respeitam `Retry-After` ou aplicam espera padrão de 30 segundos.
+- O cooldown é persistido em `api_provider_state`, evitando novas chamadas antecipadas de autenticação ou API.
+- Falhas transitórias não ativam o fallback de recebimentos nem alteram as regras de confirmação financeira da Pluggy.
 
-## Chart.js 4.6.1: obtenção direta do bundle UMD
-- Ampliado o processo de build: após tentar os tarballs npm/Yarn/npmmirror, o instalador tenta baixar o bundle UMD pré-compilado diretamente pelo jsDelivr e cdnjs.
-- O bundle direto é aceito somente quando o SHA-384 coincide exatamente com o SRI fixado para Chart.js 4.6.1.
-- Os tarballs continuam exigindo correspondência exata do SHA-512 SRI publicado pelo npm.
-- O arquivo instalado recebe sidecar SHA-256 e a origem verificada é registrada em `chartjs-build-status.json`.
-- Respostas transitórias HTTP 408, 425, 429 e 5xx recebem novas tentativas; erros de integridade ou HTTP permanentes não são silenciosamente aceitos.
-- Se todos os registries e CDNs estiverem indisponíveis, o build mantém o renderer alternativo e sinaliza `mode=fallback`; não declara o Chart.js completo como verificado.
-- Referências públicas do SRI do bundle 4.6.1: https://www.jsdelivr.com/package/npm/chart.js?path=dist e https://plainjs.com/javascript/plugins/chart-js-5/.
-
-## Testes da versão 4.2.49
-- Adicionado teste de fallback do registry npm para o bundle UMD direto por CDN.
-- Adicionado teste para rejeitar bundle direto com SHA-384 divergente.
-- Mantidos testes de fallback offline, espelho de registry, retry HTTP 503 e SRI do tarball.
-- Mantidos testes de `Retry-After` com segundos inteiros/fracionários e data HTTP.
-- Executados 106 testes Python disponíveis, excluindo `test_regressions.py` por dependência Flask ausente.
-- Executadas cinco suítes JavaScript de runtime; compilação Python e YAML Docker Compose validados.
-- Build desta geração permaneceu em fallback devido à ausência de DNS externo no ambiente de empacotamento. O build no ZimaOS tentará registries e CDNs, validando o bundle antes de instalar.
+## Testes da versão 4.2.50
+- Adicionados oito testes funcionais de cooldown Pluggy para HTTP 408, 425, 429, 500 e 503.
+- Testados `Retry-After` em segundos, HTTP-date, ausente e inválido.
+- Verificado que autenticação e consultas Pluggy utilizam o mecanismo compartilhado.
+- Executados 125 testes Python disponíveis, excluindo `test_regressions.py` por ausência de Flask/Werkzeug.
+- Executadas cinco suítes JavaScript de runtime.
+- Validada a compilação Python, YAML Docker Compose e integridade do ZIP.
+- Build Docker real e chamadas reais à API Pluggy não foram executados neste ambiente.
+- O bundle Chart.js completo continua não validado nesta geração; o pacote permanece em fallback offline.
 
 # Atualizações da versão 4.2.47
 
@@ -556,6 +551,23 @@ Os intervalos locais controlam somente o ritmo de envio. Não substituem as regr
 - Removida a lista de posições financeiras pessoais embutida no código; migrações continuam reconhecendo snapshots de usuário já armazenados no banco.
 - O pacote entregue usa o renderer alternativo porque o registry npm estava inacessível durante a geração. O Dockerfile tenta baixar Chart.js 4.6.1 e valida o SRI/SHA-256 durante o build; quando não há rede, o status correto é `degraded` e o fallback permanece ativo.
 
+
+## Correção do Retry-After nas chamadas diretas da Pluggy
+- Criada a função compartilhada `_pluggy_apply_retry_cooldown(response)` para aplicar o cooldown persistente às chamadas diretas da Pluggy.
+- Autenticação (`_pluggy_api_key`) e consultas (`_pluggy_request`) aplicam o mesmo tratamento às respostas do provedor.
+- Respostas HTTP 408 e 425 passam a respeitar `Retry-After` em segundos ou HTTP-date, com cooldown padrão de 30 segundos quando o cabeçalho não existe ou é inválido.
+- Respostas HTTP 429 mantêm cooldown mínimo conservador de 60 segundos e respeitam períodos superiores enviados pelo provedor.
+- Respostas HTTP 5xx continuam aplicando cooldown com o período informado pelo provedor ou 30 segundos por padrão.
+- O cooldown é persistido em `api_provider_state`, impedindo novas chamadas de autenticação ou API antes do prazo definido.
+- Falhas transitórias não ativam fallback de recebimentos nem alteram a regra de confirmação financeira Pluggy.
+
+## Testes da versão 4.2.50
+- Adicionados testes funcionais para HTTP 408, 425, 429, 500 e 503 nas regras de cooldown Pluggy.
+- Testados `Retry-After` em segundos, HTTP-date, ausente e inválido.
+- Verificado que autenticação e consultas Pluggy chamam o mecanismo compartilhado.
+- Mantidos os testes anteriores de provedores, cache, fila de proventos, cálculos financeiros e renderer alternativo.
+- A suíte completa `test_regressions.py` continua dependendo de Flask/Werkzeug, que não estão disponíveis neste ambiente.
+- Build Docker real e chamadas reais à API Pluggy não foram executados neste ambiente.
 
 ## v4.2.49
 

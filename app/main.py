@@ -1803,6 +1803,35 @@ except (TypeError, ValueError):
     PLUGGY_REQUEST_GAP_SECONDS = 1.0
 
 
+def _pluggy_apply_retry_cooldown(response):
+    """Persist Pluggy retry windows for rate limits and transient HTTP failures.
+
+    Pluggy authentication and API requests use direct requests calls rather than
+    _provider_get, so both paths must explicitly apply the shared Retry-After
+    parser and provider cooldown. Returns the cooldown in seconds, or zero.
+    """
+    status_code = int(getattr(response, 'status_code', 0) or 0)
+    headers = getattr(response, 'headers', {}) or {}
+    retry_after = headers.get('Retry-After')
+
+    if status_code == 429:
+        pause = _retry_after_seconds(
+            retry_after, default=60, minimum=60, maximum=2_147_483_647
+        )
+        _provider_set_cooldown('pluggy', pause, status_code, 'rate_limited')
+        return pause
+
+    if status_code in (408, 425) or status_code >= 500:
+        pause = _retry_after_seconds(
+            retry_after, default=30, minimum=1, maximum=2_147_483_647
+        ) if retry_after else 30
+        reason = 'upstream_timeout' if status_code in (408, 425) else 'upstream_5xx'
+        _provider_set_cooldown('pluggy', pause, status_code, reason)
+        return pause
+
+    return 0
+
+
 def _pluggy_api_key(force=False):
     with PLUGGY_AUTH_LOCK:
         now = time.time()
@@ -1826,13 +1855,7 @@ def _pluggy_api_key(force=False):
             _provider_set_cooldown('pluggy', 30, 0, 'network_error')
             raise
         _api_update_request_status(request_id, response.status_code)
-        if response.status_code == 429:
-            pause = _retry_after_seconds(response.headers.get('Retry-After'), default=60, minimum=60, maximum=2_147_483_647)
-            _provider_set_cooldown('pluggy', pause, 429, 'rate_limited')
-        elif response.status_code >= 500:
-            retry_header = response.headers.get('Retry-After')
-            pause = _retry_after_seconds(retry_header, default=30, minimum=1, maximum=2_147_483_647) if retry_header else 30
-            _provider_set_cooldown('pluggy', pause, response.status_code, 'upstream_5xx')
+        _pluggy_apply_retry_cooldown(response)
         response.raise_for_status()
         api_key = str((response.json() or {}).get('apiKey') or '')
         if not api_key:
@@ -1859,13 +1882,7 @@ def _pluggy_request(method, path, params=None, force_auth=False):
                 _provider_set_cooldown('pluggy', 30, 0, 'network_error')
                 raise
             _api_update_request_status(request_id, result.status_code)
-            if result.status_code == 429:
-                pause = _retry_after_seconds(result.headers.get('Retry-After'), default=60, minimum=60, maximum=2_147_483_647)
-                _provider_set_cooldown('pluggy', pause, 429, 'rate_limited')
-            elif result.status_code >= 500:
-                retry_header = result.headers.get('Retry-After')
-                pause = _retry_after_seconds(retry_header, default=30, minimum=1, maximum=2_147_483_647) if retry_header else 30
-                _provider_set_cooldown('pluggy', pause, result.status_code, 'upstream_5xx')
+            _pluggy_apply_retry_cooldown(result)
             return result
 
     response = perform(key)
