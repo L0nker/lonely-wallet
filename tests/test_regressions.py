@@ -293,6 +293,12 @@ class RegressionTests(unittest.TestCase):
                                  ('CONFIRM4', 20.0, '2026-11-20'))
             con.execute("INSERT INTO pluggy_imported_events(external_id,event_type,ticker,event_date,amount,target_id,import_state,created_at) VALUES(?,?,?,?,?,?,?,?)",
                         ('confirmed-legacy-id','provento','CONFIRM4','2026-11-20',20.0,int(cursor.lastrowid),'imported',stamp))
+            con.execute('''INSERT INTO pluggy_investment_transactions
+                (transaction_id,item_id,investment_id,ticker,transaction_date,description,movement_type,
+                 quantity,unit_value,amount,import_state,imported_operation_id,raw_json,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                ('confirmed-legacy-id','item-legacy','investment-legacy','CONFIRM4','2026-11-20',
+                 'Dividend payment','DIVIDEND',0,0,20.0,'imported_provento',None,'{}',stamp))
             con.execute("INSERT INTO proventos_api(event_key,ticker,tipo_ativo,tipo_evento,data_com,data_ex,data_pagamento,valor_por_ativo,quantidade,valor_total,status,remarks,sincronizado_em) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         ('LEGACY-CONFIRMED','CONFIRM4','acao','DIVIDENDO','2026-11-01','2026-11-02','2026-11-20',1,20,20,'Pago','Pluggy confirmou',stamp))
             con.commit()

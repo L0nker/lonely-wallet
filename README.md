@@ -1,32 +1,38 @@
-# Lonely Wallet v4.2.54
+# Lonely Wallet v4.2.59
 
-## Correção da confirmação de recebimentos de proventos
-- A fonte canônica de proventos recebidos passa a ser exclusivamente o ledger de transações de investimento importadas pela Pluggy.
-- Eventos anunciados por APIs de mercado não são promovidos a recebidos pelo simples fato de a data de pagamento pertencer a um mês encerrado.
-- O status `Pago` fornecido por uma API de calendário também não comprova crédito na corretora e não entra em recebidos, gráficos, histórico, totais, metas ou ranking.
-- Lançamentos manuais e importações B3 continuam sendo previsões até existir uma transação Pluggy conciliada.
-- Transações Pluggy já importadas continuam compondo o histórico mesmo quando a integração é posteriormente desconectada, desde que o registro da transação importada permaneça no banco.
-- A consulta de recebimentos exige correspondência entre o evento importado e a transação de investimento Pluggy correspondente; registros órfãos do ledger não são tratados como confirmação.
-- Previsões vencidas sem confirmação permanecem preservadas no SQLite, mas são excluídas da projeção de recebíveis. Não são apagadas nem reclassificadas como recebidas.
-- Removido da interface o rótulo legado `Pago · API`.
+## Correções da conciliação e migração de proventos
+- A migração de status antigos só preserva `Pago` quando existe um evento Pluggy com ID externo válido, uma transação de investimento correspondente e um registro de provento de destino existente.
+- A transação deve pertencer ao mesmo ticker, estar vinculada ao lançamento de destino e ter exatamente a mesma data do evento Pluggy; a data do evento pode variar no máximo um dia em relação à previsão da API.
+- A confirmação considera os valores bruto e líquido efetivamente fornecidos pela transação Pluggy, preservando JCP legítimo com retenção de imposto.
+- A conciliação exige correspondência de ID externo, ticker, data da transação, registro de destino e, quando disponível, data-com.
+- A previsão só é marcada como paga depois que a transação Pluggy correspondente foi gravada no SQLite; o próprio registro persistido é a fonte de verdade.
+- Movimentações genéricas (`INTEREST`) não escolhem arbitrariamente entre previsões de JCP, dividendos ou rendimentos ambíguas.
+- A reconciliação das previsões da API acontece depois da gravação do lote completo de eventos, para que conflitos de categoria possam ser detectados.
+- A regra de recebimentos considera também o `movementType` presente no JSON bruto da Pluggy, mesmo quando `type`/descrição são genéricos (`INTEREST` / `Investment income`). Uma classificação explícita como `AMORTIZATION`/amortização prevalece e nunca vira dividendo ou rendimento recebido.
+- O mesmo metadado bruto também é usado para classificar corretamente `JCP`, `DIVIDENDO` e `RENDIMENTO`; por exemplo, `type=INTEREST` com `movementType=JCP` permanece JCP no histórico e na conciliação.
+- Corrigido o caminho do ledger para entregar o alias correto do JSON bruto à validação de movimentos, com teste de regressão para amortização classificada somente no metadado bruto.
+- Eventos inconsistentes, órfãos, com ticker/data incompatíveis, categoria conflitante ou destino inexistente não escondem uma previsão nem são contabilizados como recebimentos.
+- Previsões vencidas sem confirmação permanecem preservadas no SQLite e fora da projeção de recebíveis.
 
 ## Cache e compatibilidade
-- Incrementado `DASHBOARD_CACHE_FORMAT` para 11 para invalidar snapshots que possam conter recebimentos estimados pela regra anterior.
-- Nenhuma migração destrutiva ou exclusão de dados financeiros foi adicionada.
-- Mantidos os bancos SQLite, credenciais, chave de criptografia, operações, eventos e snapshots persistentes.
+- Incrementado `DASHBOARD_CACHE_FORMAT` para 16, invalidando snapshots gerados com regras anteriores de confirmação.
+- Preservados banco SQLite, transações Pluggy, credenciais, chaves e demais dados persistentes.
+- Nenhuma migração destrutiva foi adicionada.
 
 ## Testes e validação
-- Atualizados testes de regressão para garantir que APIs de mercado, datas vencidas e status `Pago` de API nunca comprovem recebimento.
-- Mantidos testes de recebimentos Pluggy distintos, idempotência e conciliação por ticker, data, categoria e valor.
-- Verificados os caminhos do dashboard, lista de proventos e fonte de dados do histórico.
-- A validação funcional completa depende de executar a suíte Flask e testar sincronização real com a Pluggy no ambiente de implantação.
+- Testes de migração para eventos órfãos, destino inexistente, divergência de categoria, ticker/data incompatíveis, data-com divergente, JCP bruto/líquido, conflitos de categoria e amortização informada no tipo bruto.
+- Testes do ledger de recebimentos para confirmar que somente transações Pluggy consistentes e classificadas como renda entram em recebidos, preservando a categoria quando ela aparece apenas no JSON bruto.
+- 144 testes Python independentes aprovados no ambiente de auditoria, excluindo `test_regressions.py`, que requer Flask/Werkzeug ausentes neste ambiente.
+- Cinco suítes JavaScript executadas com sucesso.
+- Compilação Python, validação do YAML e integridade do ZIP aprovadas.
+- A execução integrada do Flask, o build Docker e uma sincronização real com a Pluggy ainda dependem do ambiente ZimaOS e de acesso às dependências/serviços externos.
+- Chart.js oficial permanece indisponível no build offline; o renderer alternativo local foi validado e permanece ativo.
 
-**Base:** Lonely Wallet v4.2.53(3), pacote enviado pelo usuário.
+**Base:** Lonely Wallet v4.2.54(1), pacote enviado para auditoria.
 
-**Versão:** 4.2.54.
+**Versão:** 4.2.59.
 
 ---
-
 
 # Histórico: atualizações da versão 4.2.53
 

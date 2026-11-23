@@ -84,7 +84,7 @@ QUOTE_HISTORY_PATH = os.environ.get('QUOTE_HISTORY_PATH', '/data/quotes_last_val
 QUOTE_HISTORY_LOCK = threading.RLock()
 DASHBOARD_CACHE_PATH = os.environ.get('DASHBOARD_CACHE_PATH', '/data/dashboard_cache.json')
 DASHBOARD_CACHE_LOCK = threading.RLock()
-DASHBOARD_CACHE_FORMAT = 11
+DASHBOARD_CACHE_FORMAT = 16
 PORTFOLIO_HISTORY_CACHE, PORTFOLIO_HISTORY_TTL = {}, 1800
 PORTFOLIO_HISTORY_EMPTY_TTL = 120
 def _dashboard_cache_signature():
@@ -1051,60 +1051,161 @@ def _migrate_api_response_cache_schema(connection):
 
 
 def _migrate_unconfirmed_proventos_api_status(connection):
-    """Reset legacy auto-paid forecasts unless a close Pluggy transaction exists.
+    """Reset legacy API-paid forecasts unless a real Pluggy receipt backs them.
 
-    Older releases matched by a three-day window and 1% amount tolerance. That
-    could associate two different distributions of the same ticker. Migration
-    now requires a payment date within one day and a difference no greater than
-    two cents. Unmatched API forecasts return to A receber; the rows are kept.
+    A row in ``pluggy_imported_events`` is not sufficient by itself: it must
+    reference an existing income target and a persisted investment transaction
+    with the same external ID, ticker and compatible date. Gross, amount and net
+    values from the original Pluggy payload are considered because JCP
+    withholding and provider field variants can make them differ.
+    The forecast is retained; only its stale status is reset.
     """
-    cursor = connection.execute(
-        """UPDATE proventos_api AS api
-           SET status='A receber'
-           WHERE lower(trim(COALESCE(api.status,'')))='pago'
-             AND NOT EXISTS (
-               SELECT 1
-               FROM pluggy_imported_events pe
-               WHERE pe.event_type='provento'
-                 AND pe.target_id IS NOT NULL
-                 AND COALESCE(pe.import_state,'') IN ('imported','matched_existing')
-                 AND UPPER(pe.ticker)=UPPER(api.ticker)
-                 AND date(pe.event_date) BETWEEN date(api.data_pagamento,'-1 day') AND date(api.data_pagamento,'+1 day')
-                 AND ABS(pe.amount-api.valor_total)<=0.02
-                 AND (
-                   (UPPER(api.tipo_evento) LIKE '%JCP%' AND (
-                     UPPER(COALESCE(pe.external_id,''))<>'' AND (
-                       EXISTS (SELECT 1 FROM pluggy_investment_transactions tx
-                               WHERE tx.transaction_id=pe.external_id
-                                 AND (UPPER(tx.movement_type) LIKE '%JCP%'
-                                      OR UPPER(tx.movement_type)='INTEREST_ON_EQUITY'
-                                      OR UPPER(tx.description) LIKE '%JCP%'
-                                      OR UPPER(tx.description) LIKE '%JUROS SOBRE CAPITAL%'
-                                      OR UPPER(tx.movement_type)='INTEREST'))
-                       OR NOT EXISTS (SELECT 1 FROM pluggy_investment_transactions tx WHERE tx.transaction_id=pe.external_id)
-                     )
-                   ))
-                   OR (UPPER(api.tipo_evento) LIKE '%DIVID%' AND (
-                     EXISTS (SELECT 1 FROM pluggy_investment_transactions tx
-                             WHERE tx.transaction_id=pe.external_id
-                               AND (UPPER(tx.movement_type) LIKE '%DIVIDEND%'
-                                    OR UPPER(tx.description) LIKE '%DIVIDEND%'
-                                    OR UPPER(tx.description) LIKE '%DIVIDENDO%'
-                                    OR UPPER(tx.movement_type)='INTEREST'))
-                     OR NOT EXISTS (SELECT 1 FROM pluggy_investment_transactions tx WHERE tx.transaction_id=pe.external_id)
-                   ))
-                   OR (UPPER(api.tipo_evento) LIKE '%REND%' AND (
-                     EXISTS (SELECT 1 FROM pluggy_investment_transactions tx
-                             WHERE tx.transaction_id=pe.external_id
-                               AND (UPPER(tx.movement_type) IN ('INTEREST','DISTRIBUTION','INCOME')
-                                    OR UPPER(tx.movement_type) LIKE '%REND%'
-                                    OR UPPER(tx.description) LIKE '%RENDIMENTO%'))
-                     OR NOT EXISTS (SELECT 1 FROM pluggy_investment_transactions tx WHERE tx.transaction_id=pe.external_id)
-                   ))
-                 )
-             )"""
-    )
-    return int(cursor.rowcount or 0)
+    forecasts = connection.execute(
+        """SELECT event_key,ticker,tipo_evento,data_pagamento,valor_total,data_com
+           FROM proventos_api WHERE lower(trim(COALESCE(status,'')))='pago'"""
+    ).fetchall()
+    reset_count = 0
+    for forecast in forecasts:
+        event_key, ticker, event_type, payment_date, expected_amount, forecast_record_date = tuple(forecast)
+        symbol = str(ticker or '').strip().upper()
+        try:
+            expected_amount = abs(float(expected_amount or 0))
+        except (TypeError, ValueError):
+            expected_amount = 0.0
+        if not symbol or not payment_date or not math.isfinite(expected_amount) or expected_amount <= 0:
+            candidates = []
+        else:
+            candidates = connection.execute(
+                """SELECT pe.external_id,pe.event_date,pe.amount,tx.ticker,
+                          tx.transaction_date,tx.amount,tx.movement_type,tx.description,tx.raw_json
+                   FROM pluggy_imported_events pe
+                   JOIN pluggy_investment_transactions tx ON tx.transaction_id=pe.external_id
+                   JOIN proventos p ON p.id=pe.target_id
+                   WHERE pe.event_type='provento'
+                     AND pe.target_id IS NOT NULL
+                     AND NULLIF(TRIM(COALESCE(pe.external_id,'')),'') IS NOT NULL
+                     AND COALESCE(pe.import_state,'') IN ('imported','matched_existing')
+                     AND COALESCE(tx.import_state,'') IN ('imported_provento','matched_existing')
+                     AND UPPER(pe.ticker)=?
+                     AND UPPER(tx.ticker)=UPPER(pe.ticker)
+                     AND UPPER(p.ticker)=UPPER(pe.ticker)
+                     AND date(pe.event_date) BETWEEN date(?,'-1 day') AND date(?,'+1 day')
+                     AND date(tx.transaction_date)=date(pe.event_date)""",
+                (symbol, payment_date, payment_date)
+            ).fetchall()
+
+        matched = False
+        for candidate in candidates:
+            row = dict(candidate) if hasattr(candidate, 'keys') else dict(zip(
+                ('external_id','event_date','event_amount','ticker','transaction_date',
+                 'transaction_amount','movement_type','description','raw_json'), candidate
+            ))
+            values = [row.get('event_amount'), row.get('transaction_amount')]
+            try:
+                raw_movement = json.loads(row.get('raw_json') or '{}') if isinstance(row.get('raw_json'), str) else {}
+            except (TypeError, ValueError):
+                raw_movement = {}
+            if isinstance(raw_movement, dict):
+                values.extend(raw_movement.get(key) for key in ('grossAmount','amount','netAmount'))
+                pluggy_record_date = ''
+                for record_key in ('recordDate', 'lastDatePrior', 'referenceDate', 'exDate'):
+                    raw_date = str(raw_movement.get(record_key) or '').strip()
+                    if len(raw_date) >= 10 and raw_date[4:5] == '-' and raw_date[7:8] == '-':
+                        pluggy_record_date = raw_date[:10]
+                        break
+            else:
+                pluggy_record_date = ''
+            forecast_record_date = str(forecast_record_date or '').strip()[:10]
+            if forecast_record_date and pluggy_record_date and forecast_record_date != pluggy_record_date:
+                continue
+            amount_matches = False
+            for raw_value in values:
+                try:
+                    candidate_amount = abs(float(raw_value))
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(candidate_amount) and candidate_amount > 0 and abs(candidate_amount - expected_amount) <= 0.02:
+                    amount_matches = True
+                    break
+            if not amount_matches:
+                continue
+
+            movement_type = str(row.get('movement_type') or '').upper()
+            description = str(row.get('description') or '').upper()
+            raw_movement_type = str(raw_movement.get('movementType') or '') if isinstance(raw_movement, dict) else ''
+            api_type = str(event_type or '').upper()
+            normalized_transaction = unicodedata.normalize(
+                'NFKD', movement_type + ' ' + description + ' ' + raw_movement_type
+            )
+            normalized_transaction = ''.join(
+                char for char in normalized_transaction if not unicodedata.combining(char)
+            ).upper()
+            if 'AMORTIZ' in normalized_transaction:
+                continue
+            explicit_categories = set()
+            if any(marker in normalized_transaction for marker in ('JCP', 'JUROS SOBRE CAPITAL', 'INTEREST_ON_EQUITY')):
+                explicit_categories.add('JCP')
+            if 'DIVIDEND' in normalized_transaction or 'DIVIDENDO' in normalized_transaction:
+                explicit_categories.add('DIVIDENDO')
+            if any(marker in normalized_transaction for marker in ('RENDIMENTO', 'RENTAL', 'ALUGUEL')):
+                explicit_categories.add('RENDIMENTO')
+            if 'JCP' in api_type:
+                expected_category = 'JCP'
+                fallback_match = movement_type == 'INTEREST'
+            elif 'DIVID' in api_type:
+                expected_category = 'DIVIDENDO'
+                fallback_match = movement_type == 'INTEREST'
+            elif 'REND' in api_type:
+                expected_category = 'RENDIMENTO'
+                fallback_match = movement_type in ('INTEREST','DISTRIBUTION','INCOME')
+            else:
+                expected_category = ''
+                fallback_match = False
+            if explicit_categories:
+                category_matches = explicit_categories == {expected_category}
+            else:
+                category_matches = fallback_match
+                if category_matches and expected_category:
+                    for raw_amount in values:
+                        try:
+                            comparable_amount = abs(float(raw_amount))
+                        except (TypeError, ValueError):
+                            continue
+                        if not math.isfinite(comparable_amount) or comparable_amount <= 0:
+                            continue
+                        other_forecasts = connection.execute(
+                            """SELECT tipo_evento,data_com FROM proventos_api
+                               WHERE event_key<>? AND UPPER(ticker)=?
+                                 AND date(data_pagamento) BETWEEN date(?,'-1 day') AND date(?,'+1 day')
+                                 AND ABS(COALESCE(valor_total,0)-?)<=0.02""",
+                            (event_key, symbol, row.get('event_date'), row.get('event_date'), comparable_amount)
+                        ).fetchall()
+                        conflicting = False
+                        for other_forecast in other_forecasts:
+                            other_record_date = str(other_forecast[1] or '').strip()[:10]
+                            if forecast_record_date and other_record_date and forecast_record_date != other_record_date:
+                                continue
+                            other_type = str(other_forecast[0] or '').upper()
+                            other_category = ('JCP' if 'JCP' in other_type else
+                                               'DIVIDENDO' if 'DIVID' in other_type else
+                                               'RENDIMENTO' if 'REND' in other_type else '')
+                            if other_category and other_category != expected_category:
+                                conflicting = True
+                                break
+                        if conflicting:
+                            category_matches = False
+                            break
+            if category_matches:
+                matched = True
+                break
+
+        if not matched:
+            cursor = connection.execute(
+                "UPDATE proventos_api SET status='A receber' WHERE event_key=? AND lower(trim(COALESCE(status,'')))='pago'",
+                (event_key,)
+            )
+            reset_count += int(cursor.rowcount or 0)
+    return reset_count
 
 
 def init_db():
@@ -2272,15 +2373,12 @@ def _pluggy_import_investment_transaction(item_id, investment, movement, now_tex
 
     # Income is only imported as a provento when the investment transaction
     # explicitly identifies a dividend/JCP/rendimento event.
-    income_markers = ('DIVIDEND', 'INTEREST', 'INTEREST_ON_EQUITY', 'JCP', 'RENDIMENTO', 'DISTRIBUTION', 'INCOME')
-    text_for_income = (movement_type + ' ' + str(movement.get('movementType') or '') + ' ' + description).upper()
-    # Pluggy documents INTEREST as the investment-transaction type for
-    # dividend/JCP/FII rent/coupon distributions. Do not infer income from
-    # TAX, TRANSFER or AMORTIZATION descriptions, which can contain similar words.
-    is_income_movement = movement_type in ('INTEREST', 'DIVIDEND', 'INTEREST_ON_EQUITY', 'JCP', 'DISTRIBUTION', 'INCOME')
-    is_income_description = movement_type in ('', 'UNKNOWN', 'OTHER') and any(
-        marker in text_for_income for marker in income_markers
+    # Pluggy can use the generic INTEREST type for income, but explicit
+    # amortization wording must never create a receipt ledger entry.
+    is_income_movement = _is_pluggy_income_movement(
+        movement_type, description, movement
     )
+    is_income_description = False
     income_amount_candidates = _pluggy_amount_candidates(movement, fallback=amount)
     income_receipt_amount = _pluggy_income_receipt_amount(movement, fallback=amount)
     income_gross_amount = income_amount_candidates[0] if income_amount_candidates else amount
@@ -2344,14 +2442,6 @@ def _pluggy_import_investment_transaction(item_id, investment, movement, now_tex
                 (ticker, trade_date, income_receipt_amount, external_id)
             )
 
-        # A forecast from BRAPI becomes paid only after the matching Pluggy
-        # transaction has been persisted. It is not itself used as proof.
-        _mark_matching_api_forecast_paid(
-            ticker, trade_date, income_gross_amount, movement_type=movement_type,
-            description=description, raw_movement=movement,
-            alternate_amounts=income_amount_candidates
-        )
-
     db().execute(
         """INSERT INTO pluggy_investment_transactions
            (transaction_id,item_id,investment_id,ticker,transaction_date,description,movement_type,
@@ -2370,6 +2460,13 @@ def _pluggy_import_investment_transaction(item_id, investment, movement, now_tex
          movement_type, qty, unit_value, amount, state, imported_operation_id,
          json.dumps(movement, ensure_ascii=False), now_text)
     )
+    # Only mark a forecast after the transaction row has actually been upserted.
+    if (is_income_movement or is_income_description) and ticker and trade_date and income_receipt_amount > 0:
+        _mark_matching_api_forecast_paid(
+            external_id, ticker, trade_date, income_gross_amount, movement_type=movement_type,
+            description=description, raw_movement=movement,
+            alternate_amounts=income_amount_candidates
+        )
     return state
 
 
@@ -5381,9 +5478,19 @@ def _fetch_brapi_dividend_events(asset_type, symbols, start_date):
 
 
 
-def _normalize_provento_category(value, ticker=None, description=''):
-    """Map API/Pluggy descriptions to comparable income categories when possible."""
-    raw = unicodedata.normalize('NFKD', str(value or '') + ' ' + str(description or ''))
+def _normalize_provento_category(value, ticker=None, description='', raw_movement=None):
+    """Map API/Pluggy metadata to comparable income categories when possible."""
+    if isinstance(raw_movement, str):
+        try:
+            raw_movement = json.loads(raw_movement or '{}')
+        except (TypeError, ValueError):
+            raw_movement = {}
+    raw_kind = ''
+    if isinstance(raw_movement, dict):
+        raw_kind = ' '.join(str(raw_movement.get(key) or '') for key in ('movementType', 'type'))
+    raw = unicodedata.normalize(
+        'NFKD', str(value or '') + ' ' + str(description or '') + ' ' + raw_kind
+    )
     text = ''.join(ch for ch in raw if not unicodedata.combining(ch)).upper()
     if 'AMORTIZ' in text:
         return 'AMORTIZACAO'
@@ -5492,11 +5599,16 @@ def _pluggy_confirmed_provento_exists(ticker, payment_date, amount, event_type=N
                   tx.description,tx.raw_json
            FROM pluggy_imported_events pe
            JOIN pluggy_investment_transactions tx ON tx.transaction_id=pe.external_id
+           JOIN proventos p ON p.id=pe.target_id AND UPPER(p.ticker)=UPPER(pe.ticker)
            WHERE pe.event_type='provento'
              AND pe.target_id IS NOT NULL
+             AND NULLIF(TRIM(COALESCE(pe.external_id,'')),'') IS NOT NULL
              AND COALESCE(pe.import_state,'') IN ('imported','matched_existing')
+             AND COALESCE(tx.import_state,'') IN ('imported_provento','matched_existing')
              AND UPPER(pe.ticker)=?
+             AND UPPER(tx.ticker)=UPPER(pe.ticker)
              AND date(pe.event_date) BETWEEN date(?,'-1 day') AND date(?,'+1 day')
+             AND date(tx.transaction_date)=date(pe.event_date)
            ORDER BY ABS(julianday(pe.event_date)-julianday(?)),pe.external_id""",
         (symbol, day, day, day)
     ).fetchall()
@@ -5504,27 +5616,87 @@ def _pluggy_confirmed_provento_exists(ticker, payment_date, amount, event_type=N
     expected_record_date = _api_date(record_date)
     for raw in rows:
         row = dict(raw)
+        if not _is_pluggy_income_movement(
+            row.get('movement_type'), row.get('description'), row.get('raw_json')
+        ):
+            continue
         amount_candidates = _pluggy_amount_candidates(row.get('raw_json'), fallback=row.get('amount'))
         if not any(abs(candidate - value) <= _pluggy_match_tolerance(value)
                    for candidate in amount_candidates):
             continue
         confirmed_category = _normalize_provento_category(
-            row.get('movement_type'), symbol, row.get('description')
+            row.get('movement_type'), symbol, row.get('description'), row.get('raw_json')
         )
         if expected_category and confirmed_category and expected_category != confirmed_category:
             continue
         confirmed_record_date = _pluggy_record_date(row.get('raw_json'))
         if expected_record_date and confirmed_record_date and expected_record_date != confirmed_record_date:
             continue
+        if expected_category and not confirmed_category:
+            ambiguous = False
+            for candidate_amount in amount_candidates:
+                competing = db().execute(
+                    """SELECT tipo_evento,data_com FROM proventos_api
+                       WHERE UPPER(ticker)=?
+                         AND date(data_pagamento) BETWEEN date(?,'-1 day') AND date(?,'+1 day')
+                         AND ABS(COALESCE(valor_total,0)-?)<=?""",
+                    (symbol, day, day, candidate_amount, _pluggy_match_tolerance(candidate_amount))
+                ).fetchall()
+                for competing_row in competing:
+                    competing_category = _normalize_provento_category(competing_row['tipo_evento'], symbol)
+                    if not competing_category or competing_category == expected_category:
+                        continue
+                    competing_record_date = _api_date(competing_row['data_com'])
+                    if confirmed_record_date and competing_record_date and confirmed_record_date != competing_record_date:
+                        continue
+                    ambiguous = True
+                    break
+                if ambiguous:
+                    break
+            if ambiguous:
+                continue
         return True
     return False
 
 
-def _mark_matching_api_forecast_paid(ticker, payment_date, amount, movement_type=None,
+def _mark_matching_api_forecast_paid(external_id, ticker, payment_date, amount, movement_type=None,
                                      description='', raw_movement=None, alternate_amounts=None):
-    """Mark only the single best API forecast matching a confirmed Pluggy credit."""
+    """Mark one forecast only after its exact Pluggy credit is persisted and linked."""
+    external_id = str(external_id or '').strip()
     symbol = str(ticker or '').strip().upper()
     day = _api_date(payment_date)
+    if not external_id:
+        return 0
+    persisted = db().execute(
+        """SELECT pe.ticker,pe.event_date,pe.amount,pe.import_state,pe.target_id,
+                  tx.ticker AS transaction_ticker,tx.transaction_date,tx.amount AS transaction_amount,
+                  tx.movement_type,tx.description,tx.raw_json,
+                  tx.import_state AS transaction_state,p.ticker AS target_ticker
+           FROM pluggy_imported_events pe
+           JOIN pluggy_investment_transactions tx ON tx.transaction_id=pe.external_id
+           JOIN proventos p ON p.id=pe.target_id
+           WHERE pe.external_id=? AND pe.event_type='provento'
+             AND pe.target_id IS NOT NULL
+             AND COALESCE(pe.import_state,'') IN ('imported','matched_existing')
+             AND COALESCE(tx.import_state,'') IN ('imported_provento','matched_existing')
+             AND UPPER(pe.ticker)=UPPER(tx.ticker)
+             AND UPPER(pe.ticker)=UPPER(p.ticker)
+             AND date(pe.event_date)=date(tx.transaction_date)""",
+        (external_id,)
+    ).fetchone()
+    if not persisted:
+        return 0
+    persisted_row = dict(persisted)
+    if not _is_pluggy_income_movement(
+        persisted_row.get('movement_type'), persisted_row.get('description'), persisted_row.get('raw_json')
+    ):
+        return 0
+    if str(persisted_row.get('ticker') or '').strip().upper() != symbol:
+        return 0
+    if not day or _api_date(persisted_row.get('event_date')) == '' or abs(
+        (date.fromisoformat(day) - date.fromisoformat(_api_date(persisted_row.get('event_date')))).days
+    ) > 1:
+        return 0
     try:
         value = float(amount or 0)
     except (TypeError, ValueError):
@@ -5539,9 +5711,25 @@ def _mark_matching_api_forecast_paid(ticker, payment_date, amount, movement_type
              AND status<>'Pago'""",
         (symbol, day, day)
     ).fetchall()
-    confirmed_category = _normalize_provento_category(movement_type, symbol, description)
-    confirmed_record_date = _pluggy_record_date(raw_movement)
-    amount_candidates = _pluggy_amount_candidates(raw_movement, fallback=value)
+    # Use the persisted Pluggy row as the source of truth, not only the
+    # request payload that triggered this helper.
+    persisted_raw = persisted_row.get('raw_json') or '{}'
+    confirmed_category = _normalize_provento_category(
+        persisted_row.get('movement_type'), symbol, persisted_row.get('description'), persisted_row.get('raw_json')
+    )
+    confirmed_record_date = _pluggy_record_date(persisted_raw)
+    amount_candidates = _pluggy_amount_candidates(
+        persisted_raw, fallback=persisted_row.get('transaction_amount')
+    )
+    for persisted_amount in (persisted_row.get('amount'), persisted_row.get('transaction_amount')):
+        try:
+            candidate_amount = abs(float(persisted_amount))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(candidate_amount) and candidate_amount > 0 and all(
+            abs(candidate_amount - existing) > 0.000001 for existing in amount_candidates
+        ):
+            amount_candidates.append(candidate_amount)
     for alternate in alternate_amounts or []:
         try:
             candidate_amount = abs(float(alternate))
@@ -5578,6 +5766,26 @@ def _mark_matching_api_forecast_paid(ticker, payment_date, amount, movement_type
         candidates.append((score, str(row.get('event_key') or '')))
     if not candidates:
         return 0
+    if not confirmed_category:
+        matching_categories = set()
+        for raw in rows:
+            row = dict(raw)
+            try:
+                forecast_amount = float(row.get('valor_total') or 0)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(forecast_amount) or min(
+                (abs(forecast_amount - candidate) for candidate in amount_candidates), default=float('inf')
+            ) > _pluggy_match_tolerance(forecast_amount):
+                continue
+            forecast_record_date = _api_date(row.get('data_com'))
+            if confirmed_record_date and forecast_record_date and confirmed_record_date != forecast_record_date:
+                continue
+            category = _normalize_provento_category(row.get('tipo_evento'), symbol)
+            if category:
+                matching_categories.add(category)
+        if len(matching_categories) > 1:
+            return 0
     candidates.sort(key=lambda item: item[0])
     best_key = candidates[0][1]
     if not best_key:
@@ -5670,6 +5878,7 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
 
     imported = ignored = 0
     conn = db()
+    reconciliation = {}
     for event, source_type in fetched:
         ticker = str(event.get('symbol') or event.get('requestedSymbol') or '').strip().upper()
         if not ticker or ticker not in types:
@@ -5717,11 +5926,10 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
         if label == 'AMORTIZACAO':
             ignored += 1
             continue
-        # A data de pagamento passada não comprova recebimento. Somente um
-        # evento individual confirmado pela Pluggy pode promover a previsão.
-        status = 'Pago' if _pluggy_confirmed_provento_exists(
-            ticker, payment_date, total, event_type=label, record_date=record_date
-        ) else 'A receber'
+        # Primeiro grava todas as previsões como pendentes. A reconciliação
+        # acontece depois do lote completo, permitindo detectar categorias
+        # ambíguas entre eventos com mesmo ticker/data/valor.
+        status = 'A receber'
         # Data de pagamento pode ser corrigida pela fonte; não faz parte da chave.
         event_anchor = record_date or payment_date or approved_date or 'sem-data'
         event_key = '|'.join((ticker, label, event_anchor, f'{rate:.10f}'))
@@ -5742,6 +5950,13 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
             valor_total=excluded.valor_total,status=excluded.status,remarks=excluded.remarks,sincronizado_em=excluded.sincronizado_em
         ''', (event_key,ticker,types[ticker],label,approved_date,record_date,ex_date,payment_date,rate,qty,total,status,remarks_text,datetime.now(TZ).isoformat(timespec='seconds')))
         imported += 1
+        reconciliation[event_key] = (ticker, payment_date, total, label, record_date)
+
+    for event_key, (ticker, payment_date, total, label, record_date) in reconciliation.items():
+        status = 'Pago' if _pluggy_confirmed_provento_exists(
+            ticker, payment_date, total, event_type=label, record_date=record_date
+        ) else 'A receber'
+        conn.execute('UPDATE proventos_api SET status=? WHERE event_key=?', (status, event_key))
 
     conn.execute('INSERT INTO integracao_estado(chave,valor) VALUES(?,?) ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor',
                  ('brapi_proventos_ultima_sincronizacao', datetime.now(TZ).isoformat(timespec='seconds')))
@@ -6030,6 +6245,35 @@ def _is_income_event(event_type):
     return 'AMORTIZA' not in str(event_type or '').upper()
 
 
+def _is_pluggy_income_movement(movement_type, description='', raw_movement=None):
+    """Accept income movements, but never promote amortization to a receipt.
+
+    Pluggy's generic ``type`` and free-text description are not always enough
+    to distinguish interest income from principal amortization. When available,
+    the raw ``movementType`` is included in the decision as well.
+    """
+    kind = str(movement_type or '').strip().upper()
+    if isinstance(raw_movement, str):
+        try:
+            raw_movement = json.loads(raw_movement or '{}')
+        except (TypeError, ValueError):
+            raw_movement = {}
+    raw_kind = ''
+    if isinstance(raw_movement, dict):
+        raw_kind = ' '.join(str(raw_movement.get(key) or '') for key in ('movementType', 'type'))
+    combined = (kind + ' ' + str(description or '') + ' ' + raw_kind).upper()
+    if 'AMORTIZ' in combined:
+        return False
+    if kind in ('INTEREST', 'DIVIDEND', 'INTEREST_ON_EQUITY', 'JCP', 'DISTRIBUTION', 'INCOME'):
+        return True
+    if kind not in ('', 'UNKNOWN', 'OTHER'):
+        return False
+    return any(marker in combined for marker in (
+        'DIVIDEND', 'INTEREST', 'INTEREST_ON_EQUITY', 'JCP',
+        'RENDIMENTO', 'DISTRIBUTION', 'INCOME'
+    ))
+
+
 def _received_proventos_records(active_tickers=None):
     """Return only income receipts backed by imported Pluggy transactions.
 
@@ -6052,7 +6296,12 @@ def _received_proventos_records(active_tickers=None):
              JOIN proventos p ON p.id=pe.target_id
              JOIN pluggy_investment_transactions tx ON tx.transaction_id=pe.external_id
              WHERE pe.event_type='provento' AND pe.target_id IS NOT NULL
+               AND NULLIF(TRIM(COALESCE(pe.external_id,'')),'') IS NOT NULL
                AND COALESCE(pe.import_state,'') IN ('imported','matched_existing')
+               AND COALESCE(tx.import_state,'') IN ('imported_provento','matched_existing')
+               AND UPPER(tx.ticker)=UPPER(pe.ticker)
+               AND UPPER(p.ticker)=UPPER(pe.ticker)
+               AND date(tx.transaction_date)=date(pe.event_date)
              ORDER BY pe.event_date,pe.external_id"""
     rows = db().execute(sql).fetchall()
     records = []
@@ -6069,7 +6318,9 @@ def _received_proventos_records(active_tickers=None):
             amount = float(amount if amount is not None else row.get('valor_total') or 0)
         except (TypeError, ValueError):
             continue
-        if not math.isfinite(amount) or amount <= 0 or not _is_income_event(row.get('movement_type') or 'PROVENTO'):
+        if not math.isfinite(amount) or amount <= 0 or not _is_pluggy_income_movement(
+            row.get('movement_type'), row.get('movement_description'), row.get('movement_raw')
+        ):
             continue
         try:
             if date.fromisoformat(payment_date[:10]) > datetime.now(TZ).date():
@@ -6078,16 +6329,16 @@ def _received_proventos_records(active_tickers=None):
             continue
         movement_type = str(row.get('movement_type') or '').upper()
         description = str(row.get('movement_description') or '').upper()
-        if movement_type in ('JCP', 'INTEREST_ON_EQUITY') or 'JCP' in description or 'JUROS SOBRE CAPITAL' in description:
-            event_type = 'JCP'
-        elif 'DIVIDEND' in movement_type or 'DIVIDEND' in description or 'DIVIDENDO' in description:
-            event_type = 'DIVIDENDO'
-        elif 'RENDIMENTO' in description or (typesafe_asset_type(ticker) == 'fii' and movement_type in ('INTEREST', 'DISTRIBUTION', 'INCOME')):
-            event_type = 'RENDIMENTO'
-        elif movement_type == 'INTEREST' and typesafe_asset_type(ticker) != 'fii':
-            event_type = 'DIVIDENDO'  # categoria Pluggy genérica; não presumir JCP sem descrição
-        else:
-            event_type = 'DIVIDENDO'
+        event_type = _normalize_provento_category(
+            movement_type, ticker, description, row.get('movement_raw')
+        )
+        if event_type not in ('JCP', 'DIVIDENDO', 'RENDIMENTO'):
+            if movement_type == 'INTEREST' and typesafe_asset_type(ticker) == 'fii':
+                event_type = 'RENDIMENTO'
+            else:
+                # Pluggy's generic INTEREST without category metadata remains
+                # classified as dividend for display; never assume JCP.
+                event_type = 'DIVIDENDO'
         records.append({
             'ticker': ticker, 'tipo': 'Provento', 'tipo_ativo': typesafe_asset_type(ticker),
             'status': 'Pago', 'data_com': None, 'data_pagamento': payment_date[:10],
