@@ -31,6 +31,13 @@ Preserve integralmente o volume `/DATA/AppData/lonely-wallet/data:/data`. O dire
 
 ## Versão
 
-Versão do pacote: `4.2.61`.
+Versão do pacote: `5.0.0`.
+
+### Destaques da versão 5.0.0
+
+- Removido da página Proventos o resumo técnico de eventos importados/ignorados e erros da sincronização.
+- Removida da página Integrações e APIs a seção visual de consumo de chamadas e cache dos provedores.
+- Simplificado o cartão Pluggy: a recomendação aparece como selo verde `(Recomendado)` ao lado do nome, mantendo o cartão no mesmo tema visual dos demais provedores.
+- Incrementado `DASHBOARD_CACHE_FORMAT` para `19`.
 
 A documentação de alterações de cada release é entregue separadamente do ZIP de distribuição.
