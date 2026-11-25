@@ -2097,6 +2097,430 @@ body.light-theme .lw-select-option:hover,body.light-theme .lw-select-option.acti
 }
 </style>
 
+
+<style id="v5-1-mobile-responsive">
+/* v5.1.0 — revisão completa da experiência em celulares e tablets.
+   Mantém os dados/tabelas íntegros e prioriza toque, leitura e ausência de overflow da página. */
+@media (max-width: 760px) {
+  :root { --layout-gap: 12px; --card-radius: 13px; }
+  html, body { width: 100%; min-width: 280px; max-width: 100%; overflow-x: clip !important; }
+  body { font-size: 14px; -webkit-text-size-adjust: 100%; }
+
+  /* Cabeçalho compacto: identidade, status e ações com alvos de toque confortáveis. */
+  .top {
+    position: relative !important;
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    align-items: center;
+    gap: 7px;
+    width: 100%;
+    height: auto !important;
+    min-height: 0 !important;
+    padding: 9px 12px 10px !important;
+  }
+  .brand { min-width: 0; }
+  .brand-logo { width: clamp(116px, 36vw, 145px) !important; height: 38px !important; }
+  .topright {
+    display: grid !important;
+    grid-template-columns: 38px 38px minmax(0, 1fr) minmax(0, 1fr);
+    align-items: stretch;
+    gap: 7px !important;
+    width: 100%;
+    min-width: 0;
+  }
+  #updated {
+    grid-column: 1 / -1;
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    line-height: 1.35;
+    padding: 1px 2px;
+    font-size: 10px;
+  }
+  .topright .utility-btn {
+    width: 38px !important;
+    height: 42px !important;
+    min-height: 42px;
+    padding: 8px !important;
+    justify-self: stretch;
+  }
+  .topright .pillbtn,
+  .topright .primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    min-height: 42px;
+    height: auto;
+    padding: 7px 8px !important;
+    white-space: normal !important;
+    text-align: center;
+    line-height: 1.2;
+    font-size: 11px;
+    overflow-wrap: anywhere;
+  }
+
+  /* Navegação em uma única faixa com rolagem por gesto, sem virar duas/três linhas. */
+  .nav {
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 40 !important;
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    align-items: stretch;
+    width: 100%;
+    max-width: 100%;
+    padding: 5px 9px !important;
+    gap: 5px !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    white-space: nowrap !important;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+  }
+  .nav button {
+    flex: 0 0 auto;
+    min-width: max-content;
+    min-height: 43px;
+    padding: 10px 12px !important;
+    border: 0;
+    border-radius: 9px 9px 7px 7px;
+    font-size: 12px !important;
+    line-height: 1.15;
+    scroll-snap-align: start;
+  }
+
+  main {
+    width: 100%;
+    max-width: 100% !important;
+    min-width: 0;
+    margin: 13px auto 0 !important;
+    padding: 0 12px 30px !important;
+  }
+  .page { min-width: 0; width: 100%; }
+  .pagehead {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch !important;
+    justify-content: flex-start;
+    gap: 10px !important;
+    margin: 0 0 13px !important;
+    min-width: 0;
+  }
+  .pagehead > div:first-child { min-width: 0; width: 100%; }
+  .pagehead h1 { font-size: 20px !important; line-height: 1.2; }
+  .pagehead .sub { font-size: 12px; line-height: 1.45; }
+  .pagehead > .toolbar,
+  .pagehead > button { width: 100%; }
+  .pagehead > .toolbar { display: flex; flex-wrap: wrap; gap: 7px; }
+  .pagehead > .toolbar button { flex: 1 1 140px; min-width: 0; }
+
+  /* Cards e grades: duas colunas quando há espaço, uma coluna em aparelhos estreitos. */
+  .stats, .summary-investor10 {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 9px !important;
+    margin-bottom: 12px;
+  }
+  .summary-investor10 > .stat {
+    min-width: 0;
+    min-height: 118px;
+    padding: 13px !important;
+    overflow: hidden;
+  }
+  .summary-investor10 .statlabel { font-size: 11px; line-height: 1.35; }
+  .summary-investor10 .statvalue { font-size: clamp(17px, 4.5vw, 21px) !important; line-height: 1.2; overflow-wrap: anywhere; }
+  .summary-investor10 .statdetail { gap: 6px; flex-wrap: wrap; font-size: 10px; }
+  .position-insights { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 9px !important; }
+  .position-insights > .insight-card { min-width: 0; padding: 13px !important; }
+  .charts, .prov-charts, .distribution-layout, .patrimony-overview,
+  .patrimony-category-content, .launch-distribution-layout {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 11px !important;
+    min-width: 0;
+  }
+  .charts > .panel, .prov-charts > .panel, .distribution-layout > .panel {
+    min-width: 0;
+    min-height: 0 !important;
+    height: auto !important;
+  }
+  .panel, .card { min-width: 0; border-radius: 13px; }
+  .panel { padding: 13px !important; }
+  .panelhead, .sectionhead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start !important;
+    justify-content: space-between;
+    gap: 9px !important;
+    min-width: 0;
+  }
+  .panelhead h2, .sectionhead h2 { min-width: 0; font-size: 14px !important; line-height: 1.3; }
+  .panelhead > .toolbar {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    min-width: 0;
+    gap: 7px;
+  }
+  .panelhead > .toolbar > * { min-width: 0 !important; max-width: 100% !important; width: 100%; }
+  .panelhead select, .toolbar select, .toolbar input,
+  .field input, .field select, .field textarea {
+    min-width: 0 !important;
+    max-width: 100%;
+    width: 100%;
+    min-height: 44px;
+    font-size: 16px !important; /* evita zoom automático ao focar campos em navegadores móveis */
+  }
+  .toolbar { min-width: 0; max-width: 100%; }
+  .toolbar > button, button.primary, button.ghost, button.pillbtn {
+    min-height: 42px;
+    touch-action: manipulation;
+  }
+  .chartbox { width: 100%; max-width: 100%; height: 235px !important; min-height: 0 !important; }
+  .chartbox.small { height: 195px !important; }
+  .charts > .panel:first-child .chartbox { height: 235px !important; min-height: 0 !important; }
+  .charts > .allocation-panel .allocation-content { grid-template-columns: minmax(0, 1fr) !important; gap: 8px; min-height: 0; }
+  .charts > .allocation-panel .allocation-content .chartbox.small { height: 205px !important; min-height: 0 !important; max-width: 250px; }
+  .allocation-legend { max-width: 100%; max-height: 250px; }
+
+  /* Proventos: resumo, filtros e gráfico em fluxo vertical, sem controles espremidos. */
+  .earnings-dashboard, .return-dashboard { grid-template-columns: minmax(0, 1fr) !important; gap: 11px !important; }
+  .earnings-sidebar, .earnings-main, .earnings-main > .panel { min-width: 0; width: 100%; }
+  .earnings-summary { display: block !important; height: auto; }
+  .earnings-summary-block { padding: 13px 0; gap: 8px; }
+  .earnings-summary-value { font-size: 19px; }
+  .earnings-distribution { grid-template-columns: minmax(0, 1fr) !important; gap: 9px; }
+  .earnings-distribution .chartbox { height: 190px !important; }
+  .earnings-head { align-items: flex-start !important; }
+  .earnings-head .toolbar {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    gap: 7px;
+  }
+  .earnings-head .toolbar > .segmented { grid-column: 1 / -1; width: 100%; }
+  .earnings-head .toolbar > .segmented button { flex: 1; min-height: 40px; }
+  .earnings-head .toolbar > .prov-chart-period,
+  .earnings-head .toolbar > select { width: 100%; min-width: 0 !important; max-width: none !important; }
+  .earnings-main-chart { height: 270px !important; min-height: 0 !important; }
+  .earnings-chart-legend { justify-content: flex-start; flex-wrap: wrap; gap: 8px 14px; line-height: 1.4; }
+  .earnings-chart-note, .chart-footnote { font-size: 10px; line-height: 1.5; }
+  .earnings-history-head { display: block !important; }
+  .earnings-history-head > h2 { margin-bottom: 10px; }
+  .earnings-history-toolbar, .my-provents-toolbar {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch !important;
+    justify-content: stretch !important;
+    width: 100%;
+    gap: 7px !important;
+  }
+  .earnings-history-toolbar > #provHistoryTotal,
+  .my-provents-toolbar > #myProvTotal { grid-column: 1 / -1; }
+  #provHistoryStatusWrap, #myProvPeriodWrap { grid-column: 1 / -1; width: 100% !important; }
+  #provHistoryTypeWrap, #provHistoryAssetWrap,
+  #myProvTypeWrap, #myProvAssetWrap { width: 100% !important; min-width: 0; }
+  .earnings-history-toolbar .prov-history-filter,
+  .my-provents-toolbar .my-prov-filter { min-width: 0 !important; width: 100%; }
+
+  /* Tabelas mantêm colunas legíveis e rolam horizontalmente por gesto, em vez de comprimir texto. */
+  .tablewrap:has(> table), .tablewrap:has(table.data) {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    border-radius: 8px;
+  }
+  .tablewrap > table.data, .tablewrap table.data {
+    width: max-content !important;
+    min-width: 560px !important;
+    max-width: none !important;
+    table-layout: auto !important;
+    white-space: nowrap !important;
+  }
+  .tablewrap table.data:has(th:nth-child(5)) { min-width: 650px !important; }
+  .tablewrap table.data:has(th:nth-child(8)) { min-width: 800px !important; }
+  .tablewrap table.data:has(th:nth-child(11)) { min-width: 930px !important; }
+  .tablewrap table.data:has(th:nth-child(14)) { min-width: 1040px !important; }
+  .summary-position-groups .asset-category .tablewrap { overflow-x: auto !important; }
+  .summary-position-groups .asset-category .data { min-width: 1080px !important; }
+  .asset-category .data.proportional-assets-table { min-width: 1180px !important; }
+  .operation-group .tablewrap { overflow-x: auto !important; }
+  .operation-group .data { min-width: 980px !important; }
+  .imported-balance-class .data { min-width: 780px !important; }
+  .data th, .data td {
+    white-space: nowrap !important;
+    overflow-wrap: normal !important;
+    word-break: normal !important;
+    padding: 10px 9px !important;
+    font-size: 11px !important;
+  }
+  .data th:first-child, .data td:first-child { text-align: left; }
+
+  /* Distribuição, operações e formulários. */
+  .distribution-chart, .distribution-editor { min-height: 0 !important; }
+  .distribution-chartbox { height: 250px !important; }
+  .distribution-row {
+    grid-template-columns: minmax(0, 1fr) 36px minmax(58px, 70px) 36px 36px !important;
+    gap: 5px !important;
+    padding: 9px 0;
+  }
+  .distribution-name { min-width: 0; font-size: 12px; overflow-wrap: anywhere; }
+  .distribution-row button { width: 36px; height: 36px; min-height: 36px; }
+  .distribution-value { font-size: 12px; }
+  .distribution-add { display: grid !important; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .distribution-add select, .distribution-add button { width: 100%; min-width: 0 !important; min-height: 44px; }
+  .distribution-footer { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .operation-group-head, .imported-balance-head { align-items: flex-start !important; flex-direction: column; gap: 8px; padding: 12px; }
+  .operation-group-totals { display: flex; flex-wrap: wrap; gap: 7px 12px; }
+  .operation-group .tablewrap, .imported-balance-class .tablewrap { max-width: 100%; overflow-x: auto !important; }
+  .formgrid { grid-template-columns: minmax(0, 1fr) !important; gap: 11px; }
+  .formgrid > .full, .operation-form .full { grid-column: 1 / -1; }
+  .field { min-width: 0; width: 100%; }
+  .total-preview { grid-column: 1 / -1; align-items: flex-start; }
+  .modalactions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .modalactions button { min-width: 0; min-height: 44px; }
+  .api-grid { grid-template-columns: minmax(0, 1fr) !important; }
+  .api-provider-card { min-width: 0; padding: 14px !important; }
+  .api-provider-head { flex-wrap: wrap; align-items: flex-start; }
+  .api-provider-actions { display: grid; grid-template-columns: minmax(0, 1fr); width: 100%; }
+  .api-provider-actions > * { width: 100%; max-width: none !important; min-width: 0 !important; }
+  .api-credential-fields { grid-template-columns: minmax(0, 1fr) !important; }
+  #page-seguranca .security-panel { padding: 14px !important; }
+  #page-seguranca .security-panel #securityPinActions { grid-template-columns: minmax(0, 1fr) !important; gap: 10px; }
+  #page-seguranca .security-panel .toolbar { display: grid; grid-template-columns: minmax(0, 1fr); width: 100%; }
+  #page-seguranca .security-panel .toolbar button { width: 100%; min-height: 44px; }
+  .tax-tabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
+  .tax-tabs button { flex: 0 0 auto; min-height: 42px; }
+
+  /* Modais viram folhas inferiores roláveis, mais fáceis de usar com teclado virtual. */
+  .modalback, .utility-modal-back {
+    align-items: flex-end !important;
+    justify-content: center !important;
+    padding: max(8px, env(safe-area-inset-top)) 8px max(8px, env(safe-area-inset-bottom)) !important;
+    overflow-y: auto !important;
+    overscroll-behavior: contain;
+  }
+  .modalback > .modal, .modalback .modal {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: min(92dvh, 900px) !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    padding: 16px !important;
+    border-radius: 18px 18px 12px 12px !important;
+    margin: 0 auto !important;
+    overscroll-behavior: contain;
+  }
+  .modalhead { position: sticky; top: -16px; z-index: 2; padding: 4px 0 10px; background: var(--panel); }
+  .modalhead h2 { font-size: 16px !important; line-height: 1.3; }
+  .close { width: 40px; height: 40px; flex: 0 0 40px; }
+  .pluggy-manager-overlay { align-items: flex-end !important; padding: 7px !important; }
+  .pluggy-manager-dialog { width: 100% !important; max-height: 94dvh !important; padding: 14px !important; border-radius: 17px 17px 12px 12px !important; }
+  .pluggy-manager-content { grid-template-columns: minmax(0, 1fr) !important; }
+  .pluggy-manager-section { min-width: 0 !important; width: 100%; }
+  .pluggy-clear-actions { display: grid !important; grid-template-columns: minmax(0, 1fr) !important; width: 100% !important; }
+  .pluggy-clear-actions > * { width: 100% !important; min-width: 0 !important; }
+
+  /* Paginação, listas longas e conteúdo auxiliar. */
+  .summary-assets-pagination, .operation-group-pagination, .my-prov-pagination,
+  .opportunity-pagination, .modal-pagination { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+  .summary-assets-pagination button, .operation-group-pagination button,
+  .my-prov-pagination button, .opportunity-pagination button, .modal-pagination button {
+    min-width: 38px; min-height: 38px; padding: 8px 10px;
+  }
+  .footer { padding: 18px 8px calc(18px + env(safe-area-inset-bottom)); line-height: 1.5; font-size: 10px; }
+  .info-tip::after, .value-hint::after { max-width: min(300px, calc(100vw - 28px)) !important; overflow-wrap: anywhere; }
+}
+
+@media (max-width: 420px) {
+  main { padding-left: 9px !important; padding-right: 9px !important; }
+  .top { padding-left: 9px !important; padding-right: 9px !important; }
+  .nav { padding-left: 7px !important; padding-right: 7px !important; }
+  .stats, .summary-investor10 { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  .summary-investor10 > .stat { padding: 11px !important; min-height: 110px; }
+  .summary-investor10 .statvalue { font-size: 17px !important; }
+  .position-insights { grid-template-columns: minmax(0, 1fr) !important; }
+  .position-insights > .insight-card { min-height: 0; }
+  .panel { padding: 11px !important; }
+  .chartbox { height: 220px !important; }
+  .earnings-main-chart { height: 245px !important; }
+  .distribution-row { grid-template-columns: minmax(0, 1fr) 34px 58px 34px 34px !important; gap: 4px !important; }
+  .distribution-row button { width: 34px; height: 34px; }
+  .topright { grid-template-columns: 36px 36px minmax(0, 1fr) minmax(0, 1fr); gap: 5px !important; }
+  .topright .utility-btn { width: 36px !important; }
+  .topright .pillbtn, .topright .primary { font-size: 10px; padding: 6px 5px !important; }
+}
+
+@media (max-width: 350px) {
+  .stats, .summary-investor10 { grid-template-columns: minmax(0, 1fr) !important; }
+  .topright { grid-template-columns: 36px 36px minmax(0, 1fr); }
+  .topright .primary { grid-column: 1 / -1; }
+  .nav button { padding: 9px 10px !important; font-size: 11px !important; }
+}
+
+@media (min-width: 761px) and (max-width: 1100px) {
+  main { padding-left: 22px !important; padding-right: 22px !important; }
+  .summary-investor10, .stats { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  .charts, .prov-charts { grid-template-columns: minmax(0, 1fr) !important; }
+  .distribution-layout { grid-template-columns: minmax(0, 1fr) !important; }
+  .earnings-dashboard, .return-dashboard { grid-template-columns: minmax(0, 1fr) !important; }
+  .api-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Tablets compactos: mantém a navegação em uma faixa e evita tabelas cortadas. */
+@media (min-width: 761px) and (max-width: 1100px) {
+  .nav {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    white-space: nowrap !important;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .nav button { flex: 0 0 auto; min-height: 44px; white-space: nowrap; }
+  .tablewrap:has(> table), .tablewrap:has(table.data) {
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    max-width: 100%;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+  .tablewrap table.data {
+    width: max-content !important;
+    min-width: 680px !important;
+    max-width: none !important;
+    table-layout: auto !important;
+    white-space: nowrap !important;
+  }
+  .tablewrap table.data:has(th:nth-child(8)) { min-width: 820px !important; }
+  .tablewrap table.data:has(th:nth-child(11)) { min-width: 1050px !important; }
+  .tablewrap table.data:has(th:nth-child(14)) { min-width: 1120px !important; }
+  .summary-position-groups .asset-category .data { min-width: 1100px !important; }
+  .asset-category .data.proportional-assets-table { min-width: 1180px !important; }
+  .operation-group .data { min-width: 1000px !important; }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  button, a, input, select, textarea, summary { touch-action: manipulation; }
+  button, .nav button, .tax-tabs button { -webkit-tap-highlight-color: transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav { scroll-behavior: auto !important; }
+}
+</style>
+
 </head><body class="dashboard-wait-lock">
 <div class="modalback utility-modal-back" id="notesModalBack" onclick="if(event.target===this)closeUtilityModal('notesModalBack')"><div class="modal utility-modal"><div class="modalhead"><h2 id="notesModalTitle">Minhas observações</h2><button class="close" onclick="closeUtilityModal('notesModalBack')">×</button></div><div id="notesModalContent"></div></div></div>
 <div class="modalback utility-modal-back" id="transactionsModalBack" onclick="if(event.target===this)closeUtilityModal('transactionsModalBack')"><div class="modal utility-modal transactions-modal"><div class="modalhead"><h2 id="transactionsModalTitle">Lançamentos do ativo</h2><button class="close" onclick="closeUtilityModal('transactionsModalBack')">×</button></div><div id="transactionsModalContent"></div></div></div>

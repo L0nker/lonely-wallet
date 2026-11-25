@@ -3,7 +3,7 @@
   <h1>Lonely Wallet</h1>
   <p><strong>Gerenciador pessoal de carteira de investimentos, auto-hospedado em Docker.</strong></p>
   <p>
-    <strong>Versão 5.0.0</strong> · Interface em português (Brasil) · Python/Flask · SQLite · Docker
+    <strong>Versão 5.1.0</strong> · Interface em português (Brasil) · Python/Flask · SQLite · Docker
   </p>
 </div>
 
@@ -13,6 +13,7 @@
 
 - [Sobre o projeto](#sobre-o-projeto)
 - [Principais recursos](#principais-recursos)
+- [Uso em celulares e tablets](#uso-em-celulares-e-tablets)
 - [Como os dados são obtidos](#como-os-dados-são-obtidos)
 - [Arquitetura](#arquitetura)
 - [Requisitos](#requisitos)
@@ -43,6 +44,39 @@
 
 ---
 
+## Uso em celulares e tablets
+
+A interface web é responsiva e pode ser aberta pelo navegador do celular ou tablet usando o mesmo endereço do servidor. Não é necessário criar outra carteira nem sincronizar bancos separados.
+
+### Navegação
+
+- Em telas estreitas, a navegação principal fica em uma faixa horizontal. Deslize para os lados para acessar Resumo, Proventos, Patrimônio, Lançamentos, Distribuição, APIs e Segurança.
+- O cabeçalho reduz o tamanho do logotipo e organiza os atalhos de privacidade, tema, importação B3 e novo lançamento em controles adequados ao toque.
+- Os painéis e indicadores passam para uma ou duas colunas conforme a largura disponível.
+
+### Tabelas
+
+Algumas tabelas possuem mais colunas do que cabem em um celular. Para manter os números e títulos legíveis, a tabela conserva sua largura mínima e o contêiner permite deslizar horizontalmente. Isso não amplia a página inteira; somente a área da tabela se move.
+
+### Gráficos e filtros
+
+Gráficos, seletores de período, filtros de classe e ativo ocupam a largura disponível. Quando há vários controles, eles são reorganizados em linhas para evitar campos estreitos. Para gráficos com muitos períodos, mantenha o celular na orientação que ofereça melhor leitura.
+
+### Formulários e diálogos
+
+Formulários passam a uma coluna. Diálogos abrem próximos à parte inferior da tela e podem ser rolados independentemente, permitindo alcançar os botões mesmo quando o teclado virtual está aberto.
+
+### Recomendações de uso
+
+- Use um navegador atualizado (Chrome, Firefox, Edge ou Safari).
+- Para acesso dentro de casa, abra o endereço local do ZimaOS pela mesma rede Wi-Fi.
+- Para acesso externo, use uma VPN privada ou um proxy reverso com HTTPS válido. Não exponha diretamente a porta HTTP 8085 à internet.
+- Em telas de 280 px ou mais, o layout reorganiza os principais componentes. A experiência final ainda depende do navegador, escala de fonte e tamanho real do dispositivo.
+
+> A revisão responsiva foi verificada em larguras de referência de 280 px a 1.920 px, incluindo orientação retrato e paisagem. A validação automatizada não substitui o teste em aparelhos físicos e navegadores diferentes.
+
+A revisão responsiva não substitui um aplicativo Android/iOS nativo. A interface mobile é a mesma aplicação web, ligada ao mesmo servidor e aos mesmos dados.
+
 ## Sobre o projeto
 
 O **Lonely Wallet** é uma aplicação pessoal para registrar e acompanhar uma carteira de investimentos. Ela é executada no próprio servidor do usuário, normalmente em um equipamento com ZimaOS/CasaOS e Docker, e é acessada pelo navegador de um computador, tablet ou celular.
@@ -60,11 +94,15 @@ A aplicação reúne em uma única interface:
 
 O servidor local é a fonte central dos dados. Abrir a aplicação em outro dispositivo não cria uma carteira separada: os dispositivos acessam os mesmos bancos SQLite montados no servidor.
 
-### Destaques da versão 5.0.0
+### Destaques da versão 5.1.0
 
 - A página **Proventos** não exibe mais o contador técnico de eventos novos/ignorados nem a seção de detalhes técnicos da sincronização.
 - A página **Integrações e APIs** não exibe mais o painel visual de consumo de chamadas e cache. Os controles internos de cache, intervalos e limites dos provedores continuam ativos.
 - O cartão Pluggy segue o tema visual dos demais provedores e recebe o selo verde **(Recomendado)** ao lado do nome.
+- A interface recebeu uma revisão responsiva para celulares e tablets: cabeçalho compacto, navegação horizontal por gesto, grades reorganizadas e controles com alvos de toque maiores.
+- Tabelas com muitas colunas preservam a legibilidade e podem ser percorridas horizontalmente, sem alargar a página inteira.
+- Formulários e diálogos foram adaptados a telas estreitas e ao teclado virtual, com rolagem vertical própria.
+- Não foram alterados cálculos financeiros, integrações, rotas da API ou o formato do cache do dashboard nesta atualização visual.
 
 > **Importante:** o Lonely Wallet é uma ferramenta de organização e acompanhamento. Não é corretora, custodiante, instituição financeira, serviço de recomendação de investimentos ou sistema oficial de apuração tributária.
 
@@ -85,7 +123,7 @@ O servidor local é a fonte central dos dados. Abrir a aplicação em outro disp
 
 O cadastro de operações reconhece as seguintes classes: Ações, FIIs, ETFs, BDRs, ETFs Internacionais, Stocks, REITs, Criptomoedas, Renda Fixa, Tesouro Direto, Fundos de Investimentos e Outros.
 
-A disponibilidade de cotação, histórico, indicadores e cálculo de saldo varia conforme a classe e os dados disponibilizados pelas fontes configuradas. A página **Proventos** é destinada a ativos com eventos de proventos elegíveis; títulos de renda fixa e Tesouro não são apresentados nessa página na versão 5.0.0.
+A disponibilidade de cotação, histórico, indicadores e cálculo de saldo varia conforme a classe e os dados disponibilizados pelas fontes configuradas. A página **Proventos** é destinada a ativos com eventos de proventos elegíveis; títulos de renda fixa e Tesouro não são apresentados nessa página na versão 5.1.0.
 
 ## Como os dados são obtidos
 
@@ -290,7 +328,7 @@ Principais áreas:
 
 Eventos futuros são estimativas. A quantidade usada no cálculo considera os dados de posição disponíveis para a data-com; confirme os valores finais nos comunicados da empresa/fundo, na corretora ou na B3.
 
-**Renda Fixa e Tesouro Direto não são classes exibidas na página Proventos da versão 5.0.0.** A existência de juros ou rendimento contratual de um título não significa que ele seja um provento de renda variável nesta tela.
+**Renda Fixa e Tesouro Direto não são classes exibidas na página Proventos da versão 5.1.0.** A existência de juros ou rendimento contratual de um título não significa que ele seja um provento de renda variável nesta tela.
 
 ### 3. Patrimônio
 
@@ -378,7 +416,7 @@ Na página **Distribuição**, defina o percentual ideal para cada classe. O apl
 
 A página **Integrações e APIs** contém a Pluggy e os provedores de mercado/indicadores.
 
-Na versão 5.0.0, o painel visual de **Consumo das APIs** foi removido para simplificar a interface. O backend continua mantendo cache, intervalos, pausas e mecanismos de controle de requisições. A remoção do painel não desativa os provedores.
+Na versão 5.1.0, o painel visual de **Consumo das APIs** foi removido para simplificar a interface. O backend continua mantendo cache, intervalos, pausas e mecanismos de controle de requisições. A remoção do painel não desativa os provedores.
 
 Para provedores que exigem credencial:
 
@@ -446,7 +484,7 @@ As credenciais Client ID/Secret são armazenadas criptografadas no servidor. A c
 
 ## Provedores de dados
 
-A lista abaixo descreve o papel dos serviços conforme o catálogo e as chamadas existentes no código da versão 5.0.0. A presença de um serviço na página não significa cobertura integral de todos os ativos ou endpoints.
+A lista abaixo descreve o papel dos serviços conforme o catálogo e as chamadas existentes no código da versão 5.1.0. A presença de um serviço na página não significa cobertura integral de todos os ativos ou endpoints.
 
 | Provedor | Credencial | Utilização/observações |
 |---|---|---|
@@ -715,7 +753,7 @@ A causa possível é incompatibilidade entre `tokens.db` e `.api-credentials.key
 
 ## API HTTP interna
 
-O frontend utiliza endpoints HTTP do próprio Flask. Os endpoints abaixo são referências internas da versão 5.0.0, não uma promessa de API pública estável para integrações de terceiros.
+O frontend utiliza endpoints HTTP do próprio Flask. Os endpoints abaixo são referências internas da versão 5.1.0, não uma promessa de API pública estável para integrações de terceiros.
 
 | Endpoint | Métodos | Finalidade |
 |---|---|---|
@@ -874,11 +912,11 @@ O volume `/data` contém informações financeiras e segredos. Trate-o como dado
 
 ## Licença
 
-O pacote 5.0.0 não inclui um arquivo `LICENSE`. Portanto, a licença de distribuição e reutilização do projeto ainda precisa ser definida pelo mantenedor antes de uma publicação pública no GitHub ou em uma loja de aplicativos. Não presuma que o código esteja sob MIT, Apache-2.0 ou outra licença sem a inclusão de um arquivo de licença válido.
+O pacote 5.1.0 não inclui um arquivo `LICENSE`. Portanto, a licença de distribuição e reutilização do projeto ainda precisa ser definida pelo mantenedor antes de uma publicação pública no GitHub ou em uma loja de aplicativos. Não presuma que o código esteja sob MIT, Apache-2.0 ou outra licença sem a inclusão de um arquivo de licença válido.
 
 ---
 
 <div align="center">
-  <strong>Lonely Wallet v5.0.0</strong><br>
+  <strong>Lonely Wallet v5.1.0</strong><br>
   Controle pessoal de investimentos · Dados persistidos no servidor do usuário
 </div>
