@@ -1,4 +1,4 @@
-import os, sqlite3, time, json, threading, hashlib, io, re, unicodedata, uuid, shutil, secrets, hmac, math, tempfile, zipfile
+import os, sqlite3, time, json, threading, hashlib, io, re, unicodedata, uuid, shutil, secrets, hmac, math, tempfile, zipfile, contextvars
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
@@ -17,6 +17,40 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax', S
 DB_PATH = os.environ.get('ASSETS_DB_PATH', '/data/ativos.db')
 LEGACY_DB_PATH = os.environ.get('DB_PATH', '/data/carteira.db')
 TOKEN_DB_PATH = os.environ.get('TOKEN_DB_PATH', '/data/tokens.db')
+USER_DB_PATH = os.environ.get('USER_DB_PATH', str(Path(DB_PATH).parent / 'users.db'))
+DATA_ROOT = Path(os.environ.get('DATA_DIR') or Path(DB_PATH).parent).expanduser().resolve()
+ACTIVE_WALLET_CONTEXT = contextvars.ContextVar('lonely_wallet_active_context', default=None)
+
+
+def _active_wallet_context():
+    value = ACTIVE_WALLET_CONTEXT.get()
+    return value if isinstance(value, dict) else None
+
+
+def active_db_path():
+    context = _active_wallet_context()
+    return str(context['assets_db_path']) if context and context.get('assets_db_path') else DB_PATH
+
+
+def active_token_db_path():
+    context = _active_wallet_context()
+    return str(context['token_db_path']) if context and context.get('token_db_path') else TOKEN_DB_PATH
+
+
+def active_dashboard_cache_path():
+    context = _active_wallet_context()
+    return str(context['dashboard_cache_path']) if context and context.get('dashboard_cache_path') else DASHBOARD_CACHE_PATH
+
+
+def active_scope_key():
+    context = _active_wallet_context()
+    if not context:
+        return 'legacy-default'
+    return f"{context.get('user_id','')}:{context.get('wallet_id','')}"
+
+
+def _active_database_paths():
+    return active_db_path(), active_token_db_path()
 VERSION_FILE = Path(__file__).resolve().parents[1] / 'VERSION'
 try:
     APP_VERSION = VERSION_FILE.read_text(encoding='utf-8').strip() or 'desconhecida'
@@ -73,7 +107,24 @@ def _chart_assets_status():
 
 @app.context_processor
 def inject_app_version():
-    return {'app_version': APP_VERSION, 'chart_assets': _chart_assets_status()}
+    values = {'app_version': APP_VERSION, 'chart_assets': _chart_assets_status(),
+              'wallet_menu': [], 'active_wallet_id': '', 'active_wallet_name': 'Padrão', 'current_username': '', 'current_user_role': 'user'}
+    try:
+        if session.get('authenticated') and session.get('user_id'):
+            user, active, wallets = _current_identity()
+            if user and active:
+                values['current_username'] = str(user['username'])
+                values['current_user_role'] = str(user['role'] or 'user')
+                values['active_wallet_id'] = str(active['id'])
+                values['active_wallet_name'] = str(active['name'])
+                values['wallet_menu'] = [
+                    {'id': str(row['id']), 'name': str(row['name']), 'is_default': bool(row['is_default'])}
+                    for row in wallets
+                ]
+    except Exception:
+        # A transient identity DB issue must not prevent public/static rendering.
+        app.logger.exception('Não foi possível carregar o seletor de carteiras para o cabeçalho.')
+    return values
 TOKEN = os.environ.get('BRAPI_TOKEN') or os.environ.get('BRAPI_API_KEY', '')
 API_KEY_FILE = os.environ.get('API_KEYS_KEY_FILE', '/data/.api-credentials.key')
 TZ = ZoneInfo('America/Sao_Paulo')
@@ -84,7 +135,7 @@ QUOTE_HISTORY_PATH = os.environ.get('QUOTE_HISTORY_PATH', '/data/quotes_last_val
 QUOTE_HISTORY_LOCK = threading.RLock()
 DASHBOARD_CACHE_PATH = os.environ.get('DASHBOARD_CACHE_PATH', '/data/dashboard_cache.json')
 DASHBOARD_CACHE_LOCK = threading.RLock()
-DASHBOARD_CACHE_FORMAT = 19
+DASHBOARD_CACHE_FORMAT = 21
 PORTFOLIO_HISTORY_CACHE, PORTFOLIO_HISTORY_TTL = {}, 1800
 PORTFOLIO_HISTORY_EMPTY_TTL = 120
 def _dashboard_cache_signature():
@@ -95,7 +146,7 @@ def _dashboard_cache_signature():
     WALs não vazios são incluídos para invalidar o cache após gravações recentes.
     """
     records = []
-    for path in (DB_PATH, TOKEN_DB_PATH):
+    for path in _active_database_paths():
         try:
             stat = os.stat(path)
             records.append((path, int(stat.st_mtime_ns), int(stat.st_size)))
@@ -124,11 +175,11 @@ def _dashboard_cache_signature():
 def _checkpoint_dashboard_cache_sources():
     """Consolida WALs, sem disputar o banco com workers de sincronização."""
     try:
-        proventos_running = PROVENTOS_SYNC_STATE.get('status') == 'running'
+        proventos_running = _proventos_sync_state().get('status') == 'running'
     except NameError:
         proventos_running = False
-    for path in (DB_PATH, TOKEN_DB_PATH):
-        if path == DB_PATH and proventos_running:
+    for path in _active_database_paths():
+        if path == active_db_path() and proventos_running:
             # O dashboard pode ser salvo durante uma consulta externa longa. O
             # WAL não vazio participa da assinatura e invalida o snapshot após
             # a conclusão do worker, portanto o checkpoint pode esperar.
@@ -151,7 +202,7 @@ def _read_dashboard_snapshot():
     """Carrega apenas um snapshot completo que ainda corresponde aos dados persistidos."""
     try:
         with DASHBOARD_CACHE_LOCK:
-            with open(DASHBOARD_CACHE_PATH, 'r', encoding='utf-8') as handle:
+            with open(active_dashboard_cache_path(), 'r', encoding='utf-8') as handle:
                 record = json.load(handle)
         if not isinstance(record, dict) or record.get('format') != DASHBOARD_CACHE_FORMAT:
             return None
@@ -182,9 +233,10 @@ def _write_dashboard_snapshot(payload):
         'signature': _dashboard_cache_signature(),
         'payload': payload
     }
-    directory = os.path.dirname(DASHBOARD_CACHE_PATH) or '.'
+    cache_path = active_dashboard_cache_path()
+    directory = os.path.dirname(cache_path) or '.'
     os.makedirs(directory, exist_ok=True)
-    tmp_path = DASHBOARD_CACHE_PATH + '.tmp'
+    tmp_path = cache_path + '.tmp'
     with DASHBOARD_CACHE_LOCK:
         try:
             with open(tmp_path, 'w', encoding='utf-8') as handle:
@@ -192,7 +244,7 @@ def _write_dashboard_snapshot(payload):
                 handle.flush()
                 os.fsync(handle.fileno())
             os.chmod(tmp_path, 0o600)
-            os.replace(tmp_path, DASHBOARD_CACHE_PATH)
+            os.replace(tmp_path, cache_path)
         finally:
             try:
                 if os.path.exists(tmp_path):
@@ -228,6 +280,86 @@ PERFORMANCE_HISTORY_STATE = {
 }
 PERFORMANCE_HISTORY_PENDING_INPUTS = None
 
+# Per-user/per-portfolio worker state. The legacy globals remain as the
+# unscoped fallback used by isolated unit tests and startup diagnostics.
+_SCOPED_WALLET_STATE = {}
+_SCOPED_WALLET_STATE_LOCK = threading.RLock()
+
+
+def _scoped_wallet_state():
+    key = active_scope_key()
+    if key == 'legacy-default':
+        return None
+    with _SCOPED_WALLET_STATE_LOCK:
+        return _SCOPED_WALLET_STATE.setdefault(key, {
+            'proventos_cache': {'time': 0, 'result': None, 'signature': None},
+            'proventos_state': {
+                'status': 'idle', 'signature': '', 'pending_signature': '',
+                'result': None, 'error': '', 'updated_at': '', 'inputs': None
+            },
+            'proventos_pending': None,
+            'performance_state': {
+                'status': 'idle', 'signature': '', 'pending_signature': '',
+                'result': None, 'error': '', 'updated_at': ''
+            },
+            'performance_pending': None,
+            'pluggy_auth': {'api_key': '', 'expires_at': 0},
+            'portfolio_history_cache': {},
+        })
+
+
+def _portfolio_history_cache():
+    scoped = _scoped_wallet_state()
+    return scoped['portfolio_history_cache'] if scoped is not None else PORTFOLIO_HISTORY_CACHE
+
+
+def _proventos_sync_cache():
+    scoped = _scoped_wallet_state()
+    return scoped['proventos_cache'] if scoped is not None else PROVENTOS_SYNC_CACHE
+
+
+def _proventos_sync_state():
+    scoped = _scoped_wallet_state()
+    return scoped['proventos_state'] if scoped is not None else PROVENTOS_SYNC_STATE
+
+
+def _proventos_sync_pending():
+    scoped = _scoped_wallet_state()
+    return scoped['proventos_pending'] if scoped is not None else PROVENTOS_SYNC_PENDING_INPUTS
+
+
+def _set_proventos_sync_pending(value):
+    global PROVENTOS_SYNC_PENDING_INPUTS
+    scoped = _scoped_wallet_state()
+    if scoped is not None:
+        scoped['proventos_pending'] = value
+    else:
+        PROVENTOS_SYNC_PENDING_INPUTS = value
+
+
+def _performance_history_state():
+    scoped = _scoped_wallet_state()
+    return scoped['performance_state'] if scoped is not None else PERFORMANCE_HISTORY_STATE
+
+
+def _performance_history_pending():
+    scoped = _scoped_wallet_state()
+    return scoped['performance_pending'] if scoped is not None else PERFORMANCE_HISTORY_PENDING_INPUTS
+
+
+def _set_performance_history_pending(value):
+    global PERFORMANCE_HISTORY_PENDING_INPUTS
+    scoped = _scoped_wallet_state()
+    if scoped is not None:
+        scoped['performance_pending'] = value
+    else:
+        PERFORMANCE_HISTORY_PENDING_INPUTS = value
+
+
+def _pluggy_auth_cache():
+    scoped = _scoped_wallet_state()
+    return scoped['pluggy_auth'] if scoped is not None else PLUGGY_AUTH_CACHE
+
 # O controle local registra consumo e aplica somente backoff após respostas reais
 # dos provedores. Não cria cotas artificiais por dia ou mês.
 try:
@@ -246,7 +378,7 @@ _API_CACHE_MAX_BODY = 8 * 1024 * 1024
 
 
 def _api_cache_connection():
-    connection = sqlite3.connect(DB_PATH, timeout=15)
+    connection = sqlite3.connect(active_db_path(), timeout=15)
     connection.execute('PRAGMA busy_timeout=15000')
     return connection
 
@@ -891,7 +1023,13 @@ def security_headers(response):
 
 def db():
     if 'db' not in g:
-        g.db = sqlite3.connect(DB_PATH, timeout=15)
+        database_path = active_db_path()
+        os.makedirs(os.path.dirname(database_path) or '.', exist_ok=True)
+        g.db = sqlite3.connect(database_path, timeout=15)
+        try:
+            os.chmod(database_path, 0o600)
+        except OSError:
+            app.logger.warning('Não foi possível restringir as permissões do banco financeiro ativo.')
         g.db.execute('PRAGMA busy_timeout=15000')
         g.db.execute('PRAGMA synchronous=NORMAL')
         g.db.row_factory = sqlite3.Row
@@ -901,8 +1039,13 @@ def db():
 
 def token_db():
     if 'token_db' not in g:
-        os.makedirs(os.path.dirname(TOKEN_DB_PATH) or '.', exist_ok=True)
-        g.token_db = sqlite3.connect(TOKEN_DB_PATH, timeout=15)
+        os.makedirs(os.path.dirname(active_token_db_path()) or '.', exist_ok=True)
+        token_path = active_token_db_path()
+        g.token_db = sqlite3.connect(token_path, timeout=15)
+        try:
+            os.chmod(token_path, 0o600)
+        except OSError:
+            app.logger.warning('Não foi possível restringir as permissões do banco de credenciais ativo.')
         g.token_db.execute('PRAGMA busy_timeout=15000')
         g.token_db.row_factory = sqlite3.Row
     return g.token_db
@@ -916,6 +1059,12 @@ def close_db(_):
     secrets = g.pop('token_db', None)
     if secrets:
         secrets.close()
+    context_token = g.pop('_wallet_context_token', None)
+    if context_token is not None:
+        try:
+            ACTIVE_WALLET_CONTEXT.reset(context_token)
+        except (ValueError, RuntimeError):
+            pass
 
 
 def migrate_legacy_database(source_path, destination_path):
@@ -960,11 +1109,15 @@ def migrate_legacy_database(source_path, destination_path):
 
 
 def prepare_database_files():
-    os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
-    if os.path.abspath(DB_PATH) != os.path.abspath(LEGACY_DB_PATH):
-        migrate_legacy_database(LEGACY_DB_PATH, DB_PATH)
-    os.makedirs(os.path.dirname(TOKEN_DB_PATH) or '.', exist_ok=True)
-    con = sqlite3.connect(TOKEN_DB_PATH, timeout=15)
+    os.makedirs(os.path.dirname(active_db_path()) or '.', exist_ok=True)
+    if os.path.abspath(active_db_path()) != os.path.abspath(LEGACY_DB_PATH):
+        migrate_legacy_database(LEGACY_DB_PATH, active_db_path())
+    os.makedirs(os.path.dirname(active_token_db_path()) or '.', exist_ok=True)
+    con = sqlite3.connect(active_token_db_path(), timeout=15)
+    try:
+        os.chmod(active_token_db_path(), 0o600)
+    except OSError:
+        app.logger.warning('Não foi possível restringir as permissões do banco de credenciais.')
     con.execute('PRAGMA busy_timeout=15000')
     con.execute('''CREATE TABLE IF NOT EXISTS app_auth (
         id INTEGER PRIMARY KEY CHECK(id=1), pin_salt TEXT NOT NULL, pin_hash TEXT NOT NULL,
@@ -985,9 +1138,9 @@ def prepare_database_files():
 
 
 def migrate_api_credentials():
-    if not os.path.exists(DB_PATH):
+    if not os.path.exists(active_db_path()):
         return
-    assets = sqlite3.connect(DB_PATH)
+    assets = sqlite3.connect(active_db_path())
     assets.row_factory = sqlite3.Row
     try:
         exists = assets.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='api_credentials'").fetchone()
@@ -995,7 +1148,7 @@ def migrate_api_credentials():
             return
         rows = assets.execute('SELECT provider,token_encrypted,enabled,updated_at FROM api_credentials').fetchall()
         if rows:
-            secrets = sqlite3.connect(TOKEN_DB_PATH)
+            secrets = sqlite3.connect(active_token_db_path())
             secrets.executemany(
                 'INSERT INTO api_credentials(provider,token_encrypted,enabled,updated_at) VALUES(?,?,?,?) '
                 'ON CONFLICT(provider) DO UPDATE SET token_encrypted=excluded.token_encrypted, '
@@ -1209,8 +1362,13 @@ def _migrate_unconfirmed_proventos_api_status(connection):
 
 
 def init_db():
-    os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
-    con = sqlite3.connect(DB_PATH, timeout=15)
+    database_path = active_db_path()
+    os.makedirs(os.path.dirname(database_path) or '.', exist_ok=True)
+    con = sqlite3.connect(database_path, timeout=15)
+    try:
+        os.chmod(database_path, 0o600)
+    except OSError:
+        app.logger.warning('Não foi possível restringir as permissões do banco financeiro.')
     con.execute('PRAGMA busy_timeout=15000')
     con.execute('PRAGMA journal_mode=WAL')
     con.execute('PRAGMA synchronous=NORMAL')
@@ -1445,7 +1603,11 @@ def init_db():
             con.execute(f'ALTER TABLE operacoes ADD COLUMN {name} {definition}')
     con.execute("UPDATE operacoes SET data_registro=COALESCE(data_registro,data), data_execucao=COALESCE(data_execucao,data||'T10:00:00-03:00') WHERE data_registro IS NULL OR data_execucao IS NULL")
     count = con.execute('SELECT COUNT(*) FROM distribuicao_alvo').fetchone()[0]
-    if count == 0:
+    wallet_context = _active_wallet_context()
+    # Allocation targets are seeded only for the original installation. A new
+    # user or portfolio must remain genuinely empty, including its target plan.
+    seed_legacy_targets = not wallet_context or wallet_context.get('storage_key') == 'legacy'
+    if count == 0 and seed_legacy_targets:
         defaults = [
             ('Renda Fixa', 40, 1), ('Ações', 20, 2), ('FIIs', 20, 3),
             ('ETFs', 10, 4), ('ETFs Internacionais', 10, 5)
@@ -1521,7 +1683,7 @@ migrate_api_credentials()
 
 def remove_retired_api_credentials():
     """Remove credenciais de provedores descontinuados, sem tocar nas demais APIs."""
-    con = sqlite3.connect(TOKEN_DB_PATH, timeout=15)
+    con = sqlite3.connect(active_token_db_path(), timeout=15)
     try:
         con.execute('PRAGMA busy_timeout=15000')
         con.execute("DELETE FROM api_credentials WHERE provider IN ('twelvedata','alphavantage')")
@@ -1546,6 +1708,10 @@ def load_session_secret():
             os.replace(tmp, path)
         except FileNotFoundError:
             pass
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        app.logger.warning('Não foi possível restringir as permissões da chave de sessão.')
     with open(path, 'r', encoding='ascii') as f:
         return f.read().strip()
 
@@ -1557,11 +1723,401 @@ BOOT_ID = os.environ.get('LONELY_WALLET_BOOT_ID') or secrets.token_urlsafe(24)
 IDLE_TIMEOUT_SECONDS = 30 * 60
 
 
-def auth_record():
-    con = sqlite3.connect(TOKEN_DB_PATH, timeout=15)
+def identity_connection():
+    os.makedirs(os.path.dirname(USER_DB_PATH) or '.', exist_ok=True)
+    con = sqlite3.connect(USER_DB_PATH, timeout=15)
+    try:
+        os.chmod(USER_DB_PATH, 0o600)
+    except OSError:
+        app.logger.warning('Não foi possível restringir as permissões do registro de usuários.')
+    con.row_factory = sqlite3.Row
+    con.execute('PRAGMA busy_timeout=15000')
+    con.execute('PRAGMA foreign_keys=ON')
+    return con
+
+
+def init_user_registry():
+    con = identity_connection()
+    try:
+        con.executescript('''
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                username_norm TEXT NOT NULL UNIQUE,
+                pin_salt TEXT NOT NULL,
+                pin_hash TEXT NOT NULL,
+                auth_version INTEGER NOT NULL DEFAULT 1,
+                role TEXT NOT NULL DEFAULT 'user',
+                last_wallet_id TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS wallets (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                name_norm TEXT NOT NULL,
+                storage_key TEXT NOT NULL,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(user_id, name_norm),
+                UNIQUE(user_id, storage_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_wallets_user_default ON wallets(user_id,is_default,created_at);
+            CREATE TABLE IF NOT EXISTS auth_attempts (
+                client_ip TEXT NOT NULL,
+                username_norm TEXT NOT NULL,
+                failed_attempts INTEGER NOT NULL DEFAULT 0,
+                locked_until REAL NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(client_ip,username_norm)
+            );
+            CREATE TABLE IF NOT EXISTS registration_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_ip TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_registration_attempts_ip_time ON registration_attempts(client_ip,created_at);
+            PRAGMA user_version=1;
+        ''')
+        user_columns = {row[1] for row in con.execute('PRAGMA table_info(users)').fetchall()}
+        if 'last_wallet_id' not in user_columns:
+            con.execute("ALTER TABLE users ADD COLUMN last_wallet_id TEXT NOT NULL DEFAULT ''")
+        if 'role' not in user_columns:
+            con.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+            # Existing installations have one legacy owner account; preserve its ability to manage accounts.
+            first_user = con.execute('SELECT id FROM users ORDER BY created_at,id LIMIT 1').fetchone()
+            if first_user:
+                con.execute("UPDATE users SET role='admin' WHERE id=?", (first_user['id'],))
+        con.commit()
+    finally:
+        con.close()
+
+
+def _legacy_auth_record():
+    path = TOKEN_DB_PATH
+    if not os.path.exists(path):
+        return None
+    con = sqlite3.connect(path, timeout=15)
     con.row_factory = sqlite3.Row
     try:
+        exists = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_auth'").fetchone()
+        if not exists:
+            return None
         return con.execute('SELECT * FROM app_auth WHERE id=1').fetchone()
+    finally:
+        con.close()
+
+
+def _username_normalized(value):
+    return unicodedata.normalize('NFKC', str(value or '')).strip().casefold()
+
+
+def _validate_username(value):
+    username = unicodedata.normalize('NFKC', str(value or '')).strip()
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{2,23}', username):
+        return None, 'O nome de usuário deve ter de 3 a 24 caracteres: letras sem acento, números, ponto, hífen ou sublinhado.'
+    return username, ''
+
+
+def _validate_pin_pair(pin, confirm):
+    pin = str(pin or '')
+    confirm = str(confirm or '')
+    if not re.fullmatch(r'\d{6,12}', pin) or pin != confirm:
+        return False, 'Use um PIN de 6 a 12 números e confirme corretamente.'
+    return True, ''
+
+
+def _identity_client_ip():
+    return str(request.remote_addr or 'unknown')[:64]
+
+
+def _identity_lock_response(con, username_norm, now=None):
+    now = time.time() if now is None else now
+    rows = con.execute(
+        "SELECT username_norm,locked_until FROM auth_attempts WHERE client_ip=? AND username_norm IN (?, '__ip_global__')",
+        (_identity_client_ip(), username_norm)
+    ).fetchall()
+    locked_until = max((float(row['locked_until'] or 0) for row in rows), default=0)
+    if locked_until > now:
+        wait = max(1, int(locked_until - now))
+        return jsonify(ok=False, error=f'Muitas tentativas. Aguarde {wait} segundos.'), 429
+    return None
+
+
+def _identity_auth_failure(con, username_norm, now=None):
+    """Persist per-account and per-IP throttles so changing usernames cannot bypass lockout."""
+    now = time.time() if now is None else now
+    ip = _identity_client_ip()
+    # Bound the identity database while retaining all active and recent lockouts.
+    auth_history_cutoff = (datetime.now(TZ) - timedelta(days=1)).isoformat(timespec='seconds')
+    con.execute('DELETE FROM auth_attempts WHERE updated_at < ?', (auth_history_cutoff,))
+
+    def bump(bucket, limit):
+        row = con.execute(
+            'SELECT failed_attempts,updated_at FROM auth_attempts WHERE client_ip=? AND username_norm=?',
+            (ip, bucket)
+        ).fetchone()
+        attempts = 0
+        if row:
+            try:
+                updated = datetime.fromisoformat(str(row['updated_at']))
+                if updated.tzinfo is None:
+                    updated = updated.replace(tzinfo=TZ)
+                age = now - updated.timestamp()
+            except Exception:
+                age = 10**9
+            attempts = int(row['failed_attempts'] or 0) if age <= 900 else 0
+        attempts += 1
+        locked_until = now + 300 if attempts >= limit else 0
+        con.execute("""INSERT INTO auth_attempts(client_ip,username_norm,failed_attempts,locked_until,updated_at)
+            VALUES(?,?,?,?,?) ON CONFLICT(client_ip,username_norm) DO UPDATE SET
+            failed_attempts=excluded.failed_attempts,locked_until=excluded.locked_until,updated_at=excluded.updated_at""",
+            (ip, bucket, 0 if locked_until else attempts, locked_until, datetime.now(TZ).isoformat()))
+        return locked_until
+
+    user_lock = bump(username_norm, 5)
+    global_lock = bump('__ip_global__', 20)
+    con.commit()
+    return max(user_lock, global_lock)
+
+
+def _identity_auth_reset(con, username_norm):
+    con.execute(
+        "DELETE FROM auth_attempts WHERE client_ip=? AND username_norm IN (?, '__ip_global__')",
+        (_identity_client_ip(), username_norm)
+    )
+
+
+def _confirm_identity_pin(con, username_norm, salt, expected_hash, supplied_pin, error_message):
+    # Sensitive actions use the same persistent throttle as the login endpoint.
+    lock_response = _identity_lock_response(con, username_norm)
+    if lock_response:
+        return lock_response
+    candidate = pin_digest(str(supplied_pin or ''), salt) if re.fullmatch(r'\d{6,12}', str(supplied_pin or '')) else ''
+    if not hmac.compare_digest(candidate, str(expected_hash or '')):
+        locked_until = _identity_auth_failure(con, username_norm)
+        if locked_until:
+            return jsonify(ok=False, error='Muitas tentativas. Proteção temporariamente bloqueada por 5 minutos.'), 429
+        return jsonify(ok=False, error=error_message), 401
+    _identity_auth_reset(con, username_norm)
+    return None
+
+
+def _wallet_rows_for_user(con, user_id):
+    return con.execute(
+        'SELECT id,user_id,name,name_norm,storage_key,is_default,created_at,updated_at FROM wallets WHERE user_id=? ORDER BY is_default DESC,created_at,id',
+        (user_id,)
+    ).fetchall()
+
+
+def _wallet_context_from_row(wallet_row):
+    storage_key = str(wallet_row['storage_key'] or '')
+    user_id = str(wallet_row['user_id'])
+    wallet_id = str(wallet_row['id'])
+    if storage_key == 'legacy':
+        assets_path = DB_PATH
+        secrets_path = TOKEN_DB_PATH
+        wallet_dir = str(DATA_ROOT)
+    else:
+        wallet_dir = str(DATA_ROOT / 'users' / user_id / 'wallets' / wallet_id)
+        assets_path = str(Path(wallet_dir) / 'ativos.db')
+        secrets_path = str(Path(wallet_dir) / 'tokens.db')
+    return {
+        'user_id': user_id,
+        'wallet_id': wallet_id,
+        'wallet_name': str(wallet_row['name']),
+        'assets_db_path': assets_path,
+        'token_db_path': secrets_path,
+        'wallet_dir': wallet_dir,
+        'dashboard_cache_path': str(DATA_ROOT / 'cache' / user_id / wallet_id / 'dashboard_cache.json'),
+        'storage_key': storage_key,
+    }
+
+
+def _wallet_context_for_ids(user_id, wallet_id):
+    con = identity_connection()
+    try:
+        row = con.execute(
+            'SELECT id,user_id,name,name_norm,storage_key,is_default,created_at,updated_at FROM wallets WHERE id=? AND user_id=?',
+            (str(wallet_id), str(user_id))
+        ).fetchone()
+        if not row:
+            return None
+        return _wallet_context_from_row(row)
+    finally:
+        con.close()
+
+
+def _all_wallet_contexts():
+    """Return isolated storage contexts for all registered wallets.
+
+    Before the first account is created, the legacy installation still needs its
+    original database context for startup maintenance.
+    """
+    con = identity_connection()
+    try:
+        rows = con.execute(
+            'SELECT id,user_id,name,name_norm,storage_key,is_default,created_at,updated_at FROM wallets ORDER BY created_at,id'
+        ).fetchall()
+        if not rows:
+            return [None]
+        return [_wallet_context_from_row(row) for row in rows]
+    finally:
+        con.close()
+
+
+def _create_wallet_record(con, user_id, name, storage_key=None, is_default=False):
+    wallet_id = str(uuid.uuid4())
+    now_text = datetime.now(TZ).isoformat(timespec='seconds')
+    safe_storage_key = str(storage_key or wallet_id)
+    con.execute(
+        'INSERT INTO wallets(id,user_id,name,name_norm,storage_key,is_default,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)',
+        (wallet_id, user_id, name, _username_normalized(name), safe_storage_key, 1 if is_default else 0, now_text, now_text)
+    )
+    return wallet_id
+
+
+def _ensure_private_data_directory(path):
+    """Create a wallet/cache directory tree with owner-only permissions."""
+    target = Path(path).expanduser().resolve()
+    try:
+        relative = target.relative_to(DATA_ROOT)
+    except ValueError:
+        target.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(target, 0o700)
+        return target
+    current = DATA_ROOT
+    for part in relative.parts:
+        current = current / part
+        current.mkdir(exist_ok=True, mode=0o700)
+        os.chmod(current, 0o700)
+    return target
+
+
+def _initialize_wallet_storage(context):
+    """Create a new, fully isolated portfolio database pair with no provider connections."""
+    if not context or context.get('storage_key') == 'legacy':
+        return
+    wallet_dir = _ensure_private_data_directory(context['wallet_dir'])
+    old = ACTIVE_WALLET_CONTEXT.set(context)
+    try:
+        secrets_path = active_token_db_path()
+        token_con = sqlite3.connect(secrets_path, timeout=15)
+        try:
+            token_con.execute('PRAGMA busy_timeout=15000')
+            token_con.execute('''CREATE TABLE IF NOT EXISTS api_credentials (
+                provider TEXT PRIMARY KEY, token_encrypted TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL
+            )''')
+            token_con.commit()
+        finally:
+            token_con.close()
+        init_db()
+        try:
+            os.chmod(active_db_path(), 0o600)
+            os.chmod(secrets_path, 0o600)
+        except OSError:
+            app.logger.warning('Não foi possível restringir as permissões dos bancos da nova carteira.')
+        # A newly created personal portfolio starts empty: no target allocations,
+        # holdings, operations, dividends, Pluggy items, or API credentials.
+        assets_con = sqlite3.connect(active_db_path(), timeout=15)
+        try:
+            assets_con.execute('DELETE FROM distribuicao_alvo')
+            assets_con.commit()
+        finally:
+            assets_con.close()
+        _ensure_private_data_directory(Path(context['dashboard_cache_path']).parent)
+    finally:
+        ACTIVE_WALLET_CONTEXT.reset(old)
+
+
+def _create_user_account(username, pin, legacy=False):
+    user_id = str(uuid.uuid4())
+    salt = secrets.token_bytes(16).hex()
+    digest = pin_digest(pin, salt)
+    now_text = datetime.now(TZ).isoformat(timespec='seconds')
+    con = identity_connection()
+    try:
+        con.execute('BEGIN IMMEDIATE')
+        if con.execute('SELECT 1 FROM users LIMIT 1').fetchone():
+            raise ValueError('A configuração inicial já foi concluída.')
+        con.execute(
+            "INSERT INTO users(id,username,username_norm,pin_salt,pin_hash,auth_version,role,created_at,updated_at) VALUES(?,?,?,?,?,1,'admin',?,?)",
+            (user_id, username, _username_normalized(username), salt, digest, now_text, now_text)
+        )
+        wallet_id = _create_wallet_record(con, user_id, 'Padrão', storage_key='legacy' if legacy else None, is_default=True)
+        con.execute('UPDATE users SET last_wallet_id=? WHERE id=?', (wallet_id, user_id))
+        con.commit()
+        return user_id, wallet_id
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+def _create_additional_user(username, pin):
+    user_id = str(uuid.uuid4())
+    salt = secrets.token_bytes(16).hex()
+    digest = pin_digest(pin, salt)
+    now_text = datetime.now(TZ).isoformat(timespec='seconds')
+    con = identity_connection()
+    try:
+        con.execute('BEGIN IMMEDIATE')
+        now_epoch = time.time()
+        # Keep a short audit window without allowing an unbounded attempts table.
+        con.execute('DELETE FROM registration_attempts WHERE created_at < ?', (now_epoch - 86400,))
+        count = int(con.execute("SELECT COUNT(*) FROM registration_attempts WHERE client_ip=? AND created_at>=?", (_identity_client_ip(), now_epoch-3600)).fetchone()[0])
+        if count >= 5:
+            con.commit()  # Persist the old-history cleanup even when this request is rate-limited.
+            raise PermissionError('Limite de criação de usuários atingido neste endereço. Tente novamente mais tarde.')
+        con.execute('INSERT INTO registration_attempts(client_ip,created_at) VALUES(?,?)', (_identity_client_ip(), now_epoch))
+        con.execute(
+            "INSERT INTO users(id,username,username_norm,pin_salt,pin_hash,auth_version,role,created_at,updated_at) VALUES(?,?,?,?,?,1,'user',?,?)",
+            (user_id, username, _username_normalized(username), salt, digest, now_text, now_text)
+        )
+        wallet_id = _create_wallet_record(con, user_id, 'Padrão', is_default=True)
+        con.execute('UPDATE users SET last_wallet_id=? WHERE id=?', (wallet_id, user_id))
+        con.commit()
+        return user_id, wallet_id
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+def _start_authenticated_session(user_id, wallet_id, auth_version=1):
+    session.clear()
+    session['authenticated'] = True
+    session['user_id'] = str(user_id)
+    session['wallet_id'] = str(wallet_id)
+    session['auth_version'] = int(auth_version)
+    session['boot_id'] = BOOT_ID
+    session['last_activity'] = time.time()
+    session.permanent = True
+
+
+def _current_identity():
+    user_id = str(session.get('user_id') or '')
+    if not user_id:
+        return None, None, []
+    con = identity_connection()
+    try:
+        user = con.execute('SELECT id,username,username_norm,auth_version,last_wallet_id,role FROM users WHERE id=?', (user_id,)).fetchone()
+        if not user:
+            return None, None, []
+        wallets = _wallet_rows_for_user(con, user_id)
+        active_id = str(session.get('wallet_id') or '')
+        active = next((row for row in wallets if str(row['id']) == active_id), None)
+        if not active:
+            saved_id = str(user['last_wallet_id'] or '')
+            active = next((row for row in wallets if str(row['id']) == saved_id), None)
+        if not active:
+            active = next((row for row in wallets if row['is_default']), wallets[0] if wallets else None)
+        return user, active, wallets
     finally:
         con.close()
 
@@ -1570,55 +2126,16 @@ def pin_digest(pin, salt):
     return hashlib.pbkdf2_hmac('sha256', pin.encode('utf-8'), bytes.fromhex(salt), 310000).hex()
 
 
-def _auth_client_ip():
-    # Usa o IP observado pelo Flask; não confia em X-Forwarded-For sem proxy confiável configurado.
-    return str(request.remote_addr or 'unknown')[:64]
-
-
-def _auth_failure(con, row=None, now=None):
-    now = time.time() if now is None else now
-    ip = _auth_client_ip()
-    current = con.execute('SELECT failed_attempts,updated_at FROM auth_attempts WHERE client_ip=?', (ip,)).fetchone()
-    attempts = 0
-    if current:
-        try:
-            age = (datetime.now(TZ) - datetime.fromisoformat(str(current['updated_at']))).total_seconds()
-        except Exception:
-            age = 10**9
-        attempts = int(current['failed_attempts'] or 0) if age <= 900 else 0
-    attempts += 1
-    locked_until = now + 300 if attempts >= 5 else 0
-    con.execute("""INSERT INTO auth_attempts(client_ip,failed_attempts,locked_until,updated_at) VALUES(?,?,?,?)
-        ON CONFLICT(client_ip) DO UPDATE SET failed_attempts=excluded.failed_attempts,
-        locked_until=excluded.locked_until,updated_at=excluded.updated_at""",
-        (ip, 0 if locked_until else attempts, locked_until, datetime.now(TZ).isoformat()))
-    # Limpa o contador legado global para que uma origem não bloqueie todos os usuários.
-    con.execute('UPDATE app_auth SET failed_attempts=0,locked_until=0 WHERE id=1')
-    con.commit()
-    return locked_until
-
-
-def _auth_lock_response(row=None, now=None, con=None):
-    now = time.time() if now is None else now
-    if con is not None:
-        state = con.execute('SELECT locked_until FROM auth_attempts WHERE client_ip=?', (_auth_client_ip(),)).fetchone()
-        locked_until = float(state[0] or 0) if state else 0
-    else:
-        locked_until = 0
-    if locked_until > now:
-        wait = max(1, int(locked_until - now))
-        return jsonify(ok=False, error=f'Muitas tentativas deste endereço. Aguarde {wait} segundos.'), 429
-    return None
-
-
-def _auth_reset_client(con):
-    con.execute('DELETE FROM auth_attempts WHERE client_ip=?', (_auth_client_ip(),))
+# Stable dummy values keep unknown-user login attempts on the same PBKDF2 path
+# as known users without storing or exposing any account credential.
+_DUMMY_AUTH_SALT = hashlib.sha256(b'LonelyWallet login timing equalizer v1').hexdigest()[:32]
+_DUMMY_AUTH_HASH = pin_digest('000000', _DUMMY_AUTH_SALT)
 
 
 def _origin_is_same_host():
     origin = request.headers.get('Origin')
     if not origin:
-        return True  # Clientes não-browser podem não enviar Origin; SameSite continua ativo.
+        return True
     from urllib.parse import urlparse
     try:
         return urlparse(origin).netloc.lower() == request.host.lower()
@@ -1626,137 +2143,281 @@ def _origin_is_same_host():
         return False
 
 
+def _legacy_pin_is_valid(pin):
+    row = _legacy_auth_record()
+    if not row or not row['enabled'] or not row['pin_hash']:
+        return True
+    candidate = pin_digest(str(pin or ''), row['pin_salt']) if re.fullmatch(r'\d{6,12}', str(pin or '')) else ''
+    return bool(hmac.compare_digest(candidate, str(row['pin_hash'])))
+
+
+init_user_registry()
+
+
+def prepare_registered_wallet_databases():
+    """Apply schema/credential migrations to every isolated wallet at startup.
+
+    The original installation is already prepared by the legacy startup path.
+    This pass also recovers a wallet whose directory creation was interrupted by
+    a process/container restart after its registry row was committed.
+    """
+    for context in _all_wallet_contexts():
+        if not context or context.get('storage_key') == 'legacy':
+            continue
+        context_token = ACTIVE_WALLET_CONTEXT.set(context)
+        try:
+            assets_path = Path(active_db_path())
+            token_path = Path(active_token_db_path())
+            assets_existed = assets_path.is_file()
+            _ensure_private_data_directory(Path(context['wallet_dir']))
+            token_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            token_con = sqlite3.connect(str(token_path), timeout=15)
+            try:
+                token_con.execute('PRAGMA busy_timeout=15000')
+                token_con.execute("""CREATE TABLE IF NOT EXISTS api_credentials (
+                    provider TEXT PRIMARY KEY, token_encrypted TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL
+                )""")
+                token_con.commit()
+            finally:
+                token_con.close()
+            # init_db is idempotent and contains all additive schema migrations.
+            # Non-legacy contexts do not receive default target allocations.
+            init_db()
+            migrate_api_credentials()
+            secrets_con = sqlite3.connect(str(token_path), timeout=15)
+            try:
+                secrets_con.execute("DELETE FROM api_credentials WHERE provider IN ('twelvedata','alphavantage')")
+                secrets_con.commit()
+                integrity = secrets_con.execute('PRAGMA integrity_check').fetchone()
+                if not integrity or str(integrity[0]).lower() != 'ok':
+                    raise RuntimeError('Banco de credenciais inválido na carteira isolada.')
+            finally:
+                secrets_con.close()
+            assets_con = sqlite3.connect(str(assets_path), timeout=15)
+            try:
+                integrity = assets_con.execute('PRAGMA integrity_check').fetchone()
+                if not integrity or str(integrity[0]).lower() != 'ok':
+                    raise RuntimeError('Banco financeiro inválido na carteira isolada.')
+            finally:
+                assets_con.close()
+            try:
+                os.chmod(assets_path, 0o600)
+                os.chmod(token_path, 0o600)
+            except OSError:
+                app.logger.warning('Não foi possível restringir permissões dos bancos da carteira %s.', context.get('wallet_id'))
+            _ensure_private_data_directory(Path(context['dashboard_cache_path']).parent)
+            if not assets_existed:
+                app.logger.warning('O banco da carteira %s não existia; foi inicializado vazio para recuperar o registro.', context.get('wallet_id'))
+        except Exception:
+            app.logger.exception('Falha ao preparar bancos da carteira %s durante a inicialização.', context.get('wallet_id'))
+            raise
+        finally:
+            ACTIVE_WALLET_CONTEXT.reset(context_token)
+
+
+prepare_registered_wallet_databases()
+
+
 @app.before_request
-def require_pin_authentication():
-    # Verifica origem também nos endpoints públicos de autenticação para reduzir CSRF.
+def require_user_authentication():
     if request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and not _origin_is_same_host():
         return jsonify(ok=False, error='Origem da requisição não autorizada.'), 403
-    if request.endpoint in ('auth_status', 'auth_setup', 'auth_login', 'auth_disable', 'health', 'static') or request.path.startswith('/static/'):
+    public_endpoints = {'auth_status', 'auth_setup', 'auth_login', 'health', 'static'}
+    if request.endpoint in public_endpoints or request.path.startswith('/static/'):
         return None
-    record = auth_record()
-    if not record or not record['enabled'] or not record['pin_hash']:
-        return None
-
     now = time.time()
-    authenticated = bool(session.get('authenticated'))
+    user_id = str(session.get('user_id') or '')
+    authenticated = bool(session.get('authenticated') and user_id)
     same_process = session.get('boot_id') == BOOT_ID
     last_activity = float(session.get('last_activity') or 0)
     within_idle_limit = last_activity > 0 and (now - last_activity) <= IDLE_TIMEOUT_SECONDS
-
     if authenticated and (not same_process or not within_idle_limit):
         session.clear()
         authenticated = False
-
-    if not authenticated:
-        if request.path == '/' or not request.path.startswith('/api/'):
-            return render_template('auth.html')
-        return jsonify(ok=False, error='Autenticação necessária.', auth_required=True), 401
-
-    # Sliding inactivity timeout: activity renews the 30-minute idle window.
-    session['last_activity'] = now
-    session['boot_id'] = BOOT_ID
-    session.permanent = True
-
-    return None
+    if authenticated:
+        user, wallet, _wallets = _current_identity()
+        if not user or not wallet or int(user['auth_version']) != int(session.get('auth_version') or 0):
+            session.clear()
+            authenticated = False
+        else:
+            context = _wallet_context_from_row(wallet)
+            g._wallet_context_token = ACTIVE_WALLET_CONTEXT.set(context)
+            session['wallet_id'] = str(wallet['id'])
+            session['last_activity'] = now
+            session['boot_id'] = BOOT_ID
+            session.permanent = True
+            return None
+    if request.path == '/' or not request.path.startswith('/api/'):
+        return render_template('auth.html')
+    return jsonify(ok=False, error='Autenticação necessária.', auth_required=True), 401
 
 
 @app.route('/api/auth/status')
 def auth_status():
-    row = auth_record()
-    configured = bool(row and row['pin_hash'])
-    enabled = bool(row and row['enabled'] and configured)
-    return jsonify(configured=configured, enabled=enabled, authenticated=bool(session.get('authenticated')), idle_timeout_minutes=30)
+    con = identity_connection()
+    try:
+        count = int(con.execute('SELECT COUNT(*) FROM users').fetchone()[0])
+        user = con.execute('SELECT id,username,auth_version,role FROM users WHERE id=?', (str(session.get('user_id') or ''),)).fetchone() if session.get('authenticated') else None
+        wallets = _wallet_rows_for_user(con, str(user['id'])) if user else []
+        active_id = str(session.get('wallet_id') or '')
+        active_wallet = next((row for row in wallets if str(row['id']) == active_id), None)
+        legacy = _legacy_auth_record() if count == 0 else None
+        last_activity = float(session.get('last_activity') or 0)
+        within_idle_limit = last_activity > 0 and (time.time() - last_activity) <= IDLE_TIMEOUT_SECONDS
+        authenticated = bool(user and active_wallet and int(user['auth_version']) == int(session.get('auth_version') or 0) and session.get('boot_id') == BOOT_ID and within_idle_limit)
+        if session.get('authenticated') and not authenticated:
+            session.clear()
+        return jsonify(
+            configured=count > 0, enabled=count > 0, authenticated=authenticated,
+            setup_required=count == 0,
+            legacy_pin_required=bool(legacy and legacy['enabled'] and legacy['pin_hash']),
+            username=str(user['username']) if authenticated else '',
+            role=str(user['role'] or 'user') if authenticated else '',
+            wallets=[{'id':str(row['id']),'name':str(row['name']),'is_default':bool(row['is_default'])} for row in wallets] if authenticated else [],
+            active_wallet_id=str(active_wallet['id']) if active_wallet and authenticated else '',
+            max_wallets=3, idle_timeout_minutes=30
+        )
+    finally:
+        con.close()
 
 
 @app.route('/api/auth/setup', methods=['POST'])
 def auth_setup():
     payload = request.get_json(silent=True) or {}
-    pin = str(payload.get('pin') or '')
-    confirm = str(payload.get('confirm') or '')
-    existing = auth_record()
-    if existing is not None and existing['pin_hash'] and existing['enabled']:
-        return jsonify(ok=False, error='O PIN já está ativo. Use a opção de alteração.'), 409
-    if not re.fullmatch(r'\d{6,12}', pin) or pin != confirm:
-        return jsonify(ok=False, error='Use um PIN de 6 a 12 números e confirme corretamente.'), 400
-    salt = secrets.token_bytes(16).hex()
-    digest = pin_digest(pin, salt)
-    con = sqlite3.connect(TOKEN_DB_PATH, timeout=15)
+    username, username_error = _validate_username(payload.get('username'))
+    valid_pin, pin_error = _validate_pin_pair(payload.get('pin'), payload.get('confirm'))
+    if username_error:
+        return jsonify(ok=False, error=username_error), 400
+    if not valid_pin:
+        return jsonify(ok=False, error=pin_error), 400
+    # Protect the one-time legacy PIN migration from unlimited guesses.
+    gate = identity_connection()
     try:
-        if existing is None:
-            con.execute('INSERT INTO app_auth(id,pin_salt,pin_hash,updated_at,enabled) VALUES(1,?,?,?,1)', (salt, digest, datetime.now(TZ).isoformat()))
-        else:
-            con.execute('UPDATE app_auth SET pin_salt=?,pin_hash=?,updated_at=?,enabled=1,failed_attempts=0,locked_until=0 WHERE id=1', (salt, digest, datetime.now(TZ).isoformat()))
-        con.commit()
-    except sqlite3.IntegrityError:
-        return jsonify(ok=False, error='O PIN já foi configurado.'), 409
+        gate.execute('BEGIN IMMEDIATE')
+        if gate.execute('SELECT 1 FROM users LIMIT 1').fetchone():
+            return jsonify(ok=False, error='A configuração inicial já foi concluída.'), 409
+        # Use a fixed setup bucket so changing the proposed username cannot reset the legacy PIN throttle.
+        username_norm = '__legacy_setup__'
+        lock_response = _identity_lock_response(gate, username_norm)
+        if lock_response:
+            return lock_response
+        if not _legacy_pin_is_valid(payload.get('legacy_pin')):
+            locked_until = _identity_auth_failure(gate, username_norm)
+            if locked_until:
+                return jsonify(ok=False, error='Muitas tentativas. Proteção temporariamente bloqueada por 5 minutos.'), 429
+            return jsonify(ok=False, error='O PIN anterior da instalação não confere. Os dados existentes foram preservados.'), 401
+        _identity_auth_reset(gate, username_norm)
+        gate.commit()
     finally:
-        con.close()
-    session.clear(); session['authenticated'] = True; session['boot_id'] = BOOT_ID; session['last_activity'] = time.time(); session.permanent = True
-    return jsonify(ok=True)
+        gate.close()
+    try:
+        user_id, wallet_id = _create_user_account(username, str(payload['pin']), legacy=True)
+    except sqlite3.IntegrityError:
+        return jsonify(ok=False, error='Esse nome de usuário já está em uso.'), 409
+    except ValueError as exc:
+        return jsonify(ok=False, error=str(exc)), 409
+    _start_authenticated_session(user_id, wallet_id, 1)
+    return jsonify(ok=True, username=username, wallet_id=wallet_id)
 
 
-@app.route('/api/auth/disable', methods=['POST'])
-def auth_disable():
+@app.route('/api/auth/register', methods=['POST'])
+def auth_register():
+    """Create an isolated account only from an authenticated session."""
     payload = request.get_json(silent=True) or {}
-    con = sqlite3.connect(TOKEN_DB_PATH, timeout=15)
-    con.row_factory = sqlite3.Row
+    username, username_error = _validate_username(payload.get('username'))
+    valid_pin, pin_error = _validate_pin_pair(payload.get('pin'), payload.get('confirm'))
+    if username_error:
+        return jsonify(ok=False, error=username_error), 400
+    if not valid_pin:
+        return jsonify(ok=False, error=pin_error), 400
+    current_pin = str(payload.get('current_pin') or '')
+    creator_id = str(session.get('user_id') or '')
+    con = identity_connection()
     try:
         con.execute('BEGIN IMMEDIATE')
-        row = con.execute('SELECT * FROM app_auth WHERE id=1').fetchone()
-        if row and row['pin_hash']:
-            lock_response = _auth_lock_response(row, con=con)
-            if lock_response:
-                return lock_response
-            current = str(payload.get('pin') or '')
-            candidate = pin_digest(current, row['pin_salt']) if re.fullmatch(r"\d{6,12}", current) else ''
-            if not hmac.compare_digest(candidate, row['pin_hash']):
-                locked_until = _auth_failure(con, row)
-                if locked_until:
-                    return jsonify(ok=False, error='Muitas tentativas. Proteção temporariamente bloqueada por 5 minutos.'), 429
-                return jsonify(ok=False, error='PIN incorreto. Não foi possível desativar a proteção.'), 401
-            _auth_reset_client(con)
-            con.execute('UPDATE app_auth SET enabled=0,failed_attempts=0,locked_until=0,updated_at=? WHERE id=1',
-                        (datetime.now(TZ).isoformat(),))
-            con.commit()
-        else:
-            con.execute("INSERT OR REPLACE INTO app_auth(id,pin_salt,pin_hash,failed_attempts,locked_until,updated_at,enabled) VALUES(1,'','',0,0,?,0)",
-                        (datetime.now(TZ).isoformat(),))
-            con.commit()
+        creator = con.execute('SELECT pin_salt,pin_hash,username_norm,role FROM users WHERE id=?', (creator_id,)).fetchone()
+        if not creator or str(creator['role'] or 'user') != 'admin':
+            return jsonify(ok=False, error='Somente o administrador da instalação pode criar usuários.'), 403
+        pin_response = _confirm_identity_pin(
+            con, str(creator['username_norm']), creator['pin_salt'], creator['pin_hash'], current_pin,
+            'Confirme a criação de usuário com seu PIN atual.'
+        )
+        if pin_response:
+            return pin_response
+        con.commit()
     finally:
         con.close()
-    if not session.get('authenticated'):
-        session.clear()
-    return jsonify(ok=True)
+    user_id = None
+    wallet_id = None
+    context = None
+    try:
+        user_id, wallet_id = _create_additional_user(username, str(payload['pin']))
+    except sqlite3.IntegrityError:
+        return jsonify(ok=False, error='Esse nome de usuário já está em uso.'), 409
+    except PermissionError as exc:
+        return jsonify(ok=False, error=str(exc)), 429
+    try:
+        context = _wallet_context_for_ids(user_id, wallet_id)
+        if not context:
+            raise RuntimeError('A carteira inicial do novo usuário não foi encontrada no registro.')
+        _initialize_wallet_storage(context)
+    except Exception:
+        app.logger.exception('Falha ao criar a carteira inicial do novo usuário.')
+        cleanup = identity_connection()
+        try:
+            cleanup.execute('DELETE FROM users WHERE id=?', (user_id,))
+            cleanup.commit()
+        finally:
+            cleanup.close()
+        if context:
+            shutil.rmtree(context['wallet_dir'], ignore_errors=True)
+        return jsonify(ok=False, error='Não foi possível preparar os dados do novo usuário.'), 500
+    return jsonify(ok=True, username=username, wallet_id=wallet_id,
+                   message='Usuário criado com uma carteira Padrão vazia e sem conexões Pluggy.')
 
 
 @app.route('/api/auth/login', methods=['POST'])
 def auth_login():
     payload = request.get_json(silent=True) or {}
+    username, username_error = _validate_username(payload.get('username'))
+    if username_error:
+        return jsonify(ok=False, error='Informe um nome de usuário válido.'), 400
+    username_norm = _username_normalized(username)
     pin = str(payload.get('pin') or '')
-    con = sqlite3.connect(TOKEN_DB_PATH, timeout=15)
-    con.row_factory = sqlite3.Row
+    pin_shape_valid = bool(re.fullmatch(r'\d{6,12}', pin))
+    # Compute one PBKDF2 hash even for unknown usernames to reduce timing-based
+    # account enumeration. The dummy salt/hash are process-local and never stored.
+    con = identity_connection()
     try:
         con.execute('BEGIN IMMEDIATE')
-        row = con.execute('SELECT * FROM app_auth WHERE id=1').fetchone()
-        if not row:
-            return jsonify(ok=False, setup_required=True, error='Configure seu PIN de acesso.'), 409
-        now = time.time()
-        lock_response = _auth_lock_response(row, now, con)
+        if not con.execute('SELECT 1 FROM users LIMIT 1').fetchone():
+            return jsonify(ok=False, setup_required=True, error='Configure o primeiro usuário da instalação.'), 409
+        lock_response = _identity_lock_response(con, username_norm)
         if lock_response:
             return lock_response
-        candidate = pin_digest(pin, row['pin_salt']) if re.fullmatch(r'\d{6,12}', pin) else ''
-        if not hmac.compare_digest(candidate, row['pin_hash']):
-            lock_until = _auth_failure(con, row, now)
-            if lock_until:
+        row = con.execute('SELECT id,username,pin_salt,pin_hash,auth_version,last_wallet_id FROM users WHERE username_norm=?', (username_norm,)).fetchone()
+        candidate = pin_digest(pin if pin_shape_valid else '000000', row['pin_salt'] if row else _DUMMY_AUTH_SALT)
+        expected_hash = str(row['pin_hash']) if row else _DUMMY_AUTH_HASH
+        valid_login = bool(row and pin_shape_valid and hmac.compare_digest(candidate, expected_hash))
+        if not valid_login:
+            locked_until = _identity_auth_failure(con, username_norm)
+            if locked_until:
                 return jsonify(ok=False, error='Muitas tentativas. Proteção temporariamente bloqueada por 5 minutos.'), 429
-            return jsonify(ok=False, error='PIN incorreto.'), 401
-        _auth_reset_client(con)
-        con.execute('UPDATE app_auth SET failed_attempts=0,locked_until=0 WHERE id=1')
+            return jsonify(ok=False, error='Usuário ou PIN incorretos.'), 401
+        _identity_auth_reset(con, username_norm)
+        wallets = _wallet_rows_for_user(con, str(row['id']))
+        if not wallets:
+            return jsonify(ok=False, error='A conta não possui uma carteira inicial. Contate o administrador.'), 409
+        selected_wallet = next((wallet for wallet in wallets if str(wallet['id']) == str(row['last_wallet_id'] or '')), None)
+        if selected_wallet is None:
+            selected_wallet = next((wallet for wallet in wallets if wallet['is_default']), wallets[0])
         con.commit()
+        user_id, wallet_id, auth_version = str(row['id']), str(selected_wallet['id']), int(row['auth_version'])
     finally:
         con.close()
-    session.clear(); session['authenticated'] = True; session['boot_id'] = BOOT_ID; session['last_activity'] = time.time(); session.permanent = True
-    return jsonify(ok=True)
+    _start_authenticated_session(user_id, wallet_id, auth_version)
+    return jsonify(ok=True, username=str(row['username']))
 
 
 @app.route('/api/auth/logout', methods=['POST'])
@@ -1765,35 +2426,175 @@ def auth_logout():
     return jsonify(ok=True)
 
 
+@app.route('/api/auth/disable', methods=['POST'])
+def auth_disable():
+    return jsonify(ok=False, error='A autenticação por usuário e PIN é obrigatória e não pode ser desativada.'), 410
+
+
 @app.route('/api/auth/change-pin', methods=['POST'])
 def auth_change_pin():
     payload = request.get_json(silent=True) or {}
     current, new_pin = str(payload.get('current') or ''), str(payload.get('new') or '')
-    con = sqlite3.connect(TOKEN_DB_PATH, timeout=15); con.row_factory = sqlite3.Row
+    confirm_pin = str(payload.get('confirm') or '')
+    if new_pin != confirm_pin:
+        return jsonify(ok=False, error='A confirmação não corresponde ao novo PIN.'), 400
+    user_id = str(session.get('user_id') or '')
+    con = identity_connection()
     try:
         con.execute('BEGIN IMMEDIATE')
-        row = con.execute('SELECT * FROM app_auth WHERE id=1').fetchone()
+        row = con.execute('SELECT * FROM users WHERE id=?', (user_id,)).fetchone()
         if not row:
-            return jsonify(ok=False, error='PIN não configurado.'), 409
-        lock_response = _auth_lock_response(row, con=con)
-        if lock_response:
-            return lock_response
-        candidate = pin_digest(current, row['pin_salt']) if re.fullmatch(r'\d{6,12}', current) else ''
-        if not hmac.compare_digest(candidate, row['pin_hash']):
-            locked_until = _auth_failure(con, row)
-            if locked_until:
-                return jsonify(ok=False, error='Muitas tentativas. Proteção temporariamente bloqueada por 5 minutos.'), 429
-            return jsonify(ok=False, error='PIN atual incorreto.'), 401
+            return jsonify(ok=False, error='Usuário não encontrado.'), 404
+        pin_response = _confirm_identity_pin(
+            con, str(row['username_norm']), row['pin_salt'], row['pin_hash'], current,
+            'PIN atual incorreto.'
+        )
+        if pin_response:
+            return pin_response
         if not re.fullmatch(r'\d{6,12}', new_pin):
             return jsonify(ok=False, error='O novo PIN deve ter de 6 a 12 números.'), 400
-        _auth_reset_client(con)
         salt = secrets.token_bytes(16).hex()
-        con.execute('UPDATE app_auth SET pin_salt=?,pin_hash=?,failed_attempts=0,locked_until=0,updated_at=? WHERE id=1',
-                    (salt, pin_digest(new_pin, salt), datetime.now(TZ).isoformat()))
+        new_version = int(row['auth_version']) + 1
+        con.execute('UPDATE users SET pin_salt=?,pin_hash=?,auth_version=?,updated_at=? WHERE id=?',
+                    (salt, pin_digest(new_pin, salt), new_version, datetime.now(TZ).isoformat(timespec='seconds'), user_id))
         con.commit()
     finally:
         con.close()
+    session['auth_version'] = new_version
+    session['boot_id'] = BOOT_ID
+    session['last_activity'] = time.time()
     return jsonify(ok=True)
+
+
+@app.route('/api/auth/change-username', methods=['POST'])
+def auth_change_username():
+    payload = request.get_json(silent=True) or {}
+    username, error = _validate_username(payload.get('username'))
+    if error:
+        return jsonify(ok=False, error=error), 400
+    current_pin = str(payload.get('current_pin') or '')
+    user_id = str(session.get('user_id') or '')
+    con = identity_connection()
+    try:
+        con.execute('BEGIN IMMEDIATE')
+        row = con.execute('SELECT * FROM users WHERE id=?', (user_id,)).fetchone()
+        if not row:
+            return jsonify(ok=False, error='Usuário não encontrado.'), 404
+        pin_response = _confirm_identity_pin(
+            con, str(row['username_norm']), row['pin_salt'], row['pin_hash'], current_pin,
+            'PIN atual incorreto.'
+        )
+        if pin_response:
+            return pin_response
+        new_version = int(row['auth_version']) + 1
+        con.execute('UPDATE users SET username=?,username_norm=?,auth_version=?,updated_at=? WHERE id=?',
+                    (username, _username_normalized(username), new_version, datetime.now(TZ).isoformat(timespec='seconds'), user_id))
+        con.commit()
+    except sqlite3.IntegrityError:
+        return jsonify(ok=False, error='Esse nome de usuário já está em uso.'), 409
+    finally:
+        con.close()
+    session['auth_version'] = new_version
+    session['boot_id'] = BOOT_ID
+    session['last_activity'] = time.time()
+    return jsonify(ok=True, username=username)
+
+
+@app.route('/api/wallets', methods=['GET', 'POST'])
+def wallets_collection():
+    user_id = str(session.get('user_id') or '')
+    if request.method == 'GET':
+        con = identity_connection()
+        try:
+            wallets = _wallet_rows_for_user(con, user_id)
+            return jsonify(wallets=[{'id':str(row['id']),'name':str(row['name']),'is_default':bool(row['is_default'])} for row in wallets],
+                           active_wallet_id=str(session.get('wallet_id') or ''), max_wallets=3)
+        finally:
+            con.close()
+    payload = request.get_json(silent=True) or {}
+    name = unicodedata.normalize('NFKC', str(payload.get('name') or '')).strip()
+    if not name or len(name) > 32 or any(ord(ch) < 32 for ch in name):
+        return jsonify(ok=False, error='Informe um nome de carteira com até 32 caracteres.'), 400
+    wallet_id = str(uuid.uuid4())
+    con = identity_connection()
+    try:
+        con.execute('BEGIN IMMEDIATE')
+        count = int(con.execute('SELECT COUNT(*) FROM wallets WHERE user_id=?', (user_id,)).fetchone()[0])
+        if count >= 3:
+            return jsonify(ok=False, error='Cada usuário pode ter no máximo 3 carteiras.'), 409
+        owner_row = con.execute('SELECT last_wallet_id FROM users WHERE id=?', (user_id,)).fetchone()
+        previous_last_wallet_id = str(owner_row['last_wallet_id'] or '') if owner_row else str(session.get('wallet_id') or '')
+        now_text = datetime.now(TZ).isoformat(timespec='seconds')
+        con.execute(
+            'INSERT INTO wallets(id,user_id,name,name_norm,storage_key,is_default,created_at,updated_at) VALUES(?,?,?,?,?,0,?,?)',
+            (wallet_id, user_id, name, _username_normalized(name), wallet_id, now_text, now_text)
+        )
+        con.execute('UPDATE users SET last_wallet_id=? WHERE id=?', (wallet_id, user_id))
+        con.commit()
+    except sqlite3.IntegrityError:
+        return jsonify(ok=False, error='Você já possui uma carteira com esse nome.'), 409
+    finally:
+        con.close()
+    context = _wallet_context_for_ids(user_id, wallet_id)
+    try:
+        if not context:
+            raise RuntimeError('A carteira criada não foi encontrada no registro.')
+        _initialize_wallet_storage(context)
+    except Exception:
+        app.logger.exception('Falha ao inicializar a nova carteira %s.', wallet_id)
+        con = identity_connection()
+        try:
+            con.execute('BEGIN IMMEDIATE')
+            con.execute('DELETE FROM wallets WHERE id=? AND user_id=?', (wallet_id,user_id))
+            con.execute('UPDATE users SET last_wallet_id=? WHERE id=? AND last_wallet_id=?',
+                        (previous_last_wallet_id, user_id, wallet_id))
+            con.commit()
+        finally:
+            con.close()
+        if context:
+            shutil.rmtree(context['wallet_dir'], ignore_errors=True)
+        return jsonify(ok=False, error='Não foi possível inicializar a carteira. Nenhum dado foi alterado na carteira atual.'), 500
+    session['wallet_id'] = wallet_id
+    return jsonify(ok=True, wallet={'id':wallet_id,'name':name}, active_wallet_id=wallet_id)
+
+
+@app.route('/api/wallets/<wallet_id>/rename', methods=['PUT'])
+def wallet_rename(wallet_id):
+    payload = request.get_json(silent=True) or {}
+    name = unicodedata.normalize('NFKC', str(payload.get('name') or '')).strip()
+    if not name or len(name) > 32 or any(ord(ch) < 32 for ch in name):
+        return jsonify(ok=False, error='Informe um nome de carteira com até 32 caracteres.'), 400
+    con = identity_connection()
+    try:
+        con.execute('BEGIN IMMEDIATE')
+        wallet = con.execute('SELECT id FROM wallets WHERE id=? AND user_id=?', (wallet_id, str(session.get('user_id') or ''))).fetchone()
+        if not wallet:
+            return jsonify(ok=False, error='Carteira não encontrada.'), 404
+        con.execute('UPDATE wallets SET name=?,name_norm=?,updated_at=? WHERE id=? AND user_id=?',
+                    (name, _username_normalized(name), datetime.now(TZ).isoformat(timespec='seconds'), wallet_id, str(session.get('user_id') or '')))
+        con.commit()
+    except sqlite3.IntegrityError:
+        return jsonify(ok=False, error='Você já possui uma carteira com esse nome.'), 409
+    finally:
+        con.close()
+    return jsonify(ok=True, name=name)
+
+
+@app.route('/api/wallets/<wallet_id>/select', methods=['POST'])
+def wallet_select(wallet_id):
+    con = identity_connection()
+    try:
+        user_id = str(session.get('user_id') or '')
+        wallet = con.execute('SELECT id FROM wallets WHERE id=? AND user_id=?', (wallet_id, user_id)).fetchone()
+        if not wallet:
+            return jsonify(ok=False, error='Carteira não encontrada ou não pertence a este usuário.'), 404
+        con.execute('UPDATE users SET last_wallet_id=?,updated_at=? WHERE id=?', (wallet_id, datetime.now(TZ).isoformat(timespec='seconds'), user_id))
+        con.commit()
+    finally:
+        con.close()
+    session['wallet_id'] = wallet_id
+    return jsonify(ok=True, active_wallet_id=wallet_id)
+
 
 API_PROVIDERS = {
     'pluggy': {'name':'Pluggy', 'category':'Open Finance · contas e investimentos', 'description':'Integração principal para conectar bancos e corretoras via Open Finance. Contas, posições e transações dependem dos produtos e dados disponibilizados por cada instituição.', 'auth':True, 'credential_type':'client_id_secret', 'url':'https://dashboard.pluggy.ai/', 'docs':'https://docs.pluggy.ai/'},
@@ -1818,6 +2619,10 @@ def _api_fernet():
         fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, 'wb') as handle:
             handle.write(key)
+    try:
+        os.chmod(key_path, 0o600)
+    except OSError:
+        app.logger.warning('Não foi possível restringir as permissões da chave de criptografia das APIs.')
     with open(key_path, 'rb') as handle:
         return Fernet(handle.read().strip())
 
@@ -1940,8 +2745,8 @@ def _pluggy_apply_retry_cooldown(response):
 def _pluggy_api_key(force=False):
     with PLUGGY_AUTH_LOCK:
         now = time.time()
-        if not force and PLUGGY_AUTH_CACHE.get('api_key') and PLUGGY_AUTH_CACHE.get('expires_at', 0) > now + 60:
-            return PLUGGY_AUTH_CACHE['api_key']
+        if not force and _pluggy_auth_cache().get('api_key') and _pluggy_auth_cache().get('expires_at', 0) > now + 60:
+            return _pluggy_auth_cache()['api_key']
         credentials = _get_pluggy_credentials()
         if not credentials.get('client_id') or not credentials.get('client_secret'):
             raise ValueError('Cadastre Client ID e Client Secret da Pluggy.')
@@ -1965,7 +2770,7 @@ def _pluggy_api_key(force=False):
         api_key = str((response.json() or {}).get('apiKey') or '')
         if not api_key:
             raise ValueError('A Pluggy não retornou uma API Key.')
-        PLUGGY_AUTH_CACHE.update(api_key=api_key, expires_at=now + 6900)
+        _pluggy_auth_cache().update(api_key=api_key, expires_at=now + 6900)
         return api_key
 
 
@@ -2092,13 +2897,14 @@ def _refine_pluggy_asset_type(investment):
     if not ticker:
         return kind
     now = time.time()
-    cached = _ASSET_CLASS_CACHE.get(ticker)
+    cache_id = (active_scope_key(), ticker)
+    cached = _ASSET_CLASS_CACHE.get(cache_id)
     if cached and now - cached[0] < _ASSET_CLASS_CACHE_TTL:
         return cached[1]
     cache_key = 'pluggy_asset_class:' + ticker
     saved = db().execute('SELECT valor FROM integracao_estado WHERE chave=?', (cache_key,)).fetchone()
     if saved and saved['valor']:
-        _ASSET_CLASS_CACHE[ticker] = (now, saved['valor'])
+        _ASSET_CLASS_CACHE[cache_id] = (now, saved['valor'])
         return saved['valor']
     token = _brapi_token()
     headers = {'Authorization': f'Bearer {token}'} if token else {}
@@ -2120,7 +2926,7 @@ def _refine_pluggy_asset_type(investment):
             elif market_type == 'stock': resolved = 'acao'
     except (requests.RequestException, ValueError, TypeError, AttributeError):
         pass
-    _ASSET_CLASS_CACHE[ticker] = (now, resolved)
+    _ASSET_CLASS_CACHE[cache_id] = (now, resolved)
     db().execute('INSERT INTO integracao_estado(chave,valor) VALUES(?,?) ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor',
                  (cache_key, resolved))
     return resolved
@@ -2630,8 +3436,8 @@ def pluggy_clear_item_data(item_id):
         con.execute('UPDATE pluggy_items SET last_synced_at=?,updated_at=? WHERE item_id=?',
                     ('', datetime.now(TZ).isoformat(timespec='seconds'), item_id))
         con.commit()
-        CACHE.clear(); PORTFOLIO_HISTORY_CACHE.clear()
-        PROVENTOS_SYNC_CACHE.update(time=0, result=None, signature=None)
+        CACHE.clear(); _portfolio_history_cache().clear()
+        _proventos_sync_cache().update(time=0, result=None, signature=None)
         return jsonify(ok=True, connection=item['label'], deleted={**deleted,
                        'operacoes':len(operation_ids),'proventos':deleted_proventos,
                        'eventos':len(event_rows)})
@@ -2830,43 +3636,46 @@ PLUGGY_SCHEDULER_STOP = threading.Event()
 
 
 def pluggy_server_scheduler_loop():
-    """Run automatic Pluggy sync on the server; browser state is irrelevant."""
-    # Avoid racing module initialization, DB migrations, and Gunicorn startup.
+    """Run automatic Pluggy sync independently for every user's wallets."""
     if PLUGGY_SCHEDULER_STOP.wait(60):
         return
     while not PLUGGY_SCHEDULER_STOP.is_set():
-        try:
-            with app.app_context():
-                active_count = db().execute('SELECT COUNT(*) FROM pluggy_items WHERE active=1').fetchone()[0]
-                interval = _pluggy_sync_interval()
-                retry_row = db().execute("SELECT value FROM app_settings WHERE key='pluggy_scheduler_retry_at'").fetchone()
-                retry_at = None
-                if retry_row and retry_row['value']:
-                    try:
-                        retry_at = datetime.fromisoformat(str(retry_row['value']))
-                        if retry_at.tzinfo is None:
-                            retry_at = retry_at.replace(tzinfo=TZ)
-                    except (TypeError, ValueError):
-                        retry_at = None
-                retry_blocked = bool(retry_at and (datetime.now(TZ) - retry_at).total_seconds() < 300)
-            if active_count and interval > 0 and not retry_blocked:
-                with app.test_request_context('/api/pluggy/sync', method='POST', json={}):
-                    result = pluggy_sync()
-                    status = result[1] if isinstance(result, tuple) and len(result) > 1 else getattr(result, 'status_code', 200)
+        for wallet_context in _all_wallet_contexts():
+            context_token = ACTIVE_WALLET_CONTEXT.set(wallet_context)
+            try:
                 with app.app_context():
-                    if status == 409:
-                        # A requisição manual ou outro ciclo do agendador já está executando.
-                        # Não é falha da integração e não deve impor um backoff de cinco minutos.
-                        app.logger.info('Agendador Pluggy ignorou o ciclo porque já existe uma sincronização em andamento.')
-                    elif status >= 400:
-                        db().execute("INSERT INTO app_settings(key,value) VALUES('pluggy_scheduler_retry_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (datetime.now(TZ).isoformat(timespec='seconds'),))
-                        db().commit()
-                        app.logger.warning('Agendador Pluggy não concluiu a execução (HTTP %s); nova tentativa em 5 minutos.', status)
-                    else:
-                        db().execute("DELETE FROM app_settings WHERE key='pluggy_scheduler_retry_at'")
-                        db().commit()
-        except Exception:
-            app.logger.exception('Falha no agendador Pluggy')
+                    active_count = db().execute('SELECT COUNT(*) FROM pluggy_items WHERE active=1').fetchone()[0]
+                    interval = _pluggy_sync_interval()
+                    retry_row = db().execute("SELECT value FROM app_settings WHERE key='pluggy_scheduler_retry_at'").fetchone()
+                    retry_at = None
+                    if retry_row and retry_row['value']:
+                        try:
+                            retry_at = datetime.fromisoformat(str(retry_row['value']))
+                            if retry_at.tzinfo is None:
+                                retry_at = retry_at.replace(tzinfo=TZ)
+                        except (TypeError, ValueError):
+                            retry_at = None
+                    retry_blocked = bool(retry_at and (datetime.now(TZ) - retry_at).total_seconds() < 300)
+                if active_count and interval > 0 and not retry_blocked:
+                    with app.test_request_context('/api/pluggy/sync', method='POST', json={}):
+                        result = pluggy_sync()
+                        status = result[1] if isinstance(result, tuple) and len(result) > 1 else getattr(result, 'status_code', 200)
+                    with app.app_context():
+                        if status == 409:
+                            app.logger.info('Agendador Pluggy ignorou o ciclo porque já existe uma sincronização em andamento.')
+                        elif status >= 400:
+                            db().execute("INSERT INTO app_settings(key,value) VALUES('pluggy_scheduler_retry_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (datetime.now(TZ).isoformat(timespec='seconds'),))
+                            db().commit()
+                            app.logger.warning('Agendador Pluggy não concluiu a execução (HTTP %s); nova tentativa em 5 minutos.', status)
+                        else:
+                            db().execute("DELETE FROM app_settings WHERE key='pluggy_scheduler_retry_at'")
+                            db().commit()
+            except Exception:
+                app.logger.exception('Falha no agendador Pluggy para uma carteira isolada')
+            finally:
+                ACTIVE_WALLET_CONTEXT.reset(context_token)
+            if PLUGGY_SCHEDULER_STOP.is_set():
+                break
         PLUGGY_SCHEDULER_STOP.wait(60)
 
 
@@ -2903,9 +3712,9 @@ def api_integrations_save(provider):
         return jsonify({'error':'Este provedor não aceita token nesta tela.'}), 400
     if request.method == 'DELETE':
         token_db().execute('DELETE FROM api_credentials WHERE provider=?', (provider,)); token_db().commit()
-        if provider == 'pluggy': PLUGGY_AUTH_CACHE.update(api_key='', expires_at=0)
+        if provider == 'pluggy': _pluggy_auth_cache().update(api_key='', expires_at=0)
         if provider in ('brapi','hgbrasil','dadosb3','fred'):
-            CACHE.clear(); PORTFOLIO_HISTORY_CACHE.clear(); BENCHMARK_CACHE.clear(); PROVENTOS_SYNC_CACHE.update(time=0, result=None, signature=None)
+            CACHE.clear(); _portfolio_history_cache().clear(); BENCHMARK_CACHE.clear(); _proventos_sync_cache().update(time=0, result=None, signature=None)
         return jsonify({'ok':True})
     payload = request.get_json(silent=True) or {}
     if 'enabled' in payload and not any(k in payload for k in ('token','client_id','client_secret')):
@@ -2914,9 +3723,9 @@ def api_integrations_save(provider):
                      (enabled, datetime.now(TZ).isoformat(timespec='seconds'), provider))
         token_db().commit()
         if provider == 'pluggy' and not enabled:
-            PLUGGY_AUTH_CACHE.update(api_key='', expires_at=0)
+            _pluggy_auth_cache().update(api_key='', expires_at=0)
         if provider in ('brapi','hgbrasil','dadosb3','fred'):
-            CACHE.clear(); PORTFOLIO_HISTORY_CACHE.clear(); BENCHMARK_CACHE.clear(); PROVENTOS_SYNC_CACHE.update(time=0, result=None, signature=None)
+            CACHE.clear(); _portfolio_history_cache().clear(); BENCHMARK_CACHE.clear(); _proventos_sync_cache().update(time=0, result=None, signature=None)
         return jsonify({'ok':True,'enabled':bool(enabled),'configured':bool(token_db().execute('SELECT 1 FROM api_credentials WHERE provider=?',(provider,)).fetchone())})
     if provider == 'pluggy':
         client_id = str(payload.get('client_id') or '').strip()
@@ -2927,7 +3736,7 @@ def api_integrations_save(provider):
         encrypted = _api_fernet().encrypt(packed.encode()).decode()
         token_db().execute('INSERT INTO api_credentials(provider,token_encrypted,enabled,updated_at) VALUES(?,?,?,?) ON CONFLICT(provider) DO UPDATE SET token_encrypted=excluded.token_encrypted,enabled=excluded.enabled,updated_at=excluded.updated_at', ('pluggy',encrypted,1,datetime.now(TZ).isoformat(timespec='seconds')))
         token_db().commit()
-        PLUGGY_AUTH_CACHE.update(api_key='', expires_at=0)
+        _pluggy_auth_cache().update(api_key='', expires_at=0)
         return jsonify({'ok':True,'configured':True})
     token = str(payload.get('token') or '').strip()
     enabled = bool(payload.get('enabled', True))
@@ -2938,7 +3747,7 @@ def api_integrations_save(provider):
         token_db().execute('UPDATE api_credentials SET enabled=?,updated_at=? WHERE provider=?', (1 if enabled else 0,datetime.now(TZ).isoformat(timespec='seconds'),provider))
     token_db().commit()
     if provider in ('brapi','hgbrasil','dadosb3','fred'):
-        CACHE.clear(); PORTFOLIO_HISTORY_CACHE.clear(); BENCHMARK_CACHE.clear(); PROVENTOS_SYNC_CACHE.update(time=0, result=None, signature=None)
+        CACHE.clear(); _portfolio_history_cache().clear(); BENCHMARK_CACHE.clear(); _proventos_sync_cache().update(time=0, result=None, signature=None)
     return jsonify({'ok':True,'configured':bool(_get_api_token(provider))})
 
 
@@ -4222,19 +5031,23 @@ def process_due_operations():
 
 
 def scheduler_loop():
-    # Promove operações agendadas automaticamente quando chega o horário previsto.
+    # Promove operações agendadas separadamente em cada carteira isolada.
     while True:
-        try:
-            with app.app_context():
-                _promote_due_operations(db())
-        except sqlite3.OperationalError as exc:
-            message = str(exc).lower()
-            if 'locked' in message or 'busy' in message:
-                app.logger.warning('Agendador de operações aguardando liberação do SQLite: %s', exc)
-            else:
+        for wallet_context in _all_wallet_contexts():
+            context_token = ACTIVE_WALLET_CONTEXT.set(wallet_context)
+            try:
+                with app.app_context():
+                    _promote_due_operations(db())
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if 'locked' in message or 'busy' in message:
+                    app.logger.warning('Agendador de operações aguardando liberação do SQLite: %s', exc)
+                else:
+                    app.logger.exception('Falha no agendador de operações')
+            except Exception:
                 app.logger.exception('Falha no agendador de operações')
-        except Exception:
-            app.logger.exception('Falha no agendador de operações')
+            finally:
+                ACTIVE_WALLET_CONTEXT.reset(context_token)
         time.sleep(30)
 
 
@@ -4601,7 +5414,7 @@ def create_predelete_backup():
     folder = backup_root / f'pre-exclusao-{stamp}'
     folder.mkdir(mode=0o700)
     try:
-        for source, connection in ((Path(DB_PATH), db()), (Path(TOKEN_DB_PATH), token_db())):
+        for source, connection in ((Path(active_db_path()), db()), (Path(active_token_db_path()), token_db())):
             target = folder / source.name
             dest = sqlite3.connect(str(target), timeout=30)
             try:
@@ -4681,8 +5494,8 @@ def excluir_operacoes_em_massa():
             pluggy_removed = {'pluggy_investments': pluggy_removed.get('pluggy_investments',0),
                               'pluggy_transactions': pluggy_removed.get('pluggy_transactions',0),
                               'pluggy_events': pluggy_removed.get('pluggy_events',0)}
-            CACHE.clear(); PORTFOLIO_HISTORY_CACHE.clear()
-            PROVENTOS_SYNC_CACHE.update(time=0, result=None, signature=None)
+            CACHE.clear(); _portfolio_history_cache().clear()
+            _proventos_sync_cache().update(time=0, result=None, signature=None)
         clear_seed_snapshot_when_empty()
         con.commit()
     except Exception:
@@ -5177,7 +5990,7 @@ def _prefetch_quotes_parallel(tickers):
     if not pending:
         return
     with ThreadPoolExecutor(max_workers=min(8, len(pending))) as pool:
-        futures = [pool.submit(_cotacao_worker, symbol) for symbol in pending]
+        futures = [pool.submit(contextvars.copy_context().run, _cotacao_worker, symbol) for symbol in pending]
         for future in as_completed(futures):
             try:
                 future.result()
@@ -5214,7 +6027,7 @@ def carteira(use_cached_quotes=False, force_refresh_quotes=False):
         market_tickers = [ticker for ticker in sorted(tickers) if quote_types.get(ticker) != 'renda_fixa']
         if market_tickers:
             with ThreadPoolExecutor(max_workers=4) as quote_pool:
-                quote_jobs = [quote_pool.submit(_cotacao_worker, ticker, True) for ticker in market_tickers]
+                quote_jobs = [quote_pool.submit(contextvars.copy_context().run, _cotacao_worker, ticker, True) for ticker in market_tickers]
                 for quote_job in as_completed(quote_jobs):
                     try:
                         quote_job.result()
@@ -5814,14 +6627,14 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
         if symbol:
             types[symbol] = str(item.get('tipo') or types.get(symbol) or 'outros').lower()
     signature = tuple(sorted(types.items()))
-    if (not force and PROVENTOS_SYNC_CACHE.get('result')
-            and PROVENTOS_SYNC_CACHE.get('signature') == signature
-            and now_ts - PROVENTOS_SYNC_CACHE['time'] < PROVENTOS_SYNC_TTL):
-        return PROVENTOS_SYNC_CACHE['result']
+    if (not force and _proventos_sync_cache().get('result')
+            and _proventos_sync_cache().get('signature') == signature
+            and now_ts - _proventos_sync_cache()['time'] < PROVENTOS_SYNC_TTL):
+        return _proventos_sync_cache()['result']
 
     if not types:
         result = {'ok': True, 'importados': 0, 'ignorados': 0, 'erros': [], 'mensagem': 'Carteira sem posições: consulta de proventos pausada; os registros históricos foram preservados.'}
-        PROVENTOS_SYNC_CACHE.update(time=now_ts, result=result, signature=signature)
+        _proventos_sync_cache().update(time=now_ts, result=result, signature=signature)
         return result
 
     # O intervalo começa no primeiro registro conhecido. Quando só existe saldo-base,
@@ -5966,7 +6779,7 @@ def sync_brapi_proventos(force=False, quote_items=None, active_items=None):
         'mensagem': (f'{imported} evento(s) elegível(is) sincronizado(s).' if imported else 'Nenhum evento elegível retornado para os ativos cadastrados. Verifique token, plano e cobertura da brapi.'),
         'ultima_sincronizacao': datetime.now(TZ).isoformat(timespec='minutes')
     }
-    PROVENTOS_SYNC_CACHE.update(time=now_ts, result=result, signature=signature)
+    _proventos_sync_cache().update(time=now_ts, result=result, signature=signature)
     return result
 
 
@@ -5983,9 +6796,9 @@ def _proventos_sync_signature(quote_items=None, active_items=None):
 
 def _proventos_sync_persist_state():
     """Persist the active and pending proventos jobs before returning to HTTP."""
-    state = PROVENTOS_SYNC_STATE
+    state = _proventos_sync_state()
     current_inputs = state.get('inputs') if isinstance(state.get('inputs'), dict) else {}
-    pending = PROVENTOS_SYNC_PENDING_INPUTS if isinstance(PROVENTOS_SYNC_PENDING_INPUTS, dict) else None
+    pending = _proventos_sync_pending() if isinstance(_proventos_sync_pending(), dict) else None
     db().execute(
       'INSERT INTO proventos_sync_queue_state '
       '(id,status,signature,inputs_json,pending_signature,pending_inputs_json,result_json,error,updated_at) '
@@ -6010,8 +6823,9 @@ def _proventos_sync_persist_state():
 
 def _start_proventos_sync_worker(inputs, signature):
     """Start exactly one in-process worker after its job has been persisted."""
+    context = contextvars.copy_context()
     thread = threading.Thread(
-        target=_proventos_sync_worker, args=(inputs, signature),
+        target=lambda: context.run(_proventos_sync_worker, inputs, signature),
         name='proventos-api-sync', daemon=True
     )
     thread.start()
@@ -6020,7 +6834,6 @@ def _start_proventos_sync_worker(inputs, signature):
 
 def _proventos_sync_worker(inputs, signature):
     """Run durable queued jobs serially; unfinished jobs are recovered at startup."""
-    global PROVENTOS_SYNC_PENDING_INPUTS
     current_inputs = inputs
     current_signature = signature
     while True:
@@ -6035,22 +6848,22 @@ def _proventos_sync_worker(inputs, signature):
 
         with PROVENTOS_SYNC_LOCK:
             if error:
-                PROVENTOS_SYNC_STATE.update({
+                _proventos_sync_state().update({
                     'status': 'failed', 'signature': current_signature,
                     'inputs': current_inputs, 'result': None, 'error': error,
                     'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
                 })
             else:
-                PROVENTOS_SYNC_STATE.update({
+                _proventos_sync_state().update({
                     'status': 'completed', 'signature': current_signature,
                     'inputs': current_inputs, 'result': result or {}, 'error': '',
                     'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
                 })
 
-            pending = PROVENTOS_SYNC_PENDING_INPUTS
-            PROVENTOS_SYNC_PENDING_INPUTS = None
+            pending = _proventos_sync_pending()
+            _set_proventos_sync_pending(None)
             if not pending:
-                PROVENTOS_SYNC_STATE['pending_signature'] = ''
+                _proventos_sync_state()['pending_signature'] = ''
                 try:
                     with app.app_context():
                         _proventos_sync_persist_state()
@@ -6060,7 +6873,7 @@ def _proventos_sync_worker(inputs, signature):
 
             current_inputs = pending['inputs']
             current_signature = pending['signature']
-            PROVENTOS_SYNC_STATE.update({
+            _proventos_sync_state().update({
                 'status': 'running', 'signature': current_signature,
                 'inputs': current_inputs, 'pending_signature': '',
                 'result': None, 'error': '',
@@ -6071,15 +6884,14 @@ def _proventos_sync_worker(inputs, signature):
                     _proventos_sync_persist_state()
             except Exception:
                 # Keep the request queued in memory if SQLite is temporarily busy.
-                PROVENTOS_SYNC_PENDING_INPUTS = pending
-                PROVENTOS_SYNC_STATE['pending_signature'] = current_signature
+                _set_proventos_sync_pending(pending)
+                _proventos_sync_state()['pending_signature'] = current_signature
                 app.logger.exception('Não foi possível promover a próxima sincronização persistida.')
                 return
 
 
 def _queue_proventos_sync(force=False, quote_items=None, active_items=None):
     """Persist API proventos sync request and start/append to the durable queue."""
-    global PROVENTOS_SYNC_PENDING_INPUTS
     quote_copy = [dict(item) for item in (quote_items or []) if isinstance(item, dict)]
     active_copy = [dict(item) for item in (active_items or []) if isinstance(item, dict)]
     cache_signature = _proventos_sync_signature(quote_copy, active_copy)
@@ -6090,46 +6902,46 @@ def _queue_proventos_sync(force=False, quote_items=None, active_items=None):
     now = time.time()
 
     with PROVENTOS_SYNC_LOCK:
-        state = dict(PROVENTOS_SYNC_STATE)
+        state = dict(_proventos_sync_state())
         if state.get('status') == 'running':
             if state.get('signature') == signature:
                 return {'ok': True, 'status': 'running', 'signature': signature,
                         'mensagem': 'Sincronização de proventos em segundo plano.'}
-            if PROVENTOS_SYNC_PENDING_INPUTS and PROVENTOS_SYNC_PENDING_INPUTS.get('signature') == signature:
+            if _proventos_sync_pending() and _proventos_sync_pending().get('signature') == signature:
                 return {'ok': True, 'status': 'queued', 'signature': signature,
                         'mensagem': 'Atualização de proventos aguardando a execução atual.'}
-            PROVENTOS_SYNC_PENDING_INPUTS = {'inputs': inputs, 'signature': signature}
-            PROVENTOS_SYNC_STATE['pending_signature'] = signature
-            PROVENTOS_SYNC_STATE['updated_at'] = datetime.now(TZ).isoformat(timespec='seconds')
+            _set_proventos_sync_pending({'inputs': inputs, 'signature': signature})
+            _proventos_sync_state()['pending_signature'] = signature
+            _proventos_sync_state()['updated_at'] = datetime.now(TZ).isoformat(timespec='seconds')
             _proventos_sync_persist_state()
             return {'ok': True, 'status': 'queued', 'signature': signature,
                     'mensagem': 'Atualização de proventos enfileirada e salva para recuperação automática.'}
 
-        if (not force and PROVENTOS_SYNC_CACHE.get('result')
-                and PROVENTOS_SYNC_CACHE.get('signature') == cache_signature
-                and now - float(PROVENTOS_SYNC_CACHE.get('time') or 0) < PROVENTOS_SYNC_TTL):
-            cached_result = dict(PROVENTOS_SYNC_CACHE['result'])
-            PROVENTOS_SYNC_STATE.update({
+        if (not force and _proventos_sync_cache().get('result')
+                and _proventos_sync_cache().get('signature') == cache_signature
+                and now - float(_proventos_sync_cache().get('time') or 0) < PROVENTOS_SYNC_TTL):
+            cached_result = dict(_proventos_sync_cache()['result'])
+            _proventos_sync_state().update({
                 'status': 'completed', 'signature': signature, 'inputs': inputs,
                 'result': cached_result, 'error': '',
                 'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
             })
-            PROVENTOS_SYNC_PENDING_INPUTS = None
+            _set_proventos_sync_pending(None)
             _proventos_sync_persist_state()
             return {'ok': True, 'status': 'completed', 'signature': signature, **cached_result}
 
-        PROVENTOS_SYNC_STATE.update({
+        _proventos_sync_state().update({
             'status': 'running', 'signature': signature, 'inputs': inputs,
             'pending_signature': '', 'result': None, 'error': '',
             'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
         })
-        PROVENTOS_SYNC_PENDING_INPUTS = None
+        _set_proventos_sync_pending(None)
         # Persist before starting: an interrupted daemon job is recovered at startup.
         _proventos_sync_persist_state()
         try:
             _start_proventos_sync_worker(inputs, signature)
         except Exception as exc:
-            PROVENTOS_SYNC_STATE.update({
+            _proventos_sync_state().update({
                 'status': 'failed', 'error': safe_error_text(exc, 300),
                 'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
             })
@@ -6141,7 +6953,6 @@ def _queue_proventos_sync(force=False, quote_items=None, active_items=None):
 
 def _restore_proventos_sync_queue():
     """Resume a sync interrupted by a container or Gunicorn process restart."""
-    global PROVENTOS_SYNC_PENDING_INPUTS
     with app.app_context():
         row = db().execute('SELECT * FROM proventos_sync_queue_state WHERE id=1').fetchone()
         if not row:
@@ -6168,7 +6979,7 @@ def _restore_proventos_sync_queue():
             result = {}
 
         with PROVENTOS_SYNC_LOCK:
-            PROVENTOS_SYNC_STATE.update({
+            _proventos_sync_state().update({
                 'status': status,
                 'signature': str(record.get('signature') or ''),
                 'pending_signature': str(record.get('pending_signature') or ''),
@@ -6178,7 +6989,7 @@ def _restore_proventos_sync_queue():
                 'updated_at': str(record.get('updated_at') or ''),
             })
             pending_signature = str(record.get('pending_signature') or '')
-            PROVENTOS_SYNC_PENDING_INPUTS = (
+            _set_proventos_sync_pending(
                 {'inputs': pending_inputs, 'signature': pending_signature}
                 if pending_signature and pending_inputs else None
             )
@@ -6192,17 +7003,17 @@ def _restore_proventos_sync_queue():
                     and isinstance(current_inputs.get('active_items', []), list)
                 )
                 if not valid_inputs:
-                    PROVENTOS_SYNC_STATE.update({
+                    _proventos_sync_state().update({
                         'status': 'failed',
                         'error': 'Registro persistido da sincronização inválido; solicite uma nova sincronização.',
                         'pending_signature': '',
                         'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
                     })
-                    PROVENTOS_SYNC_PENDING_INPUTS = None
+                    _set_proventos_sync_pending(None)
                     _proventos_sync_persist_state()
                     app.logger.error('Registro persistido de sincronização de proventos inválido; recuperação automática ignorada.')
                     return False
-                PROVENTOS_SYNC_STATE.update({
+                _proventos_sync_state().update({
                     'status': 'running',
                     'updated_at': datetime.now(TZ).isoformat(timespec='seconds'),
                     'error': '',
@@ -6216,7 +7027,7 @@ def _restore_proventos_sync_queue():
 
 def _proventos_sync_status(signature=None):
     with PROVENTOS_SYNC_LOCK:
-        state = dict(PROVENTOS_SYNC_STATE)
+        state = dict(_proventos_sync_state())
         if signature and signature not in (state.get('signature'), state.get('pending_signature')):
             return {'ok': True, 'status': 'superseded', 'mensagem': 'A solicitação foi substituída por uma atualização mais recente.'}
         if signature and signature == state.get('pending_signature'):
@@ -6710,7 +7521,7 @@ def fetch_portfolio_price_history(operations, extra_positions=None):
     # depois da nova primeira operação e parecia completa por engano.
     cache_key = ('price-only-v3', coverage_start) + tuple(sorted((symbol, asset_types[symbol]) for symbol in symbols))
     now = time.time()
-    cached = PORTFOLIO_HISTORY_CACHE.get(cache_key)
+    cached = _portfolio_history_cache().get(cache_key)
     if cached:
         ttl = PORTFOLIO_HISTORY_TTL if cached.get('data') else PORTFOLIO_HISTORY_EMPTY_TTL
         if now - cached['time'] < ttl:
@@ -6770,7 +7581,7 @@ def fetch_portfolio_price_history(operations, extra_positions=None):
             response_data[symbol] = [{**point, 'fonte':'brapi · histórico legado'} for point in points]
 
     # Respostas vazias ficam em cache por apenas 2 minutos; séries válidas, por 30 minutos.
-    PORTFOLIO_HISTORY_CACHE[cache_key] = {'time': now, 'data': response_data}
+    _portfolio_history_cache()[cache_key] = {'time': now, 'data': response_data}
     return response_data
 
 def _market_cost_basis_at_date(executed, snapshot_map, base_day, cutoff, market_tickers, include_details=False):
@@ -7858,7 +8669,7 @@ def _persist_performance_history_snapshot(signature, result):
     """Atualiza só os campos históricos se o snapshot ainda for da mesma carteira."""
     try:
         with DASHBOARD_CACHE_LOCK:
-            with open(DASHBOARD_CACHE_PATH, 'r', encoding='utf-8') as handle:
+            with open(active_dashboard_cache_path(), 'r', encoding='utf-8') as handle:
                 record = json.load(handle)
             payload = record.get('payload') if isinstance(record, dict) else None
             if not isinstance(payload, dict) or payload.get('performance_history_signature') != signature:
@@ -7870,13 +8681,13 @@ def _persist_performance_history_snapshot(signature, result):
             integrity = payload.setdefault('integridade_dados', {})
             integrity['historico_precos'] = result['rentabilidade_historica'].get('fontes_historico', {})
             record['payload'] = payload
-            tmp_path = DASHBOARD_CACHE_PATH + '.tmp'
+            tmp_path = active_dashboard_cache_path() + '.tmp'
             with open(tmp_path, 'w', encoding='utf-8') as handle:
                 json.dump(record, handle, ensure_ascii=False, separators=(',', ':'))
                 handle.flush()
                 os.fsync(handle.fileno())
             os.chmod(tmp_path, 0o600)
-            os.replace(tmp_path, DASHBOARD_CACHE_PATH)
+            os.replace(tmp_path, active_dashboard_cache_path())
             return True
     except (OSError, ValueError, TypeError, json.JSONDecodeError, sqlite3.Error) as exc:
         app.logger.warning('Não foi possível atualizar o cache com o histórico patrimonial: %s', exc)
@@ -7884,7 +8695,6 @@ def _persist_performance_history_snapshot(signature, result):
 
 
 def _performance_history_worker(initial_inputs, initial_signature):
-    global PERFORMANCE_HISTORY_PENDING_INPUTS
     inputs, signature = initial_inputs, initial_signature
     while inputs is not None:
         result = None
@@ -7898,23 +8708,23 @@ def _performance_history_worker(initial_inputs, initial_signature):
             app.logger.exception('Falha ao reconstruir histórico patrimonial em segundo plano')
 
         with PERFORMANCE_HISTORY_LOCK:
-            if PERFORMANCE_HISTORY_PENDING_INPUTS is not None:
-                inputs = PERFORMANCE_HISTORY_PENDING_INPUTS
-                PERFORMANCE_HISTORY_PENDING_INPUTS = None
-                signature = PERFORMANCE_HISTORY_STATE.get('pending_signature') or _performance_history_signature(inputs)
-                PERFORMANCE_HISTORY_STATE.update({
+            if _performance_history_pending() is not None:
+                inputs = _performance_history_pending()
+                _set_performance_history_pending(None)
+                signature = _performance_history_state().get('pending_signature') or _performance_history_signature(inputs)
+                _performance_history_state().update({
                     'status': 'running', 'signature': signature,
                     'pending_signature': '', 'result': None, 'error': '', 'updated_at': ''
                 })
                 continue
             inputs = None
             if error is not None:
-                PERFORMANCE_HISTORY_STATE.update({
+                _performance_history_state().update({
                     'status': 'failed', 'result': None,
                     'error': str(error)[:500], 'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
                 })
             else:
-                PERFORMANCE_HISTORY_STATE.update({
+                _performance_history_state().update({
                     'status': 'ready', 'result': result,
                     'error': '', 'updated_at': datetime.now(TZ).isoformat(timespec='seconds')
                 })
@@ -7923,28 +8733,27 @@ def _performance_history_worker(initial_inputs, initial_signature):
 
 
 def _queue_performance_history(inputs):
-    global PERFORMANCE_HISTORY_PENDING_INPUTS
     signature = _performance_history_signature(inputs)
     with PERFORMANCE_HISTORY_LOCK:
-        status = PERFORMANCE_HISTORY_STATE.get('status')
-        current_signature = PERFORMANCE_HISTORY_STATE.get('signature')
-        pending_signature = PERFORMANCE_HISTORY_STATE.get('pending_signature')
+        status = _performance_history_state().get('status')
+        current_signature = _performance_history_state().get('signature')
+        pending_signature = _performance_history_state().get('pending_signature')
         if status == 'ready' and current_signature == signature:
             return signature
         if status == 'running':
             if current_signature == signature or pending_signature == signature:
                 return signature
-            PERFORMANCE_HISTORY_PENDING_INPUTS = inputs
-            PERFORMANCE_HISTORY_STATE['pending_signature'] = signature
+            _set_performance_history_pending(inputs)
+            _performance_history_state()['pending_signature'] = signature
             return signature
-        PERFORMANCE_HISTORY_STATE.update({
+        _performance_history_state().update({
             'status': 'running', 'signature': signature,
             'pending_signature': '', 'result': None, 'error': '', 'updated_at': ''
         })
-        PERFORMANCE_HISTORY_PENDING_INPUTS = None
+        _set_performance_history_pending(None)
+        context = contextvars.copy_context()
         thread = threading.Thread(
-            target=_performance_history_worker,
-            args=(inputs, signature),
+            target=lambda: context.run(_performance_history_worker, inputs, signature),
             name='portfolio-performance-history', daemon=True
         )
         thread.start()
@@ -7955,7 +8764,7 @@ def _queue_performance_history(inputs):
 def performance_history_status():
     requested_signature = str(request.args.get('signature') or '')
     with PERFORMANCE_HISTORY_LOCK:
-        state = dict(PERFORMANCE_HISTORY_STATE)
+        state = dict(_performance_history_state())
         pending_signature = state.get('pending_signature')
         if requested_signature and requested_signature not in (state.get('signature'), pending_signature):
             return jsonify(status='superseded')
@@ -7998,7 +8807,7 @@ def dashboard():
         force_quotes = request.args.get('refresh_quotes') != '0'
         portfolio_before_sync = carteira(force_refresh_quotes=force_quotes).json
         if current_only:
-            sync_status = PROVENTOS_SYNC_CACHE.get('result') or {
+            sync_status = _proventos_sync_cache().get('result') or {
                 'ok': True,
                 'mensagem': 'Valores atuais conferidos. Histórico e sincronização complementar seguem em segundo plano.'
             }
@@ -8278,9 +9087,9 @@ def dashboard():
             response_payload['cache_info'] = {'cached': False, 'saved_at': saved_at, 'age_seconds': 0}
             if performance_signature:
                 with PERFORMANCE_HISTORY_LOCK:
-                    ready_result = (PERFORMANCE_HISTORY_STATE.get('result')
-                                    if PERFORMANCE_HISTORY_STATE.get('status') == 'ready'
-                                    and PERFORMANCE_HISTORY_STATE.get('signature') == performance_signature else None)
+                    ready_result = (_performance_history_state().get('result')
+                                    if _performance_history_state().get('status') == 'ready'
+                                    and _performance_history_state().get('signature') == performance_signature else None)
                 if ready_result:
                     _persist_performance_history_snapshot(performance_signature, ready_result)
         except (OSError, TypeError, ValueError) as cache_error:
@@ -8648,13 +9457,17 @@ def darf_item(darf_id):
 def ativo(ticker): return jsonify(cotacao(ticker.upper()))
 
 
-# Recover the last durable proventos sync after module/database initialization.
-# The supported Docker command uses one Gunicorn worker, so only one process
-# owns this in-process worker while the queue state itself remains persistent.
-try:
-    _restore_proventos_sync_queue()
-except Exception:
-    app.logger.exception('Não foi possível recuperar a fila persistente de proventos na inicialização.')
+# Recover durable proventos queues independently for each wallet after startup.
+# The supported Docker command uses one Gunicorn worker; the queue state itself
+# remains persisted in each wallet's SQLite database.
+for _wallet_context in _all_wallet_contexts():
+    _context_token = ACTIVE_WALLET_CONTEXT.set(_wallet_context)
+    try:
+        _restore_proventos_sync_queue()
+    except Exception:
+        app.logger.exception('Não foi possível recuperar a fila persistente de proventos de uma carteira na inicialização.')
+    finally:
+        ACTIVE_WALLET_CONTEXT.reset(_context_token)
 
 
 if __name__ == '__main__': app.run(host='0.0.0.0',port=8080)

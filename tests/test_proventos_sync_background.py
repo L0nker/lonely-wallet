@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import contextvars
 import hashlib
 import json
 import sqlite3
@@ -63,6 +64,7 @@ def build_namespace(sync_function, connection=None):
     namespace = {
         'app': DummyApp(),
         'threading': thread_api,
+        'contextvars': contextvars,
         'time': time,
         'datetime': datetime,
         'TZ': timezone.utc,
@@ -81,6 +83,12 @@ def build_namespace(sync_function, connection=None):
         'sync_brapi_proventos': sync_function,
         'safe_error_text': lambda exc, limit=300: str(exc)[:limit],
     }
+    # Multi-wallet routing uses small accessors around the legacy globals. Keep
+    # this isolated worker test focused on one unscoped wallet, as before.
+    namespace['_proventos_sync_state'] = lambda: namespace['PROVENTOS_SYNC_STATE']
+    namespace['_proventos_sync_pending'] = lambda: namespace.get('PROVENTOS_SYNC_PENDING_INPUTS')
+    namespace['_set_proventos_sync_pending'] = lambda value: namespace.__setitem__('PROVENTOS_SYNC_PENDING_INPUTS', value)
+    namespace['_proventos_sync_cache'] = lambda: namespace['PROVENTOS_SYNC_CACHE']
     exec(compile(ast.Module(body=FUNCTIONS, type_ignores=[]), '<proventos-sync-worker>', 'exec'), namespace)
     namespace['_test_connection'] = connection
     namespace['_test_threads'] = tracked_threads
@@ -252,7 +260,14 @@ class ProventosBackgroundQueueTests(unittest.TestCase):
         while ns['PROVENTOS_SYNC_STATE']['status'] == 'running' and time.monotonic() < deadline:
             time.sleep(0.01)
         self.assertEqual([call['active_items'][0]['ticker'] for call in calls], ['AAA3', 'BBB4'])
-        row = connection.execute('SELECT status,signature,pending_signature FROM proventos_sync_queue_state WHERE id=1').fetchone()
+        deadline = time.monotonic() + 2
+        row = None
+        while time.monotonic() < deadline:
+            row = connection.execute('SELECT status,signature,pending_signature FROM proventos_sync_queue_state WHERE id=1').fetchone()
+            if row and row['status'] == 'completed':
+                break
+            time.sleep(0.01)
+        self.assertIsNotNone(row)
         self.assertEqual(row['status'], 'completed')
         self.assertEqual(row['signature'], 'sig-pending')
         self.assertEqual(row['pending_signature'], '')
