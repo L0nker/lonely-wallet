@@ -592,6 +592,19 @@ No botão **Gerenciar API**, escolha a frequência:
 
 A frequência fica gravada no SQLite e é executada no servidor; não depende de manter a página do navegador aberta. Sincronizações manuais podem ser iniciadas pelo botão **Sincronizar tudo** ou pelo botão individual de cada conexão.
 
+### Importante: a Pluggy não atualiza os dados em tempo real
+
+A atualização dos dados depende de etapas diferentes, que não acontecem necessariamente no mesmo instante:
+
+1. **Instituição financeira → Pluggy:** o banco ou a corretora precisa disponibilizar os dados e a conexão da Pluggy precisa ser atualizada. A Pluggy informa que novas transações não ficam disponíveis em tempo real; elas só podem ser consultadas depois que a conexão é atualizada. Em conectores Open Finance regulados, novas transações podem levar até **24 horas** para ficarem disponíveis, conforme a documentação da Pluggy ([FAQ oficial](https://v2.docs.pluggy.ai/pt/docs/get-started/faq)).
+2. **Pluggy → Lonely Wallet:** depois que os dados já estiverem disponíveis na Pluggy, o Lonely Wallet precisa consultar a API e importar as informações para o banco local.
+
+**O que o botão “Sincronizar” faz nesta versão:** consulta novamente os dados que já estão disponíveis na API Pluggy e atualiza a cópia local do Lonely Wallet. A sincronização manual ignora o intervalo mínimo da última consulta local, mas não força uma nova coleta na instituição financeira nem inicia a atualização manual do Item na Pluggy. Na implementação atual, essa rotina lê o Item, os investimentos e suas movimentações pela API; não executa a operação de atualização do Item na Pluggy. Portanto, clicar repetidamente em **Sincronizar tudo** não faz o banco liberar os dados mais rápido.
+
+A frequência configurada em **Gerenciar API** (240 minutos por padrão) controla de quanto em quanto tempo o Lonely Wallet consulta novamente a Pluggy. Ela **não** é uma garantia de atualização da instituição nesse mesmo intervalo e não altera a agenda de atualização própria da Pluggy. A atualização de um Item pela Pluggy possui seu próprio processamento e pode passar por estados como `UPDATING` até chegar a `UPDATED` ([ciclo de vida do Item](https://docs.pluggy.ai/pt/docs/connections/item-lifecycle)).
+
+**Quando uma movimentação recente não aparecer:** confira a última atualização e o status da conexão no MeuPluggy/Dashboard da Pluggy; aguarde a instituição e a Pluggy disponibilizarem a movimentação; depois execute **Sincronizar** ou **Sincronizar tudo** no Lonely Wallet. Se a conexão já estiver `UPDATED`, mas os dados continuarem ausentes, verifique o consentimento, a cobertura do conector e os logs do container.
+
 ### Limpar dados versus remover conexão
 
 - **Limpar dados importados:** remove dados importados vinculados à conexão selecionada, incluindo snapshots, transações e operações que foram criadas exclusivamente por aquela conexão. Operações manuais ou apenas conciliadas com dados existentes são preservadas. A conexão e as credenciais permanecem cadastradas.
@@ -845,12 +858,13 @@ Use **Testar conexão** quando disponível e consulte os logs do container. Uma 
 
 1. Verifique Client ID e Client Secret.
 2. Confira se a conexão MeuPluggy existe e se o `itemId` foi copiado corretamente.
-3. Confira status/consentimento da conexão no MeuPluggy.
-4. Execute **Sincronizar** na conexão ou **Sincronizar tudo**.
-5. Confira a última sincronização, investimentos e movimentações de investimento exibidos no cartão.
-6. Se necessário, consulte os logs do container.
+3. Confira o status, o consentimento e a data da última atualização da conexão no MeuPluggy/Dashboard da Pluggy.
+4. Lembre-se de que o botão **Sincronizar** do Lonely Wallet apenas consulta os dados já disponíveis na Pluggy; ele não força uma nova coleta no banco ou na corretora.
+5. Quando a conexão da Pluggy estiver atualizada e os dados estiverem disponíveis, execute **Sincronizar** na conexão ou **Sincronizar tudo** no Lonely Wallet.
+6. Confira a última sincronização local, a quantidade de investimentos e as movimentações exibidas no cartão.
+7. Se necessário, consulte os logs do container.
 
-Uma conexão pode autenticar corretamente e ainda retornar poucos dados ou nenhum investimento, dependendo do produto, instituição, consentimento e histórico disponibilizado.
+Novas transações não são disponibilizadas em tempo real pela Pluggy. Em conectores Open Finance regulados, a própria Pluggy informa que a disponibilização pode levar até 24 horas. Uma conexão pode autenticar corretamente e ainda retornar poucos dados ou nenhum investimento, dependendo do produto, instituição, consentimento, atualização da conexão e histórico disponibilizado. Consulte também a seção [Importante: a Pluggy não atualiza os dados em tempo real](#importante-a-pluggy-não-atualiza-os-dados-em-tempo-real).
 
 ### 7. Proventos não aparecem ou não são marcados como recebidos
 
