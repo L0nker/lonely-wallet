@@ -48,8 +48,8 @@ def test_mobile_styles_preserve_all_application_pages_and_integrations():
 
 def test_release_version_and_financial_cache_contract_are_consistent():
     version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
-    assert version == '6.1.16'
+    assert version == '6.1.17'
     main = (ROOT / 'app/main.py').read_text(encoding='utf-8')
     assert 'DASHBOARD_CACHE_FORMAT = 28' in main
     compose = (ROOT / 'docker-compose.yml').read_text(encoding='utf-8')
-    assert 'v=6.1.16' in compose
+    assert 'v=6.1.17' in compose

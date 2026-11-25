@@ -40,8 +40,8 @@ def test_permissions_and_backend_are_not_changed_by_copy_removal():
 
 
 def test_release_version_metadata_is_consistent():
-    assert VERSION == "6.1.16"
-    assert 'version: "6.1.16"' in COMPOSE
-    assert 'v=6.1.16' in COMPOSE
-    assert "Versão 6.1.16" in README
-    assert "Destaques da versão 6.1.16" in README
+    assert VERSION == "6.1.17"
+    assert 'version: "6.1.17"' in COMPOSE
+    assert 'v=6.1.17' in COMPOSE
+    assert "Versão 6.1.17" in README
+    assert "Destaques da versão 6.1.17" in README

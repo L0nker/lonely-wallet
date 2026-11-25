@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="pt-br" class="dashboard-wait-lock"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#14161d"><style>html,body{background:#14161d;color-scheme:dark}html.light-theme,html.light-theme body{background:#f3f5f8!important;color-scheme:light!important}</style><script>try{if(localStorage.getItem('lonelyWalletLightTheme')==='1')document.documentElement.classList.add('light-theme');}catch(e){}</script><title>Lonely Wallet | Investimentos</title><link rel="icon" type="image/png" href="/static/lonely-wallet-favicon.png"><link rel="apple-touch-icon" href="/static/lonely-wallet-favicon.png">
+<html lang="pt-br" class="dashboard-wait-lock"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#14161d"><style>html,body{background:#14161d;color-scheme:dark}html.light-theme,html.light-theme body{background:#f3f5f8!important;color-scheme:light!important}</style><script>try{if(localStorage.getItem('lonelyWalletLightTheme')==='1')document.documentElement.classList.add('light-theme');}catch(e){}</script><title>Lonely Wallet | Investimentos</title><link id="appFavicon" rel="icon" type="image/png" href="/static/lonely-wallet-favicon.png"><link id="appAppleTouchIcon" rel="apple-touch-icon" href="/static/lonely-wallet-favicon.png">
 
 {% if chart_assets.chartjs_available %}<script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>{% endif %}
 <script src="{{ url_for('static', filename='vendor/chart-fallback.js') }}"></script>
@@ -5408,7 +5408,7 @@ async function deleteAPIProvider(id){
  catch(error){toast(error.message);}
 }
 
-function updateDocumentIdentity(name){const titles={resumo:'Resumo',proventos:'Proventos',patrimonio:'Patrimônio',distribuicao:'Distribuição',lancamentos:'Lançamentos',apis:'APIs',seguranca:'Configurações'};document.title='Lonely Wallet | '+(titles[name]||'Investimentos');const icon=document.querySelector('link[rel=\"icon\"]');if(icon)icon.href='/static/lonely-wallet-favicon.png';}
+function updateDocumentIdentity(name){const titles={resumo:'Resumo',proventos:'Proventos',patrimonio:'Patrimônio',distribuicao:'Distribuição',lancamentos:'Lançamentos',apis:'APIs',seguranca:'Configurações'};document.title='Lonely Wallet | '+(titles[name]||'Investimentos');setThemeBrandAssets(document.body.classList.contains('light-theme')||document.documentElement.classList.contains('light-theme'));}
 
 function resetPageFilterDefaults(page){const root=document.getElementById('page-'+page);if(!root)return;const filters=root.querySelectorAll('.toolbar select,.panelhead select,.filter-row select,.filters select,.filter-bar select');filters.forEach(select=>{if(!select.options?.length)return;const initial=Array.from(select.options).find(option=>option.defaultSelected)||select.options[0];if(!initial)return;const changed=select.value!==initial.value;select.value=initial.value;select.__lwSyncCustom?.();if(changed)select.dispatchEvent(new Event('change',{bubbles:true}));});}
 function showPage(name){closePluggyManager();if(!document.getElementById('page-'+name))name='resumo';document.querySelectorAll('.page').forEach(p=>p.classList.add('hidden'));document.getElementById('page-'+name).classList.remove('hidden');resetPageFilterDefaults(name);document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===name));updateDocumentIdentity(name);if(name==='distribuicao')loadDistribution();if(name==='apis')loadAPIProviders();if(name==='seguranca')loadSecuritySettings();setTimeout(()=>{if(name==='proventos')renderProventosDashboard();Object.values(charts).forEach(c=>{try{c.resize()}catch(e){}});if(name==='resumo')alignCategoryMoveControls('summaryGroups')},100);window.scrollTo({top:0,behavior:'smooth'})}document.getElementById('nav').addEventListener('click',e=>{let b=e.target.closest('button[data-page]');if(b)showPage(b.dataset.page)});
@@ -6019,9 +6019,26 @@ function applyAllChartsTheme(){
  try{Chart.defaults.color=document.body.classList.contains('light-theme')?'#536176':'#b8c1ce';Chart.defaults.borderColor=document.body.classList.contains('light-theme')?'#d7dee8':'#303541';}catch(e){}
  try{Object.values(Chart.instances||{}).forEach(applyChartTheme)}catch(e){}
 }
+function setThemeBrandAssets(light){
+ const suffix=light?'-light':'';
+ const paths={
+  brand:`/static/lonely-wallet-logotype${suffix}.png`,
+  loading:`/static/lonely-wallet-logo${suffix}.png`,
+  icon:`/static/lonely-wallet-favicon${suffix}.png`
+ };
+ const brand=document.querySelector('.brand-logo');
+ const loading=document.querySelector('#loadingScreen .loading-logo');
+ const favicon=document.getElementById('appFavicon');
+ const touchIcon=document.getElementById('appAppleTouchIcon');
+ if(brand && brand.getAttribute('src')!==paths.brand)brand.setAttribute('src',paths.brand);
+ if(loading && loading.getAttribute('src')!==paths.loading)loading.setAttribute('src',paths.loading);
+ if(favicon && favicon.getAttribute('href')!==paths.icon)favicon.setAttribute('href',paths.icon);
+ if(touchIcon && touchIcon.getAttribute('href')!==paths.icon)touchIcon.setAttribute('href',paths.icon);
+}
 function applyTheme(light){
  document.documentElement.classList.toggle('light-theme',!!light);
  document.body.classList.toggle('light-theme',!!light);
+ setThemeBrandAssets(!!light);
  const b=document.getElementById('themeToggle');
  if(b){
   b.title=light?'Ativar tema escuro':'Ativar tema claro';

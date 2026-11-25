@@ -3,7 +3,7 @@
   <h1>Lonely Wallet</h1>
   <p><strong>Gerenciador pessoal de carteira de investimentos, auto-hospedado em Docker.</strong></p>
   <p>
-    <strong>Versão 6.1.16</strong> · Interface em português (Brasil) · Python/Flask · SQLite · Docker
+    <strong>Versão 6.1.17</strong> · Interface em português (Brasil) · Python/Flask · SQLite · Docker
   </p>
 </div>
 
@@ -94,6 +94,12 @@ A aplicação reúne em uma única interface:
 - proteção de acesso por PIN.
 
 O servidor local é a fonte central dos dados. Cada usuário entra com username + PIN; dentro da conta pode alternar entre até três carteiras. Os dados financeiros e as conexões bancárias Pluggy são isolados por carteira. As credenciais de APIs de mercado são compartilhadas entre as carteiras do mesmo usuário, mas não entre usuários. O mesmo usuário pode acessar suas carteiras em diferentes dispositivos, sem duplicar os dados.
+
+### Destaques da versão 6.1.17
+- Corrigido o contraste da identidade visual no tema claro. O cabeçalho, a tela de carregamento, o favicon e o ícone de toque agora alternam para variantes próprias com os elementos antes brancos em grafite escuro e o dourado original preservado.
+- Ao voltar para o tema escuro, o aplicativo restaura automaticamente os assets originais com elementos claros.
+- A troca de tema atualiza tanto o logotipo quanto o ícone do navegador e o ícone de atalho móvel; a mudança de página mantém o favicon correspondente ao tema atual.
+- Não houve alteração no desenho da marca, nos dados financeiros, bancos SQLite, credenciais Pluggy ou formato do cache.
 
 ### Destaques da versão 6.1.16
 - Removido da seção **Configurações → Gerenciar usuários** o parágrafo explicativo extenso sobre permissões Master/Admin/Usuário comum. As regras de autorização e as verificações no backend permanecem inalteradas.
@@ -955,8 +961,11 @@ Para obter o contrato exato de parâmetros e respostas, consulte as funções de
 │   │   └── auth.html            # Login username + PIN e configuração inicial
 │   └── static/
 │       ├── lonely-wallet-logo.png
+│       ├── lonely-wallet-logo-light.png
 │       ├── lonely-wallet-logotype.png
+│       ├── lonely-wallet-logotype-light.png
 │       ├── lonely-wallet-favicon.png
+│       └── lonely-wallet-favicon-light.png
 │       └── vendor/
 │           ├── chart-fallback.js
 │           └── chartjs-build-status.json
@@ -1077,6 +1086,6 @@ O pacote 6.1.14 não inclui um arquivo `LICENSE`. Portanto, a licença de distri
 ---
 
 <div align="center">
-  <strong>Lonely Wallet v6.1.16</strong><br>
+  <strong>Lonely Wallet v6.1.17</strong><br>
   Controle pessoal de investimentos · Dados persistidos no servidor do usuário
 </div>
