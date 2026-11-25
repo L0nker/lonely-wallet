@@ -6638,9 +6638,43 @@ async function deleteManagedUser(user){
 
 
 let walletEditorMode='create';
-function toggleWalletPicker(){const menu=document.getElementById('walletPickerMenu'),trigger=document.getElementById('walletPickerTrigger');menu.hidden=!menu.hidden;trigger.setAttribute('aria-expanded',String(!menu.hidden));}
-function closeWalletPicker(){const menu=document.getElementById('walletPickerMenu'),trigger=document.getElementById('walletPickerTrigger');if(menu){menu.hidden=true;trigger.setAttribute('aria-expanded','false');}}
-document.addEventListener('click',event=>{const picker=document.getElementById('walletPicker');if(picker&&!picker.contains(event.target))closeWalletPicker();});
+// O seletor é movido para o body para escapar do stacking context do cabeçalho
+// e da navegação sticky em telas móveis. A posição é ancorada no botão por viewport.
+function initWalletPickerPortal(){
+ const menu=document.getElementById('walletPickerMenu');
+ if(menu&&menu.parentElement!==document.body)document.body.appendChild(menu);
+}
+function positionWalletPickerMenu(){
+ const menu=document.getElementById('walletPickerMenu'),trigger=document.getElementById('walletPickerTrigger');
+ if(!menu||!trigger||menu.hidden)return;
+ const rect=trigger.getBoundingClientRect(),vv=window.visualViewport;
+ const viewportTop=vv?vv.offsetTop:0,viewportHeight=vv?vv.height:window.innerHeight,viewportWidth=vv?vv.width:window.innerWidth;
+ const width=Math.max(220,Math.min(320,viewportWidth-24));
+ const left=Math.max(12,Math.min(rect.left,viewportWidth-width-12));
+ menu.style.position='fixed';menu.style.left=left+'px';menu.style.right='auto';menu.style.width=width+'px';
+ menu.style.zIndex='10040';menu.style.overflowY='auto';menu.style.overscrollBehavior='contain';
+ const below=Math.max(0,viewportTop+viewportHeight-rect.bottom-12),above=Math.max(0,rect.top-viewportTop-12);
+ const available=Math.max(120,Math.min(520,Math.max(below,above)));
+ menu.style.maxHeight=available+'px';
+ const measured=Math.min(menu.scrollHeight,available);
+ if(below>=Math.min(measured,220)||below>=above){menu.style.top=(rect.bottom+8)+'px';}
+ else{menu.style.top=Math.max(viewportTop+8,rect.top-measured-8)+'px';}
+}
+function toggleWalletPicker(){
+ const menu=document.getElementById('walletPickerMenu'),trigger=document.getElementById('walletPickerTrigger');
+ if(!menu||!trigger)return;
+ menu.hidden=!menu.hidden;trigger.setAttribute('aria-expanded',String(!menu.hidden));
+ if(!menu.hidden)positionWalletPickerMenu();
+}
+function closeWalletPicker(){const menu=document.getElementById('walletPickerMenu'),trigger=document.getElementById('walletPickerTrigger');if(menu){menu.hidden=true;trigger?.setAttribute('aria-expanded','false');}}
+document.addEventListener('click',event=>{
+ const picker=document.getElementById('walletPicker'),menu=document.getElementById('walletPickerMenu');
+ if(picker&&!picker.contains(event.target)&&!menu?.contains(event.target))closeWalletPicker();
+});
+document.addEventListener('keydown',event=>{if(event.key==='Escape')closeWalletPicker();});
+window.addEventListener('resize',()=>{if(!document.getElementById('walletPickerMenu')?.hidden)positionWalletPickerMenu();},{passive:true});
+window.addEventListener('scroll',event=>{const menu=document.getElementById('walletPickerMenu');if(!menu?.hidden&&!menu.contains(event.target))closeWalletPicker();},true);
+if(window.visualViewport)window.visualViewport.addEventListener('resize',()=>{if(!document.getElementById('walletPickerMenu')?.hidden)positionWalletPickerMenu();},{passive:true});
 async function refreshWalletPicker(){
  try{
   const r=await fetch('/api/wallets',{credentials:'same-origin',cache:'no-store',headers:{'Accept':'application/json'}}),d=await readWalletApiResponse(r,'Falha ao carregar carteiras.');
@@ -6726,6 +6760,7 @@ if(walletEditorForm){
  walletEditorForm.addEventListener('submit',submitWalletEditor);
 }
 
+initWalletPickerPortal();
 refreshWalletPicker();
 
 </script>
@@ -6746,7 +6781,7 @@ refreshWalletPicker();
 .wallet-picker-trigger{display:inline-flex;align-items:center;gap:7px;max-width:100%;min-height:34px;padding:6px 10px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);color:var(--text);font-size:13px;font-weight:700;cursor:pointer}
 .wallet-picker-trigger span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wallet-picker-trigger svg{width:14px;height:14px;flex:0 0 auto;fill:none;stroke:currentColor;stroke-width:2}
-.wallet-picker-menu{position:absolute;top:calc(100% + 9px);left:0;z-index:1200;width:min(290px,calc(100vw - 28px));padding:9px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 18px 48px #0008}
+.wallet-picker-menu{position:fixed;z-index:10040;width:min(320px,calc(100vw - 24px));max-height:min(72dvh,520px);overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding:9px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 18px 48px #0008}
 .wallet-picker-menu[hidden]{display:none}
 .wallet-picker-user{padding:8px 9px 10px;color:var(--muted);font-size:11px;border-bottom:1px solid var(--line);margin-bottom:5px;overflow-wrap:anywhere}
 .wallet-picker-user strong{color:var(--text)}
@@ -6775,7 +6810,7 @@ refreshWalletPicker();
 @media(max-width:620px){.security-managed-user{align-items:flex-start;flex-direction:column}.security-managed-actions{justify-content:flex-start;width:100%}.managed-user-modal .formgrid{grid-template-columns:minmax(0,1fr)}}
 .security-user-grid{max-width:850px;grid-template-columns:repeat(2,minmax(0,1fr))}
 .security-user-grid .field input{width:100%;min-height:42px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 13px}
-@media(max-width:620px){.wallet-picker{margin-left:6px;max-width:45vw}.wallet-picker-trigger{font-size:12px;padding:5px 8px}.wallet-picker-menu{left:auto;right:0}.security-user-grid{grid-template-columns:minmax(0,1fr)} }
+@media(max-width:620px){.wallet-picker{margin-left:6px;max-width:45vw}.wallet-picker-trigger{font-size:12px;padding:5px 8px}.wallet-picker-menu{max-width:calc(100vw - 24px)}.security-user-grid{grid-template-columns:minmax(0,1fr)} }
 @media(max-width:380px){.wallet-picker{max-width:38vw}.wallet-picker-trigger{gap:4px;padding:5px 6px;font-size:11px}}
 </style>
 

@@ -3,7 +3,7 @@
   <h1>Lonely Wallet</h1>
   <p><strong>Gerenciador pessoal de carteira de investimentos, auto-hospedado em Docker.</strong></p>
   <p>
-    <strong>Versão 6.1.14</strong> · Interface em português (Brasil) · Python/Flask · SQLite · Docker
+    <strong>Versão 6.1.15</strong> · Interface em português (Brasil) · Python/Flask · SQLite · Docker
   </p>
 </div>
 
@@ -94,6 +94,12 @@ A aplicação reúne em uma única interface:
 - proteção de acesso por PIN.
 
 O servidor local é a fonte central dos dados. Cada usuário entra com username + PIN; dentro da conta pode alternar entre até três carteiras. Os dados financeiros e as conexões bancárias Pluggy são isolados por carteira. As credenciais de APIs de mercado são compartilhadas entre as carteiras do mesmo usuário, mas não entre usuários. O mesmo usuário pode acessar suas carteiras em diferentes dispositivos, sem duplicar os dados.
+
+### Destaques da versão 6.1.15
+- Corrigido o seletor de carteiras em celulares: o menu agora é renderizado em uma camada global do documento, fora do cabeçalho e da navegação sticky, evitando que a barra de navegação corte ou cubra opções.
+- O menu é posicionado em relação ao botão de carteira, respeita a largura e a altura visíveis do navegador e ganha rolagem interna quando o conteúdo não cabe na tela.
+- O menu fecha com toque fora, tecla Escape ou rolagem da página; a seleção, criação, renomeação e exclusão de carteiras mantêm os mesmos fluxos e permissões.
+- Nenhuma alteração nos bancos financeiros, credenciais Pluggy, tokens compartilhados ou formato do cache.
 
 ### Destaques da versão 6.1.14
 ### Correção visual da v6.1.14
