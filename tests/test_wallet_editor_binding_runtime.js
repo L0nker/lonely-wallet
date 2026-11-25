@@ -1,0 +1,13 @@
+const fs = require('fs');
+const path = require('path');
+const assert = require('assert');
+const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'templates', 'index.html'), 'utf8');
+const match = html.match(/<script>([\s\S]*?)<\/script>/g) || [];
+const inlineScripts = match.map(block => block.replace(/^<script>/, '').replace(/<\/script>$/, ''));
+const scriptsWithWalletEditor = inlineScripts.filter(source => source.includes('async function submitWalletEditor(event)'));
+assert.strictEqual(scriptsWithWalletEditor.length, 1, 'wallet editor handler should be declared once');
+const source = scriptsWithWalletEditor[0];
+assert(source.includes("walletEditorForm.addEventListener('submit',submitWalletEditor);"), 'wallet editor submit handler must be bound');
+assert(source.includes("method:isRename?'PUT':'POST'"), 'create and rename must use their respective methods');
+assert(source.includes("if(!data.ok||!data.wallet?.id)"), 'UI must validate the standardized wallet response');
+console.log('wallet editor binding runtime checks passed');

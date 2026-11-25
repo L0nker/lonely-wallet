@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-EXCLUDED_DIRS = {"backups", "cache", "__pycache__", ".git"}
+EXCLUDED_DIRS = {"backups", "cache", "__pycache__", ".git", ".deletion-staging", ".deleting-users"}
 KEY_FILES = (".api-credentials.key", ".lonely-wallet-session.key")
 
 

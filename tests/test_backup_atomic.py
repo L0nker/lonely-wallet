@@ -87,6 +87,21 @@ class BackupAtomicTests(unittest.TestCase):
         folder = next(self.out.glob('lonely-wallet-*'))
         self.assertFalse((folder / 'backups/old/old.db').exists())
 
+    def test_backup_skips_in_progress_account_deletion_quarantine(self):
+        staged = self.data / '.deletion-staging' / 'operation-1' / 'payload' / 'users' / 'deleted-user' / 'tokens.db'
+        staged.parent.mkdir(parents=True)
+        con = sqlite3.connect(staged)
+        con.execute('CREATE TABLE sample(value INTEGER)')
+        con.commit(); con.close()
+        marker = self.data / '.deleting-users' / 'deleted-user.deleting'
+        marker.parent.mkdir(parents=True)
+        marker.write_text('boot-id')
+        result = self.run_backup()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        folder = next(self.out.glob('lonely-wallet-*'))
+        manifest = json.loads((folder / 'manifest.json').read_text())
+        self.assertFalse(any('.deletion-staging' in name or '.deleting-users' in name for name in manifest['files']))
+
     def test_backup_database_supports_special_path_characters(self):
         from scripts.backup import backup_database
         root = self.data / 'origem ? # % com espaco'

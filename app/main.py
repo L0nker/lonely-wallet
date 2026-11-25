@@ -29,17 +29,59 @@ def _active_wallet_context():
 
 def active_db_path():
     context = _active_wallet_context()
+    if context:
+        _assert_wallet_context_not_deleting(context)
     return str(context['assets_db_path']) if context and context.get('assets_db_path') else DB_PATH
 
 
 def active_token_db_path():
     context = _active_wallet_context()
+    if context:
+        _assert_wallet_context_not_deleting(context)
     return str(context['token_db_path']) if context and context.get('token_db_path') else TOKEN_DB_PATH
 
 
 def active_dashboard_cache_path():
     context = _active_wallet_context()
+    if context:
+        _assert_wallet_context_not_deleting(context)
     return str(context['dashboard_cache_path']) if context and context.get('dashboard_cache_path') else DASHBOARD_CACHE_PATH
+
+
+def _marker_matches_current_process(path):
+    boot_id = globals().get('BOOT_ID')
+    if not boot_id:
+        return False
+    try:
+        return Path(path).is_file() and Path(path).read_text(encoding='ascii').strip() == str(boot_id)
+    except OSError:
+        return False
+
+
+def _assert_wallet_context_not_deleting(context):
+    """Stop in-flight workers from recreating files after an account is erased."""
+    if _marker_matches_current_process(DATA_ROOT / '.deleting-installation'):
+        raise RuntimeError('A instalação está sendo excluída; a gravação de dados foi bloqueada.')
+    user_id = str(context.get('user_id') or '')
+    if user_id and _marker_matches_current_process(DATA_ROOT / '.deleting-users' / (user_id + '.deleting')):
+        raise RuntimeError('Esta conta está sendo excluída; a gravação de dados foi bloqueada.')
+
+
+def _create_account_deletion_marker(user_id=None, reset_installation=False):
+    marker = DATA_ROOT / '.deleting-installation' if reset_installation else DATA_ROOT / '.deleting-users' / (str(user_id) + '.deleting')
+    marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    fd = os.open(str(marker), flags, 0o600)
+    with os.fdopen(fd, 'w', encoding='ascii') as handle:
+        handle.write(str(globals().get('BOOT_ID') or 'unknown'))
+        handle.flush()
+        os.fsync(handle.fileno())
+    return marker
+
+
+def _remove_account_deletion_marker(marker):
+    if marker:
+        Path(marker).unlink(missing_ok=True)
 
 
 def active_scope_key():
@@ -135,7 +177,7 @@ QUOTE_HISTORY_PATH = os.environ.get('QUOTE_HISTORY_PATH', '/data/quotes_last_val
 QUOTE_HISTORY_LOCK = threading.RLock()
 DASHBOARD_CACHE_PATH = os.environ.get('DASHBOARD_CACHE_PATH', '/data/dashboard_cache.json')
 DASHBOARD_CACHE_LOCK = threading.RLock()
-DASHBOARD_CACHE_FORMAT = 21
+DASHBOARD_CACHE_FORMAT = 28
 PORTFOLIO_HISTORY_CACHE, PORTFOLIO_HISTORY_TTL = {}, 1800
 PORTFOLIO_HISTORY_EMPTY_TTL = 120
 def _dashboard_cache_signature():
@@ -284,6 +326,9 @@ PERFORMANCE_HISTORY_PENDING_INPUTS = None
 # unscoped fallback used by isolated unit tests and startup diagnostics.
 _SCOPED_WALLET_STATE = {}
 _SCOPED_WALLET_STATE_LOCK = threading.RLock()
+# Pluggy bearer cache follows the shared per-user API credential vault.
+_SCOPED_USER_STATE = {}
+_SCOPED_USER_STATE_LOCK = threading.RLock()
 
 
 def _scoped_wallet_state():
@@ -303,7 +348,6 @@ def _scoped_wallet_state():
                 'result': None, 'error': '', 'updated_at': ''
             },
             'performance_pending': None,
-            'pluggy_auth': {'api_key': '', 'expires_at': 0},
             'portfolio_history_cache': {},
         })
 
@@ -356,8 +400,26 @@ def _set_performance_history_pending(value):
         PERFORMANCE_HISTORY_PENDING_INPUTS = value
 
 
+def active_user_scope_key():
+    context = _active_wallet_context()
+    return str(context.get('user_id') or '') if context else ''
+
+
+def _scoped_user_state():
+    key = active_user_scope_key()
+    if not key:
+        return None
+    with _SCOPED_USER_STATE_LOCK:
+        return _SCOPED_USER_STATE.setdefault(key, {
+            'pluggy_auth': {'api_key': '', 'expires_at': 0},
+        })
+
+
 def _pluggy_auth_cache():
-    scoped = _scoped_wallet_state()
+    # Client ID/Secret are shared by the user's wallets. Cache the bearer token
+    # at the same scope so credential rotation in one wallet invalidates every
+    # wallet belonging to that user without affecting other users.
+    scoped = _scoped_user_state()
     return scoped['pluggy_auth'] if scoped is not None else PLUGGY_AUTH_CACHE
 
 # O controle local registra consumo e aplica somente backoff após respostas reais
@@ -1022,6 +1084,9 @@ def security_headers(response):
 
 
 def db():
+    context = _active_wallet_context()
+    if context:
+        _assert_wallet_context_not_deleting(context)
     if 'db' not in g:
         database_path = active_db_path()
         os.makedirs(os.path.dirname(database_path) or '.', exist_ok=True)
@@ -1038,6 +1103,9 @@ def db():
 
 
 def token_db():
+    context = _active_wallet_context()
+    if context:
+        _assert_wallet_context_not_deleting(context)
     if 'token_db' not in g:
         os.makedirs(os.path.dirname(active_token_db_path()) or '.', exist_ok=True)
         token_path = active_token_db_path()
@@ -1110,7 +1178,12 @@ def migrate_legacy_database(source_path, destination_path):
 
 def prepare_database_files():
     os.makedirs(os.path.dirname(active_db_path()) or '.', exist_ok=True)
-    if os.path.abspath(active_db_path()) != os.path.abspath(LEGACY_DB_PATH):
+    wallet_context = _active_wallet_context()
+    # The legacy carteira.db is a one-time migration source for the original
+    # default wallet only. Never seed a new wallet or another user's database
+    # from that legacy portfolio when init_db() prepares its schema.
+    may_migrate_legacy = not wallet_context or wallet_context.get('storage_key') == 'legacy'
+    if may_migrate_legacy and os.path.abspath(active_db_path()) != os.path.abspath(LEGACY_DB_PATH):
         migrate_legacy_database(LEGACY_DB_PATH, active_db_path())
     os.makedirs(os.path.dirname(active_token_db_path()) or '.', exist_ok=True)
     con = sqlite3.connect(active_token_db_path(), timeout=15)
@@ -1150,9 +1223,10 @@ def migrate_api_credentials():
         if rows:
             secrets = sqlite3.connect(active_token_db_path())
             secrets.executemany(
-                'INSERT INTO api_credentials(provider,token_encrypted,enabled,updated_at) VALUES(?,?,?,?) '
-                'ON CONFLICT(provider) DO UPDATE SET token_encrypted=excluded.token_encrypted, '
-                'enabled=excluded.enabled,updated_at=excluded.updated_at',
+                "INSERT INTO api_credentials(provider,token_encrypted,enabled,updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(provider) DO UPDATE SET token_encrypted=excluded.token_encrypted, "
+                "enabled=excluded.enabled,updated_at=excluded.updated_at "
+                "WHERE COALESCE(excluded.updated_at,'') > COALESCE(api_credentials.updated_at,'')",
                 [(r['provider'],r['token_encrypted'],r['enabled'],r['updated_at']) for r in rows]
             )
             secrets.commit()
@@ -1736,6 +1810,380 @@ def identity_connection():
     return con
 
 
+def _deletion_stage_root():
+    """Private same-volume staging directory used for recoverable account deletion."""
+    root = DATA_ROOT / '.deletion-staging'
+    if root.is_symlink():
+        raise RuntimeError('O diretório de exclusão segura não pode ser um link simbólico.')
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(root, 0o700)
+    return root
+
+
+def _stage_account_storage(user_id, reset_installation=False, include_legacy_data=False):
+    """Atomically move the data to be erased into a private quarantine.
+
+    The identity database is deliberately preserved (empty after a Master reset)
+    so the next first-run setup can create a new Master account. A manifest lets
+    startup restore data if the process crashes before the identity transaction
+    commits, or finish erasure if it crashes after commit.
+    """
+    data_root = DATA_ROOT.resolve()
+    identity_db = Path(os.path.abspath(str(Path(USER_DB_PATH).expanduser())))
+    identity_sidecars = {Path(str(identity_db) + suffix) for suffix in ('-wal', '-shm', '-journal')}
+    identity_real = identity_db.resolve(strict=False)
+    identity_sidecars_real = {path.resolve(strict=False) for path in identity_sidecars}
+    if reset_installation:
+        sources = []
+        for child in DATA_ROOT.iterdir():
+            resolved = Path(os.path.abspath(str(child)))
+            real_child = child.resolve(strict=False)
+            if (resolved == identity_db or real_child == identity_real or child in identity_sidecars
+                    or real_child in identity_sidecars_real
+                    or child.name in ('.deletion-staging', '.deleting-installation', '.deleting-users')):
+                continue
+            sources.append(child)
+    else:
+        safe_user_id = str(user_id)
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', safe_user_id):
+            raise ValueError('Identificador de usuário inválido para exclusão de dados.')
+        sources = [DATA_ROOT / 'users' / safe_user_id, DATA_ROOT / 'cache' / safe_user_id]
+        if include_legacy_data:
+            # The original Master can own the legacy root databases rather than
+            # a per-user directory. When Master transfers ownership, stage only
+            # those legacy files and their SQLite sidecars; keep global crypto and
+            # session keys because the remaining users still need them.
+            for raw_path in (DB_PATH, LEGACY_DB_PATH, TOKEN_DB_PATH, DASHBOARD_CACHE_PATH):
+                legacy_path = Path(os.path.abspath(str(Path(raw_path).expanduser())))
+                legacy_real = legacy_path.resolve(strict=False)
+                if (legacy_path == identity_db or legacy_real == identity_real
+                        or legacy_path in identity_sidecars or legacy_real in identity_sidecars_real):
+                    continue
+                try:
+                    legacy_path.relative_to(data_root)
+                except ValueError as exc:
+                    if legacy_path.exists() or legacy_path.is_symlink():
+                        raise RuntimeError('Os bancos legados do Master estão fora do volume /data; não é possível transferir a administração com exclusão segura.') from exc
+                    continue
+                sources.append(legacy_path)
+                sources.extend(Path(str(legacy_path) + suffix) for suffix in ('-wal', '-shm', '-journal'))
+
+    # Remove duplicate source paths while retaining order (legacy DB aliases can
+    # point to the same file in customized Compose configurations).
+    unique_sources = []
+    seen_sources = set()
+    for source in sources:
+        marker = os.path.abspath(str(source))
+        if marker not in seen_sources:
+            seen_sources.add(marker)
+            unique_sources.append(source)
+    sources = unique_sources
+
+    existing = []
+    for source in sources:
+        if not (source.exists() or source.is_symlink()):
+            continue
+        # Only paths lexically inside DATA_ROOT may be moved into this quarantine.
+        source_abs = Path(os.path.abspath(str(source)))
+        try:
+            relative = source_abs.relative_to(data_root)
+        except ValueError as exc:
+            raise RuntimeError('A exclusão tentou alcançar dados fora do volume do Lonely Wallet.') from exc
+        if not relative.parts or relative.parts[0] == '.deletion-staging':
+            raise RuntimeError('Caminho de dados protegido; exclusão cancelada.')
+        # A parent directory must not redirect the move outside the mounted data
+        # volume. A source that is itself a symlink is staged as a link, never followed.
+        if not source.is_symlink():
+            try:
+                source.resolve(strict=False).relative_to(data_root)
+            except ValueError as exc:
+                raise RuntimeError('O caminho de dados contém um link simbólico externo; exclusão cancelada.') from exc
+        existing.append((source, relative))
+
+    stage_root = _deletion_stage_root() / uuid.uuid4().hex
+    payload_root = stage_root / 'payload'
+    payload_root.mkdir(parents=True, mode=0o700)
+    manifest = {
+        'user_id': str(user_id or ''),
+        'reset_installation': bool(reset_installation),
+        'items': [relative.as_posix() for _source, relative in existing],
+        'created_at': datetime.now(TZ).isoformat(timespec='seconds'),
+    }
+    manifest_path = stage_root / 'manifest.json'
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding='utf-8')
+    os.chmod(manifest_path, 0o600)
+    moved = []
+    try:
+        for source, relative in existing:
+            destination = payload_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.replace(source, destination)
+            moved.append((source, destination))
+        return stage_root
+    except Exception:
+        for source, destination in reversed(moved):
+            try:
+                source.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                if destination.exists() or destination.is_symlink():
+                    os.replace(destination, source)
+            except OSError:
+                app.logger.exception('Falha ao restaurar dados durante o cancelamento da exclusão.')
+        shutil.rmtree(stage_root, ignore_errors=True)
+        raise
+
+
+def _restore_staged_account_storage(stage_root):
+    """Restore quarantined data after a failed identity transaction."""
+    stage_root = Path(stage_root)
+    manifest_path = stage_root / 'manifest.json'
+    if not manifest_path.is_file():
+        raise RuntimeError('Manifesto da exclusão segura não encontrado.')
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    data_root = DATA_ROOT.resolve()
+    for relative_text in manifest.get('items', []):
+        relative = Path(str(relative_text))
+        if relative.is_absolute() or '..' in relative.parts or not relative.parts:
+            raise RuntimeError('Manifesto de exclusão contém caminho inválido.')
+        source = stage_root / 'payload' / relative
+        destination = DATA_ROOT / relative
+        if source.exists() or source.is_symlink():
+            destination_abs = Path(os.path.abspath(str(destination)))
+            destination_abs.relative_to(data_root)
+            try:
+                if not destination.parent.is_symlink():
+                    destination.parent.resolve(strict=False).relative_to(data_root)
+                else:
+                    raise ValueError('parent is symlink')
+            except ValueError as exc:
+                raise RuntimeError(f'Não foi possível restaurar {relative_text}: diretório pai inseguro.') from exc
+            if destination.exists() or destination.is_symlink():
+                raise RuntimeError(f'Não foi possível restaurar {relative_text}: o destino já existe.')
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.replace(source, destination)
+    shutil.rmtree(stage_root, ignore_errors=True)
+
+
+def _finalize_staged_account_storage(stage_root):
+    """Permanently erase the quarantined data after the identity commit."""
+    if stage_root:
+        shutil.rmtree(stage_root, ignore_errors=False)
+        parent = Path(stage_root).parent
+        try:
+            parent.rmdir()
+        except OSError:
+            pass
+
+
+def recover_pending_account_deletions():
+    """Recover interrupted erasures: restore if the identity remains, erase if not."""
+    root = DATA_ROOT / '.deletion-staging'
+    if not root.is_dir() or root.is_symlink():
+        return
+    for stage_root in root.iterdir():
+        if not stage_root.is_dir() or stage_root.is_symlink():
+            continue
+        manifest_path = stage_root / 'manifest.json'
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            con = identity_connection()
+            try:
+                if manifest.get('reset_installation'):
+                    should_restore = int(con.execute('SELECT COUNT(*) FROM users').fetchone()[0]) > 0
+                else:
+                    should_restore = bool(con.execute('SELECT 1 FROM users WHERE id=?', (str(manifest.get('user_id') or ''),)).fetchone())
+            finally:
+                con.close()
+            if should_restore:
+                _restore_staged_account_storage(stage_root)
+            else:
+                _finalize_staged_account_storage(stage_root)
+        except Exception:
+            app.logger.exception('Não foi possível recuperar a exclusão de conta pendente em %s.', stage_root)
+            raise
+    # A marker from an older process can be cleared safely now: all worker
+    # threads from that process have terminated, and the stage recovery above
+    # restored or completed any interrupted filesystem operation.
+    for marker in [DATA_ROOT / '.deleting-installation']:
+        if marker.is_file() and not _marker_matches_current_process(marker):
+            marker.unlink(missing_ok=True)
+    user_markers = DATA_ROOT / '.deleting-users'
+    if user_markers.is_dir() and not user_markers.is_symlink():
+        for marker in user_markers.glob('*.deleting'):
+            if not _marker_matches_current_process(marker):
+                marker.unlink(missing_ok=True)
+        try:
+            user_markers.rmdir()
+        except OSError:
+            pass
+
+
+def _remove_external_install_files():
+    """Remove configured application files outside DATA_ROOT, never the identity DB."""
+    identity_db = Path(USER_DB_PATH).expanduser().resolve()
+    candidates = [
+        DB_PATH, LEGACY_DB_PATH, TOKEN_DB_PATH, API_KEY_FILE,
+        os.environ.get('SESSION_SECRET_FILE', '/data/.lonely-wallet-session.key'),
+        DASHBOARD_CACHE_PATH, QUOTE_HISTORY_PATH, SGS_CACHE_PATH,
+    ]
+    root = DATA_ROOT.resolve()
+    errors = []
+    for raw_path in candidates:
+        path = Path(os.path.abspath(str(Path(raw_path).expanduser())))
+        if path == identity_db:
+            continue
+        try:
+            path.relative_to(root)
+            continue  # DATA_ROOT children were already moved to the deletion stage.
+        except ValueError:
+            pass
+        for candidate in (path, Path(str(path) + '-wal'), Path(str(path) + '-shm'), Path(str(path) + '-journal')):
+            try:
+                if candidate.is_symlink():
+                    candidate.unlink(missing_ok=True)
+                elif candidate.is_file():
+                    candidate.unlink(missing_ok=True)
+            except OSError as exc:
+                errors.append(f'{candidate}: {exc}')
+    return errors
+
+
+def _ensure_single_master(con):
+    """Keep the first-created account as the single immutable Master."""
+    con.execute('SAVEPOINT ensure_single_master')
+    try:
+        existing_masters = con.execute(
+            "SELECT id,created_at FROM users WHERE role='master' ORDER BY created_at,id"
+        ).fetchall()
+        first_user = con.execute(
+            'SELECT id,created_at FROM users ORDER BY created_at,id LIMIT 1'
+        ).fetchone()
+
+        master_id = ''
+        if first_user:
+            master_id = str(first_user['id'])
+            if existing_masters:
+                current_master = existing_masters[0]
+                # A legitimate installation already has the first-created Master.
+                # If an older account predates that Master (for example, after an
+                # early migration or manual role repair), restore the invariant that
+                # the oldest account is the installation Master. Equal second-level
+                # timestamps retain the existing Master because it is the known
+                # first account created by the setup flow.
+                first_created = str(first_user['created_at'] or '')
+                current_created = str(current_master['created_at'] or '')
+                if first_created >= current_created:
+                    master_id = str(current_master['id'])
+
+        # Normalize inside a savepoint, so role guards are never left removed if
+        # a migration or index/trigger recreation fails midway through startup.
+        con.execute('DROP TRIGGER IF EXISTS protect_master_delete')
+        con.execute('DROP TRIGGER IF EXISTS protect_master_role')
+        con.execute('DROP INDEX IF EXISTS idx_users_single_master')
+        if master_id:
+            con.execute("UPDATE users SET role='user' WHERE id<>? AND role NOT IN ('master','admin','user')", (master_id,))
+            con.execute("UPDATE users SET role='admin' WHERE role='master' AND id<>?", (master_id,))
+            con.execute("UPDATE users SET role='master' WHERE id=? AND role<>'master'", (master_id,))
+        else:
+            con.execute("UPDATE users SET role='user' WHERE role NOT IN ('master','admin','user')")
+
+        con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_master ON users(role) WHERE role='master'")
+        con.execute("""CREATE TRIGGER IF NOT EXISTS validate_user_role_insert
+            BEFORE INSERT ON users WHEN NEW.role NOT IN ('master','admin','user')
+            BEGIN SELECT RAISE(ABORT, 'Papel de usuário inválido.'); END""")
+        con.execute("""CREATE TRIGGER IF NOT EXISTS validate_user_role_update
+            BEFORE UPDATE OF role ON users WHEN NEW.role NOT IN ('master','admin','user')
+            BEGIN SELECT RAISE(ABORT, 'Papel de usuário inválido.'); END""")
+        con.execute("""CREATE TRIGGER IF NOT EXISTS protect_master_delete
+            BEFORE DELETE ON users WHEN OLD.role='master'
+            BEGIN SELECT RAISE(ABORT, 'A conta Master não pode ser excluída por outra conta.'); END""")
+        con.execute("""CREATE TRIGGER IF NOT EXISTS protect_master_role
+            BEFORE UPDATE OF role ON users WHEN OLD.role='master' AND NEW.role<>'master'
+            BEGIN SELECT RAISE(ABORT, 'A conta Master não pode ser rebaixada.'); END""")
+        con.execute('RELEASE SAVEPOINT ensure_single_master')
+        return master_id
+    except Exception:
+        con.execute('ROLLBACK TO SAVEPOINT ensure_single_master')
+        con.execute('RELEASE SAVEPOINT ensure_single_master')
+        raise
+
+
+def _delete_master_and_promote_successor(con, master_id, now=None):
+    """Delete the current Master and atomically promote the oldest account left.
+
+    The caller must hold a write transaction. The successor's auth version is
+    bumped to invalidate any session established before the role transfer.
+    Returns a plain dictionary for response messaging, or None when no account
+    remains (the caller should use the full-installation reset path instead).
+    """
+    master = con.execute(
+        "SELECT id,username_norm,role FROM users WHERE id=? AND role='master'", (str(master_id),)
+    ).fetchone()
+    if not master:
+        raise RuntimeError('A conta Master atual não foi encontrada para transferência.')
+    successor = con.execute(
+        'SELECT id,username,username_norm,auth_version FROM users WHERE id<>? ORDER BY created_at,id LIMIT 1',
+        (str(master_id),)
+    ).fetchone()
+    if not successor:
+        return None
+
+    # SQLite DDL is transactional. If any step fails, the caller's rollback
+    # restores both the deleted account and the protection triggers.
+    con.execute('DROP TRIGGER IF EXISTS protect_master_delete')
+    con.execute('DROP TRIGGER IF EXISTS protect_master_role')
+    deleted = con.execute("DELETE FROM users WHERE id=? AND role='master'", (str(master_id),))
+    if deleted.rowcount != 1:
+        raise RuntimeError('Não foi possível remover a conta Master atual.')
+
+    next_auth_version = int(successor['auth_version'] or 1) + 1
+    updated_at = str(now or datetime.now(TZ).isoformat(timespec='seconds'))
+    promoted = con.execute(
+        "UPDATE users SET role='master',auth_version=?,updated_at=? WHERE id=? AND role IN ('admin','user')",
+        (next_auth_version, updated_at, str(successor['id']))
+    )
+    if promoted.rowcount != 1:
+        raise RuntimeError('Não foi possível promover a conta mais antiga restante a Master.')
+
+    con.execute("""CREATE TRIGGER protect_master_delete
+        BEFORE DELETE ON users WHEN OLD.role='master'
+        BEGIN SELECT RAISE(ABORT, 'A conta Master não pode ser excluída por outra conta.'); END""")
+    con.execute("""CREATE TRIGGER protect_master_role
+        BEFORE UPDATE OF role ON users WHEN OLD.role='master' AND NEW.role<>'master'
+        BEGIN SELECT RAISE(ABORT, 'A conta Master não pode ser rebaixada.'); END""")
+    con.execute('DELETE FROM auth_attempts WHERE username_norm IN (?,?)',
+                (str(master['username_norm'] or ''), str(successor['username_norm'] or '')))
+
+    master_count = int(con.execute("SELECT COUNT(*) FROM users WHERE role='master'").fetchone()[0])
+    if master_count != 1:
+        raise RuntimeError('A transferência não preservou exatamente uma conta Master.')
+    return {
+        'id': str(successor['id']),
+        'username': str(successor['username']),
+        'username_norm': str(successor['username_norm']),
+        'auth_version': next_auth_version,
+    }
+
+
+def _user_management_permission(actor_role, target_role, action):
+    """Return granular account-management permissions for a different user.
+
+    Master can manage every non-Master account. Admin can view, reset the PIN
+    of, and delete only common users. Common users cannot manage other accounts.
+    Self-service is handled by the dedicated account endpoints.
+    """
+    actor = str(actor_role or 'user').strip().lower()
+    target = str(target_role or 'user').strip().lower()
+    action = str(action or '').strip().lower()
+    allowed_actions = {'view', 'reset_pin', 'rename', 'change_role', 'delete'}
+    if action not in allowed_actions or target not in {'master', 'admin', 'user'}:
+        return False
+    if actor == 'master':
+        return target in {'admin', 'user'}
+    if actor == 'admin':
+        return target == 'user' and action in {'view', 'reset_pin', 'delete'}
+    return False
+
+
 def init_user_registry():
     con = identity_connection()
     try:
@@ -1749,6 +2197,7 @@ def init_user_registry():
                 auth_version INTEGER NOT NULL DEFAULT 1,
                 role TEXT NOT NULL DEFAULT 'user',
                 last_wallet_id TEXT NOT NULL DEFAULT '',
+                token_storage_key TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -1786,10 +2235,21 @@ def init_user_registry():
             con.execute("ALTER TABLE users ADD COLUMN last_wallet_id TEXT NOT NULL DEFAULT ''")
         if 'role' not in user_columns:
             con.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
-            # Existing installations have one legacy owner account; preserve its ability to manage accounts.
-            first_user = con.execute('SELECT id FROM users ORDER BY created_at,id LIMIT 1').fetchone()
-            if first_user:
-                con.execute("UPDATE users SET role='admin' WHERE id=?", (first_user['id'],))
+        # The oldest account is the immutable Master. Existing first admins from
+        # early multiuser builds are upgraded without changing their financial data.
+        _ensure_single_master(con)
+        if 'token_storage_key' not in user_columns:
+            con.execute("ALTER TABLE users ADD COLUMN token_storage_key TEXT NOT NULL DEFAULT ''")
+        # Existing v6.0 wallets used one tokens.db per wallet. Assign a stable
+        # token scope per user; legacy owner keeps /data/tokens.db so saved API
+        # credentials remain available after upgrade.
+        user_rows = con.execute('SELECT id,token_storage_key FROM users').fetchall()
+        for user_row in user_rows:
+            if str(user_row['token_storage_key'] or '').strip():
+                continue
+            legacy_wallet = con.execute("SELECT 1 FROM wallets WHERE user_id=? AND storage_key='legacy' LIMIT 1", (str(user_row['id']),)).fetchone()
+            token_key = 'legacy' if legacy_wallet else str(user_row['id'])
+            con.execute('UPDATE users SET token_storage_key=? WHERE id=?', (token_key, str(user_row['id'])))
         con.commit()
     finally:
         con.close()
@@ -1907,7 +2367,8 @@ def _confirm_identity_pin(con, username_norm, salt, expected_hash, supplied_pin,
 
 def _wallet_rows_for_user(con, user_id):
     return con.execute(
-        'SELECT id,user_id,name,name_norm,storage_key,is_default,created_at,updated_at FROM wallets WHERE user_id=? ORDER BY is_default DESC,created_at,id',
+        'SELECT w.id,w.user_id,w.name,w.name_norm,w.storage_key,w.is_default,w.created_at,w.updated_at,u.token_storage_key '
+        'FROM wallets w JOIN users u ON u.id=w.user_id WHERE w.user_id=? ORDER BY w.is_default DESC,w.created_at,w.id',
         (user_id,)
     ).fetchall()
 
@@ -1916,14 +2377,25 @@ def _wallet_context_from_row(wallet_row):
     storage_key = str(wallet_row['storage_key'] or '')
     user_id = str(wallet_row['user_id'])
     wallet_id = str(wallet_row['id'])
+    try:
+        token_storage_key = str(wallet_row['token_storage_key'] or '')
+    except (KeyError, IndexError):
+        token_storage_key = ''
+    if not token_storage_key:
+        token_storage_key = 'legacy' if storage_key == 'legacy' else user_id
     if storage_key == 'legacy':
         assets_path = DB_PATH
-        secrets_path = TOKEN_DB_PATH
         wallet_dir = str(DATA_ROOT)
     else:
         wallet_dir = str(DATA_ROOT / 'users' / user_id / 'wallets' / wallet_id)
         assets_path = str(Path(wallet_dir) / 'ativos.db')
-        secrets_path = str(Path(wallet_dir) / 'tokens.db')
+    # Provider API credentials are shared by all wallets belonging to the same
+    # user. Pluggy bank connections (pluggy_items/accounts/investments) remain
+    # in each wallet's own ativos.db and are therefore never shared.
+    if token_storage_key == 'legacy':
+        secrets_path = TOKEN_DB_PATH
+    else:
+        secrets_path = str(DATA_ROOT / 'users' / user_id / 'tokens.db')
     return {
         'user_id': user_id,
         'wallet_id': wallet_id,
@@ -1933,6 +2405,7 @@ def _wallet_context_from_row(wallet_row):
         'wallet_dir': wallet_dir,
         'dashboard_cache_path': str(DATA_ROOT / 'cache' / user_id / wallet_id / 'dashboard_cache.json'),
         'storage_key': storage_key,
+        'token_storage_key': token_storage_key,
     }
 
 
@@ -1940,7 +2413,8 @@ def _wallet_context_for_ids(user_id, wallet_id):
     con = identity_connection()
     try:
         row = con.execute(
-            'SELECT id,user_id,name,name_norm,storage_key,is_default,created_at,updated_at FROM wallets WHERE id=? AND user_id=?',
+            'SELECT w.id,w.user_id,w.name,w.name_norm,w.storage_key,w.is_default,w.created_at,w.updated_at,u.token_storage_key '
+            'FROM wallets w JOIN users u ON u.id=w.user_id WHERE w.id=? AND w.user_id=?',
             (str(wallet_id), str(user_id))
         ).fetchone()
         if not row:
@@ -1959,7 +2433,8 @@ def _all_wallet_contexts():
     con = identity_connection()
     try:
         rows = con.execute(
-            'SELECT id,user_id,name,name_norm,storage_key,is_default,created_at,updated_at FROM wallets ORDER BY created_at,id'
+            'SELECT w.id,w.user_id,w.name,w.name_norm,w.storage_key,w.is_default,w.created_at,w.updated_at,u.token_storage_key '
+            'FROM wallets w JOIN users u ON u.id=w.user_id ORDER BY w.created_at,w.id'
         ).fetchall()
         if not rows:
             return [None]
@@ -1997,7 +2472,7 @@ def _ensure_private_data_directory(path):
 
 
 def _initialize_wallet_storage(context):
-    """Create a new, fully isolated portfolio database pair with no provider connections."""
+    """Create an empty portfolio DB; provider tokens are shared only within its user."""
     if not context or context.get('storage_key') == 'legacy':
         return
     wallet_dir = _ensure_private_data_directory(context['wallet_dir'])
@@ -2020,8 +2495,9 @@ def _initialize_wallet_storage(context):
             os.chmod(secrets_path, 0o600)
         except OSError:
             app.logger.warning('Não foi possível restringir as permissões dos bancos da nova carteira.')
-        # A newly created personal portfolio starts empty: no target allocations,
-        # holdings, operations, dividends, Pluggy items, or API credentials.
+        # A newly created portfolio starts empty: no target allocations, holdings,
+        # operations, dividends, or Pluggy items. API credentials live in a shared
+        # per-user vault so this user's other portfolios can reuse provider tokens.
         assets_con = sqlite3.connect(active_db_path(), timeout=15)
         try:
             assets_con.execute('DELETE FROM distribuicao_alvo')
@@ -2044,8 +2520,8 @@ def _create_user_account(username, pin, legacy=False):
         if con.execute('SELECT 1 FROM users LIMIT 1').fetchone():
             raise ValueError('A configuração inicial já foi concluída.')
         con.execute(
-            "INSERT INTO users(id,username,username_norm,pin_salt,pin_hash,auth_version,role,created_at,updated_at) VALUES(?,?,?,?,?,1,'admin',?,?)",
-            (user_id, username, _username_normalized(username), salt, digest, now_text, now_text)
+            "INSERT INTO users(id,username,username_norm,pin_salt,pin_hash,auth_version,role,token_storage_key,created_at,updated_at) VALUES(?,?,?,?,?,1,'master',?,?,?)",
+            (user_id, username, _username_normalized(username), salt, digest, 'legacy' if legacy else user_id, now_text, now_text)
         )
         wallet_id = _create_wallet_record(con, user_id, 'Padrão', storage_key='legacy' if legacy else None, is_default=True)
         con.execute('UPDATE users SET last_wallet_id=? WHERE id=?', (wallet_id, user_id))
@@ -2058,7 +2534,17 @@ def _create_user_account(username, pin, legacy=False):
         con.close()
 
 
-def _create_additional_user(username, pin):
+class UserCreationRateLimited(PermissionError):
+    """Raised when the per-IP user-creation window is exhausted."""
+
+
+def _create_additional_user(username, pin, role='user', creator_id=None, creator_auth_version=None):
+    """Create an account only for a still-authenticated Master/Admin actor."""
+    if not str(creator_id or '').strip() or creator_auth_version is None:
+        raise PermissionError('A criação exige uma sessão autenticada de Master ou Admin.')
+    normalized_role = str(role or 'user').strip().lower()
+    if normalized_role not in ('user', 'admin'):
+        raise ValueError('O papel de uma nova conta deve ser Usuário ou Admin.')
     user_id = str(uuid.uuid4())
     salt = secrets.token_bytes(16).hex()
     digest = pin_digest(pin, salt)
@@ -2066,17 +2552,31 @@ def _create_additional_user(username, pin):
     con = identity_connection()
     try:
         con.execute('BEGIN IMMEDIATE')
+        creator = con.execute('SELECT role,auth_version FROM users WHERE id=?', (str(creator_id),)).fetchone()
+        if not creator:
+            raise PermissionError('A conta responsável pela criação não existe mais. Entre novamente.')
+        creator_role = str(creator['role'] or 'user')
+        if creator_role not in ('master', 'admin'):
+            raise PermissionError('Somente Master ou Admin pode criar usuários.')
+        if creator_role == 'admin' and str(role or 'user').strip().lower() != 'user':
+            raise PermissionError('Admins só podem criar usuários comuns. Somente o Master pode criar contas Admin.')
+        try:
+            supplied_auth_version = int(creator_auth_version)
+        except (TypeError, ValueError):
+            raise PermissionError('A sessão de criação é inválida. Entre novamente e tente outra vez.')
+        if int(creator['auth_version'] or 0) != supplied_auth_version:
+            raise PermissionError('Sua sessão mudou durante a criação. Entre novamente e tente outra vez.')
         now_epoch = time.time()
         # Keep a short audit window without allowing an unbounded attempts table.
         con.execute('DELETE FROM registration_attempts WHERE created_at < ?', (now_epoch - 86400,))
         count = int(con.execute("SELECT COUNT(*) FROM registration_attempts WHERE client_ip=? AND created_at>=?", (_identity_client_ip(), now_epoch-3600)).fetchone()[0])
         if count >= 5:
             con.commit()  # Persist the old-history cleanup even when this request is rate-limited.
-            raise PermissionError('Limite de criação de usuários atingido neste endereço. Tente novamente mais tarde.')
+            raise UserCreationRateLimited('Limite de criação de usuários atingido neste endereço. Tente novamente mais tarde.')
         con.execute('INSERT INTO registration_attempts(client_ip,created_at) VALUES(?,?)', (_identity_client_ip(), now_epoch))
         con.execute(
-            "INSERT INTO users(id,username,username_norm,pin_salt,pin_hash,auth_version,role,created_at,updated_at) VALUES(?,?,?,?,?,1,'user',?,?)",
-            (user_id, username, _username_normalized(username), salt, digest, now_text, now_text)
+            'INSERT INTO users(id,username,username_norm,pin_salt,pin_hash,auth_version,role,token_storage_key,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?,?,?)',
+            (user_id, username, _username_normalized(username), salt, digest, normalized_role, user_id, now_text, now_text)
         )
         wallet_id = _create_wallet_record(con, user_id, 'Padrão', is_default=True)
         con.execute('UPDATE users SET last_wallet_id=? WHERE id=?', (wallet_id, user_id))
@@ -2152,6 +2652,52 @@ def _legacy_pin_is_valid(pin):
 
 
 init_user_registry()
+recover_pending_account_deletions()
+
+
+def _merge_legacy_wallet_tokens(source_path, shared_path):
+    """Merge v6.0 per-wallet provider tokens into the new per-user vault.
+
+    Newer credential rows win. Existing shared credentials are never replaced
+    by older wallet-local copies. Pluggy connection records are not in this DB;
+    they remain isolated in each wallet's financial database.
+    """
+    source = Path(source_path)
+    target = Path(shared_path)
+    if not source.is_file() or source.resolve() == target.resolve():
+        return 0
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    src = sqlite3.connect(str(source), timeout=15)
+    src.row_factory = sqlite3.Row
+    try:
+        has_table = src.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='api_credentials'").fetchone()
+        if not has_table:
+            return 0
+        rows = src.execute('SELECT provider,token_encrypted,enabled,updated_at FROM api_credentials').fetchall()
+    finally:
+        src.close()
+    if not rows:
+        # An empty legacy token file can be removed after the shared vault exists.
+        return 0
+    dst = sqlite3.connect(str(target), timeout=15)
+    try:
+        dst.execute('PRAGMA busy_timeout=15000')
+        dst.execute('''CREATE TABLE IF NOT EXISTS api_credentials (
+            provider TEXT PRIMARY KEY, token_encrypted TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL
+        )''')
+        before = dst.total_changes
+        dst.executemany(
+            "INSERT INTO api_credentials(provider,token_encrypted,enabled,updated_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(provider) DO UPDATE SET token_encrypted=excluded.token_encrypted, "
+            "enabled=excluded.enabled,updated_at=excluded.updated_at "
+            "WHERE COALESCE(excluded.updated_at,'') > COALESCE(api_credentials.updated_at,'')",
+            [(r['provider'],r['token_encrypted'],r['enabled'],r['updated_at']) for r in rows]
+        )
+        dst.commit()
+        return dst.total_changes - before
+    finally:
+        dst.close()
 
 
 def prepare_registered_wallet_databases():
@@ -2171,6 +2717,9 @@ def prepare_registered_wallet_databases():
             assets_existed = assets_path.is_file()
             _ensure_private_data_directory(Path(context['wallet_dir']))
             token_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            legacy_wallet_token_path = Path(context['wallet_dir']) / 'tokens.db'
+            if legacy_wallet_token_path.exists() and legacy_wallet_token_path.resolve() != token_path.resolve():
+                _merge_legacy_wallet_tokens(legacy_wallet_token_path, token_path)
             token_con = sqlite3.connect(str(token_path), timeout=15)
             try:
                 token_con.execute('PRAGMA busy_timeout=15000')
@@ -2225,7 +2774,20 @@ def require_user_authentication():
         return jsonify(ok=False, error='Origem da requisição não autorizada.'), 403
     public_endpoints = {'auth_status', 'auth_setup', 'auth_login', 'health', 'static'}
     if request.endpoint in public_endpoints or request.path.startswith('/static/'):
+        # Authentication/setup and health remain readable during normal operation.
+        # A full Master deletion blocks setup until the process restarts, ensuring
+        # no worker from the old installation can repopulate erased databases.
+        if request.endpoint == 'health' or request.path.startswith('/static/'):
+            return None
+        if _marker_matches_current_process(DATA_ROOT / '.deleting-installation'):
+            return jsonify(ok=False, error='A instalação foi apagada. Reinicie o container para iniciar uma nova configuração.', installation_reset=True), 503
         return None
+    if _marker_matches_current_process(DATA_ROOT / '.deleting-installation'):
+        return jsonify(ok=False, error='A instalação foi apagada. Reinicie o container para iniciar uma nova configuração.', installation_reset=True), 503
+    current_user_id = str(session.get('user_id') or '')
+    if current_user_id and _marker_matches_current_process(DATA_ROOT / '.deleting-users' / (current_user_id + '.deleting')):
+        session.clear()
+        return jsonify(ok=False, error='Esta conta foi excluída ou está sendo excluída. Entre com outra conta.', account_deleted=True), 401
     now = time.time()
     user_id = str(session.get('user_id') or '')
     authenticated = bool(session.get('authenticated') and user_id)
@@ -2274,6 +2836,12 @@ def auth_status():
             legacy_pin_required=bool(legacy and legacy['enabled'] and legacy['pin_hash']),
             username=str(user['username']) if authenticated else '',
             role=str(user['role'] or 'user') if authenticated else '',
+            can_manage_users=bool(authenticated and str(user['role'] or 'user') in ('master','admin')),
+            can_change_username=bool(authenticated and str(user['role'] or 'user') in ('master','admin')),
+            role_label=('Master' if authenticated and str(user['role'] or 'user') == 'master' else 'Administrador' if authenticated and str(user['role'] or 'user') == 'admin' else 'Usuário comum' if authenticated else ''),
+            is_master=bool(authenticated and str(user['role'] or 'user') == 'master'),
+            can_delete_own_account=bool(authenticated),
+            other_user_count=max(0, count - 1) if authenticated and str(user['role'] or 'user') == 'master' else 0,
             wallets=[{'id':str(row['id']),'name':str(row['name']),'is_default':bool(row['is_default'])} for row in wallets] if authenticated else [],
             active_wallet_id=str(active_wallet['id']) if active_wallet and authenticated else '',
             max_wallets=3, idle_timeout_minutes=30
@@ -2332,13 +2900,19 @@ def auth_register():
     if not valid_pin:
         return jsonify(ok=False, error=pin_error), 400
     current_pin = str(payload.get('current_pin') or '')
+    requested_role = str(payload.get('role') or 'user').strip().lower()
+    if requested_role not in ('user', 'admin'):
+        return jsonify(ok=False, error='Selecione um papel válido: Usuário ou Admin.'), 400
     creator_id = str(session.get('user_id') or '')
     con = identity_connection()
     try:
         con.execute('BEGIN IMMEDIATE')
         creator = con.execute('SELECT pin_salt,pin_hash,username_norm,role FROM users WHERE id=?', (creator_id,)).fetchone()
-        if not creator or str(creator['role'] or 'user') != 'admin':
-            return jsonify(ok=False, error='Somente o administrador da instalação pode criar usuários.'), 403
+        creator_role = str(creator['role'] or 'user') if creator else 'user'
+        if creator_role not in ('master', 'admin'):
+            return jsonify(ok=False, error='Somente Master ou Admin pode criar usuários.'), 403
+        if creator_role == 'admin' and requested_role != 'user':
+            return jsonify(ok=False, error='Admins só podem criar usuários comuns. Somente o Master pode criar contas Admin.'), 403
         pin_response = _confirm_identity_pin(
             con, str(creator['username_norm']), creator['pin_salt'], creator['pin_hash'], current_pin,
             'Confirme a criação de usuário com seu PIN atual.'
@@ -2352,11 +2926,13 @@ def auth_register():
     wallet_id = None
     context = None
     try:
-        user_id, wallet_id = _create_additional_user(username, str(payload['pin']))
+        user_id, wallet_id = _create_additional_user(username, str(payload['pin']), role=requested_role, creator_id=creator_id, creator_auth_version=int(session.get('auth_version') or 0))
     except sqlite3.IntegrityError:
         return jsonify(ok=False, error='Esse nome de usuário já está em uso.'), 409
-    except PermissionError as exc:
+    except UserCreationRateLimited as exc:
         return jsonify(ok=False, error=str(exc)), 429
+    except PermissionError as exc:
+        return jsonify(ok=False, error=str(exc)), 403
     try:
         context = _wallet_context_for_ids(user_id, wallet_id)
         if not context:
@@ -2371,10 +2947,375 @@ def auth_register():
         finally:
             cleanup.close()
         if context:
-            shutil.rmtree(context['wallet_dir'], ignore_errors=True)
+            # A new user's token vault is shared at /data/users/<user_id>/tokens.db,
+            # outside the wallet directory. Remove the entire user data tree on
+            # failed first-wallet initialization; no existing user's data is touched.
+            shutil.rmtree(DATA_ROOT / 'users' / user_id, ignore_errors=True)
+            shutil.rmtree(DATA_ROOT / 'cache' / user_id, ignore_errors=True)
         return jsonify(ok=False, error='Não foi possível preparar os dados do novo usuário.'), 500
-    return jsonify(ok=True, username=username, wallet_id=wallet_id,
-                   message='Usuário criado com uma carteira Padrão vazia e sem conexões Pluggy.')
+    return jsonify(ok=True, username=username, role=requested_role, wallet_id=wallet_id,
+                   message='Usuário criado com uma carteira Padrão vazia. Tokens de APIs são próprios do usuário; conexões bancárias Pluggy não são compartilhadas.')
+
+
+@app.route('/api/users', methods=['GET'])
+def users_management_list():
+    '''List accounts for Master/Admin only; never expose hashes, salts or tokens.'''
+    actor_id = str(session.get('user_id') or '')
+    con = identity_connection()
+    try:
+        actor = con.execute('SELECT id,role FROM users WHERE id=?', (actor_id,)).fetchone()
+        actor_role = str(actor['role'] or 'user') if actor else 'user'
+        if actor_role not in ('master', 'admin'):
+            return jsonify(ok=False, error='Somente Master ou Admin pode gerenciar usuários.'), 403
+        # Admins see only themselves and common users; other Admins and the
+        # Master are not disclosed to them. Master sees every non-master account.
+        if actor_role == 'master':
+            rows = con.execute('''
+                SELECT u.id,u.username,u.role,u.created_at,
+                       COUNT(w.id) AS wallet_count,
+                       COALESCE(SUM(CASE WHEN w.is_default=1 THEN 1 ELSE 0 END),0) AS default_wallet_count
+                FROM users u LEFT JOIN wallets w ON w.user_id=u.id
+                GROUP BY u.id ORDER BY CASE u.role WHEN 'master' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,u.created_at,u.username_norm
+            ''').fetchall()
+        else:
+            rows = con.execute('''
+                SELECT u.id,u.username,u.role,u.created_at,
+                       COUNT(w.id) AS wallet_count,
+                       COALESCE(SUM(CASE WHEN w.is_default=1 THEN 1 ELSE 0 END),0) AS default_wallet_count
+                FROM users u LEFT JOIN wallets w ON w.user_id=u.id
+                WHERE u.role='user' OR u.id=?
+                GROUP BY u.id ORDER BY CASE u.role WHEN 'admin' THEN 0 ELSE 1 END,u.created_at,u.username_norm
+            ''', (actor_id,)).fetchall()
+        users = []
+        for row in rows:
+            target_role = str(row['role'] or 'user')
+            is_self = str(row['id']) == actor_id
+            can_reset_pin = (not is_self) and _user_management_permission(actor_role, target_role, 'reset_pin')
+            can_rename = (not is_self) and _user_management_permission(actor_role, target_role, 'rename')
+            can_delete = (not is_self) and _user_management_permission(actor_role, target_role, 'delete')
+            can_change_role = (not is_self) and _user_management_permission(actor_role, target_role, 'change_role')
+            can_manage = can_reset_pin or can_rename or can_change_role
+            users.append({
+                'id':str(row['id']), 'username':str(row['username']), 'role':target_role,
+                'created_at':str(row['created_at']), 'wallet_count':int(row['wallet_count'] or 0),
+                'is_self':is_self, 'can_manage':can_manage, 'can_reset_pin':can_reset_pin,
+                'can_rename':can_rename, 'can_delete':can_delete,
+                'can_change_role':can_change_role,
+            })
+        return jsonify(ok=True, users=users, actor_role=actor_role, is_master=actor_role == 'master')
+    finally:
+        con.close()
+
+
+@app.route('/api/users/<target_user_id>', methods=['PATCH'])
+def users_management_update(target_user_id):
+    '''Master/Admin updates username, role or PIN of another account.'''
+    payload = request.get_json(silent=True) or {}
+    actor_id = str(session.get('user_id') or '')
+    current_pin = str(payload.get('current_pin') or '')
+    new_username = None
+    if 'username' in payload:
+        new_username, username_error = _validate_username(payload.get('username'))
+        if username_error:
+            return jsonify(ok=False, error=username_error), 400
+    new_role = None
+    if 'role' in payload:
+        new_role = str(payload.get('role') or '').strip().lower()
+        if new_role not in ('user', 'admin'):
+            return jsonify(ok=False, error='O papel permitido é Usuário ou Admin. A conta Master é única.'), 400
+    new_pin = str(payload.get('new_pin') or '')
+    confirm_pin = str(payload.get('confirm_pin') or '')
+    if new_pin or confirm_pin:
+        valid_pin, pin_error = _validate_pin_pair(new_pin, confirm_pin)
+        if not valid_pin:
+            return jsonify(ok=False, error=pin_error), 400
+    if new_username is None and new_role is None and not new_pin:
+        return jsonify(ok=False, error='Informe pelo menos uma alteração.'), 400
+    if target_user_id == actor_id:
+        return jsonify(ok=False, error='Use as opções da própria conta para alterar seu usuário ou PIN.'), 409
+
+    con = identity_connection()
+    try:
+        con.execute('BEGIN IMMEDIATE')
+        actor = con.execute('SELECT id,username_norm,pin_salt,pin_hash,role FROM users WHERE id=?', (actor_id,)).fetchone()
+        target = con.execute('SELECT id,username,username_norm,role,auth_version FROM users WHERE id=?', (str(target_user_id),)).fetchone()
+        if not actor or str(actor['role'] or 'user') not in ('master', 'admin'):
+            return jsonify(ok=False, error='Somente Master ou Admin pode gerenciar usuários.'), 403
+        if not target:
+            return jsonify(ok=False, error='Usuário não encontrado.'), 404
+        actor_role = str(actor['role'] or 'user')
+        target_role = str(target['role'] or 'user')
+        if target_role == 'master':
+            return jsonify(ok=False, error='A conta Master não pode ser gerenciada por outra conta. O Master altera seus próprios dados em Segurança.'), 403
+        if new_username is not None and not _user_management_permission(actor_role, target_role, 'rename'):
+            return jsonify(ok=False, error='Somente o Master pode renomear outras contas.'), 403
+        if new_pin and not _user_management_permission(actor_role, target_role, 'reset_pin'):
+            return jsonify(ok=False, error='Você não tem permissão para redefinir o PIN desta conta.'), 403
+        if new_role is not None and not _user_management_permission(actor_role, target_role, 'change_role'):
+            return jsonify(ok=False, error='Somente o Master pode promover ou rebaixar contas existentes.'), 403
+        if actor_role == 'admin' and (new_username is not None or new_role is not None):
+            return jsonify(ok=False, error='Admins só podem redefinir o PIN e excluir usuários comuns. Alterar nomes ou papéis é exclusivo do Master.'), 403
+        pin_response = _confirm_identity_pin(con, str(actor['username_norm']), actor['pin_salt'], actor['pin_hash'], current_pin,
+                                             'Confirme a alteração com seu PIN atual.')
+        if pin_response:
+            return pin_response
+        next_username = str(target['username']) if new_username is None else new_username
+        next_role = target_role if new_role is None else new_role
+        next_salt = None
+        next_hash = None
+        if new_pin:
+            next_salt = secrets.token_bytes(16).hex()
+            next_hash = pin_digest(new_pin, next_salt)
+        new_auth_version = int(target['auth_version'] or 1) + 1
+        if new_username is not None or new_pin:
+            con.execute('DELETE FROM auth_attempts WHERE username_norm=?', (str(target['username_norm']),))
+        if next_salt:
+            con.execute('UPDATE users SET username=?,username_norm=?,role=?,pin_salt=?,pin_hash=?,auth_version=?,updated_at=? WHERE id=?',
+                        (next_username,_username_normalized(next_username),next_role,next_salt,next_hash,new_auth_version,datetime.now(TZ).isoformat(timespec='seconds'),str(target_user_id)))
+        else:
+            con.execute('UPDATE users SET username=?,username_norm=?,role=?,auth_version=?,updated_at=? WHERE id=?',
+                        (next_username,_username_normalized(next_username),next_role,new_auth_version,datetime.now(TZ).isoformat(timespec='seconds'),str(target_user_id)))
+        con.commit()
+        return jsonify(ok=True, user={'id':str(target_user_id),'username':next_username,'role':next_role},
+                       message='Conta atualizada. O usuário deverá entrar novamente para aplicar as alterações.')
+    except sqlite3.IntegrityError:
+        return jsonify(ok=False, error='Esse nome de usuário já está em uso.'), 409
+    finally:
+        con.close()
+
+
+@app.route('/api/users/<target_user_id>', methods=['DELETE'])
+def users_management_delete(target_user_id):
+    """Master/Admin deletes another account and atomically removes its private DB tree."""
+    actor_id = str(session.get('user_id') or '')
+    payload = request.get_json(silent=True) or {}
+    current_pin = str(payload.get('current_pin') or '')
+    if target_user_id == actor_id:
+        return jsonify(ok=False, error='Para excluir sua própria conta, use Configurações → Excluir minha conta e confirme com seu PIN atual.'), 409
+
+    con = identity_connection()
+    stage_root = None
+    deletion_marker = None
+    committed = False
+    try:
+        con.execute('BEGIN IMMEDIATE')
+        actor = con.execute('SELECT id,username_norm,pin_salt,pin_hash,role FROM users WHERE id=?', (actor_id,)).fetchone()
+        target = con.execute('SELECT id,username,username_norm,role FROM users WHERE id=?', (str(target_user_id),)).fetchone()
+        if not actor or str(actor['role'] or 'user') not in ('master', 'admin'):
+            return jsonify(ok=False, error='Somente Master ou Admin pode excluir outros usuários.'), 403
+        if not target:
+            return jsonify(ok=False, error='Usuário não encontrado.'), 404
+        actor_role = str(actor['role'] or 'user')
+        target_role = str(target['role'] or 'user')
+        if target_role == 'master':
+            return jsonify(ok=False, error='A conta Master só pode ser excluída pelo próprio Master, por meio da exclusão total da instalação.'), 403
+        if not _user_management_permission(actor_role, target_role, 'delete'):
+            return jsonify(ok=False, error='Admins não podem excluir outras contas Admin. Somente o Master pode fazê-lo.'), 403
+        pin_response = _confirm_identity_pin(con, str(actor['username_norm']), actor['pin_salt'], actor['pin_hash'], current_pin,
+                                             'Confirme a exclusão com seu PIN atual.')
+        if pin_response:
+            return pin_response
+        deletion_marker = _create_account_deletion_marker(str(target_user_id), reset_installation=False)
+        stage_root = _stage_account_storage(str(target_user_id), reset_installation=False)
+        con.execute('DELETE FROM auth_attempts WHERE username_norm=?', (str(target['username_norm'] or ''),))
+        con.execute('DELETE FROM users WHERE id=?', (str(target_user_id),))
+        con.commit()
+        committed = True
+    except sqlite3.IntegrityError as exc:
+        con.rollback()
+        if stage_root:
+            _restore_staged_account_storage(stage_root)
+            stage_root = None
+        _remove_account_deletion_marker(deletion_marker)
+        return jsonify(ok=False, error=str(exc) or 'Não foi possível excluir esta conta.'), 409
+    except Exception:
+        con.rollback()
+        if stage_root:
+            try:
+                _restore_staged_account_storage(stage_root)
+                stage_root = None
+            except Exception:
+                app.logger.exception('Falha crítica ao restaurar os dados da conta após exclusão cancelada.')
+        _remove_account_deletion_marker(deletion_marker)
+        app.logger.exception('Falha ao excluir a conta %s.', target_user_id)
+        return jsonify(ok=False, error='Não foi possível concluir a exclusão. Os dados foram preservados quando possível.'), 500
+    finally:
+        con.close()
+    cleanup_pending = False
+    if committed:
+        _clear_runtime_state_for_deleted_account(user_id=str(target_user_id))
+    if committed and stage_root:
+        try:
+            _finalize_staged_account_storage(stage_root)
+        except Exception:
+            cleanup_pending = True
+            app.logger.exception('A conta foi removida, mas o descarte definitivo da quarentena ficou pendente.')
+    return jsonify(ok=True, deleted_user_id=str(target_user_id), cleanup_pending=cleanup_pending,
+                   message='Usuário, suas carteiras e seus bancos de dados foram excluídos. Backups anteriores que contenham cópias desses dados permanecem preservados.' if not cleanup_pending else
+                           'A conta foi removida. A limpeza física final será concluída automaticamente na próxima inicialização; backups anteriores permanecem preservados.')
+
+
+@app.route('/api/account/self', methods=['DELETE'])
+def auth_delete_own_account():
+    """Delete the authenticated account and only its owned data.
+
+    When the Master leaves while other accounts remain, the oldest remaining
+    account is promoted to Master in the same identity transaction. Its auth
+    version is incremented so the new Master must authenticate again. If the
+    Master is the last account, the installation is reset to first-run state.
+    """
+    actor_id = str(session.get('user_id') or '')
+    payload = request.get_json(silent=True) or {}
+    current_pin = str(payload.get('current_pin') or '')
+    confirmation = str(payload.get('confirmation') or '')
+    con = identity_connection()
+    stage_root = None
+    deletion_marker = None
+    committed = False
+    is_master = False
+    transfer_master = False
+    successor = None
+    include_legacy_data = False
+    reset_installation = False
+    try:
+        con.execute('BEGIN IMMEDIATE')
+        actor = con.execute('SELECT id,username,username_norm,pin_salt,pin_hash,role FROM users WHERE id=?', (actor_id,)).fetchone()
+        if not actor:
+            return jsonify(ok=False, error='Conta não encontrada ou já excluída.'), 404
+        actor_role = str(actor['role'] or 'user')
+        if actor_role not in ('master', 'admin', 'user'):
+            return jsonify(ok=False, error='Papel de conta inválido. Exclusão cancelada.'), 403
+        is_master = actor_role == 'master'
+        if is_master:
+            successor = con.execute(
+                'SELECT id,username,username_norm,auth_version FROM users WHERE id<>? ORDER BY created_at,id LIMIT 1',
+                (actor_id,)
+            ).fetchone()
+            transfer_master = successor is not None
+            reset_installation = not transfer_master
+            if transfer_master:
+                required_phrase = 'TRANSFERIR MASTER E EXCLUIR MINHA CONTA'
+                # Root-level databases are the legacy storage scope of the
+                # original Master. Stage any that still exist even if an old
+                # or partially migrated registry no longer has its legacy row.
+                include_legacy_data = True
+            else:
+                required_phrase = 'APAGAR TODA A INSTALAÇÃO'
+        else:
+            required_phrase = 'EXCLUIR MINHA CONTA'
+
+        if confirmation != required_phrase:
+            return jsonify(ok=False, error=f'Digite exatamente: {required_phrase}.'), 400
+        pin_response = _confirm_identity_pin(con, str(actor['username_norm']), actor['pin_salt'], actor['pin_hash'], current_pin,
+                                             'Confirme a exclusão com seu PIN atual.')
+        if pin_response:
+            return pin_response
+
+        deletion_marker = _create_account_deletion_marker(actor_id, reset_installation=reset_installation)
+        stage_root = _stage_account_storage(
+            actor_id,
+            reset_installation=reset_installation,
+            include_legacy_data=include_legacy_data,
+        )
+
+        if is_master and transfer_master:
+            promoted = _delete_master_and_promote_successor(
+                con, actor_id, now=datetime.now(TZ).isoformat(timespec='seconds')
+            )
+            if not promoted:
+                raise RuntimeError('Não foi possível transferir a administração para a próxima conta.')
+            successor = promoted
+        elif is_master:
+            # The Master is the final account: reset local installation data,
+            # but preserve the identity schema for the next first-run setup.
+            con.execute('DROP TRIGGER IF EXISTS protect_master_delete')
+            con.execute('DELETE FROM users')  # FK cascade removes every wallet registry row.
+            con.execute('DELETE FROM auth_attempts')
+            con.execute('DELETE FROM registration_attempts')
+            con.execute("""CREATE TRIGGER protect_master_delete
+                BEFORE DELETE ON users WHEN OLD.role='master'
+                BEGIN SELECT RAISE(ABORT, 'A conta Master só pode ser excluída pelo fluxo de exclusão pessoal ou reset.'); END""")
+        else:
+            con.execute('DELETE FROM users WHERE id=?', (actor_id,))
+            con.execute('DELETE FROM auth_attempts WHERE username_norm=?', (str(actor['username_norm']),))
+        con.commit()
+        committed = True
+    except sqlite3.IntegrityError as exc:
+        con.rollback()
+        if stage_root:
+            _restore_staged_account_storage(stage_root)
+            stage_root = None
+        _remove_account_deletion_marker(deletion_marker)
+        return jsonify(ok=False, error=str(exc) or 'Não foi possível excluir a conta.'), 409
+    except Exception:
+        con.rollback()
+        if stage_root:
+            try:
+                _restore_staged_account_storage(stage_root)
+                stage_root = None
+            except Exception:
+                app.logger.exception('Falha crítica ao restaurar dados após exclusão de conta cancelada.')
+        _remove_account_deletion_marker(deletion_marker)
+        app.logger.exception('Falha ao excluir a própria conta %s.', actor_id)
+        return jsonify(ok=False, error='Não foi possível concluir a exclusão. Os dados foram preservados quando possível.'), 500
+    finally:
+        con.close()
+
+    cleanup_pending = False
+    external_cleanup_errors = []
+    if committed:
+        _clear_runtime_state_for_deleted_account(user_id=actor_id, all_users=reset_installation)
+    if committed and stage_root:
+        try:
+            _finalize_staged_account_storage(stage_root)
+            stage_root = None
+        except Exception:
+            cleanup_pending = True
+            app.logger.exception('A conta foi removida, mas a quarentena ainda precisa ser apagada.')
+    if reset_installation:
+        # This branch runs only when the Master was the last account.
+        shutil.rmtree(DATA_ROOT / '.deleting-users', ignore_errors=True)
+        external_cleanup_errors = _remove_external_install_files()
+        if external_cleanup_errors:
+            cleanup_pending = True
+            app.logger.error('Alguns arquivos externos à pasta de dados não puderam ser removidos: %s', external_cleanup_errors)
+    # Keep the per-account marker for the rest of this process lifetime. Any
+    # in-flight worker still carrying the deleted user's context must remain
+    # blocked from recreating files until startup recovery clears old markers.
+
+    session.clear()
+    if reset_installation:
+        external_backup = Path(os.environ.get('BACKUP_DIR', str(DATA_ROOT / 'backups'))).expanduser().resolve()
+        try:
+            external_backup.relative_to(DATA_ROOT.resolve())
+            external_backups_preserved = False
+        except ValueError:
+            external_backups_preserved = external_backup.exists()
+        message = ('Conta Master excluída. Como era a única conta restante, todos os dados da instalação dentro do volume local foram apagados e a instalação voltou ao primeiro acesso. '
+                   'Backups guardados fora desse volume não são apagados automaticamente.')
+        if external_backups_preserved:
+            message += ' Backups configurados fora do volume de dados permanecem preservados e precisam ser removidos separadamente.'
+        if external_cleanup_errors:
+            message += ' Alguns arquivos configurados fora do volume não puderam ser removidos; consulte os logs do servidor.'
+        if cleanup_pending:
+            message += ' A limpeza física final será concluída automaticamente na próxima inicialização.'
+        return jsonify(ok=True, deleted=True, deleted_installation=True, cleanup_pending=cleanup_pending,
+                       external_backups_preserved=external_backups_preserved, message=message)
+
+    if transfer_master:
+        new_master_username = str(successor.get('username') or '') if isinstance(successor, dict) else str(successor['username'])
+        message = (f'Sua conta Master e todos os dados vinculados a ela foram excluídos. '
+                   f'A conta mais antiga restante ({new_master_username}) foi promovida automaticamente a Master e precisará entrar novamente. '
+                   'As demais contas, carteiras, conexões Pluggy e credenciais próprias foram preservadas. '
+                   'Backups anteriores que contenham cópias da conta excluída permanecem preservados e devem ser removidos separadamente se necessário.')
+    else:
+        message = ('Sua conta, todas as suas carteiras, bancos financeiros, conexões bancárias Pluggy, tokens de API compartilhados entre suas carteiras e caches foram excluídos. '
+                   'As demais contas não foram alteradas. Backups anteriores que contenham cópias desses dados permanecem preservados e precisam ser removidos separadamente se a intenção for eliminar também essas cópias.')
+    if cleanup_pending:
+        message += ' A limpeza física final será concluída automaticamente na próxima inicialização.'
+    return jsonify(ok=True, deleted=True, deleted_installation=False, master_transferred=transfer_master,
+                   new_master_username=(new_master_username if transfer_master else None),
+                   cleanup_pending=cleanup_pending, message=message)
 
 
 @app.route('/api/auth/login', methods=['POST'])
@@ -2480,6 +3421,8 @@ def auth_change_username():
         row = con.execute('SELECT * FROM users WHERE id=?', (user_id,)).fetchone()
         if not row:
             return jsonify(ok=False, error='Usuário não encontrado.'), 404
+        if str(row['role'] or 'user') == 'user':
+            return jsonify(ok=False, error='Usuários comuns podem redefinir o próprio PIN, mas não alterar o nome de usuário. Solicite ao Master se precisar de outro nome.'), 403
         pin_response = _confirm_identity_pin(
             con, str(row['username_norm']), row['pin_salt'], row['pin_hash'], current_pin,
             'PIN atual incorreto.'
@@ -2577,7 +3520,7 @@ def wallet_rename(wallet_id):
         return jsonify(ok=False, error='Você já possui uma carteira com esse nome.'), 409
     finally:
         con.close()
-    return jsonify(ok=True, name=name)
+    return jsonify(ok=True, wallet={'id':str(wallet_id),'name':name}, name=name, wallet_id=str(wallet_id), active_wallet_id=str(session.get('wallet_id') or ''), message='Nome da carteira atualizado.')
 
 
 @app.route('/api/wallets/<wallet_id>/select', methods=['POST'])
@@ -2705,6 +3648,77 @@ def _pluggy_is_configured():
 # The personal/free flow does not expose GET /v2/items. Keep itemIds locally:
 # the user copies each itemId from the Pluggy Dashboard Demo page.
 PLUGGY_AUTH_CACHE = {'api_key': '', 'expires_at': 0}
+
+
+def _clear_runtime_state_for_deleted_account(user_id=None, all_users=False):
+    """Erase in-memory caches and decrypted Pluggy credentials for deleted data scopes."""
+    user_states = globals().get('_SCOPED_USER_STATE', {})
+    user_lock = globals().get('_SCOPED_USER_STATE_LOCK')
+    if isinstance(user_states, dict):
+        if user_lock is not None:
+            user_lock.acquire()
+        try:
+            if all_users:
+                removed_user_states = list(user_states.values())
+                user_states.clear()
+            else:
+                removed_user_state = user_states.pop(str(user_id or ''), None)
+                removed_user_states = [removed_user_state] if removed_user_state else []
+        finally:
+            if user_lock is not None:
+                user_lock.release()
+        for state in removed_user_states:
+            if isinstance(state, dict):
+                for value in state.values():
+                    if isinstance(value, dict):
+                        value.clear()
+                state.clear()
+
+    scoped_states = globals().get('_SCOPED_WALLET_STATE', {})
+    scoped_lock = globals().get('_SCOPED_WALLET_STATE_LOCK')
+    if isinstance(scoped_states, dict):
+        if scoped_lock is not None:
+            scoped_lock.acquire()
+        try:
+            if all_users:
+                removed_states = list(scoped_states.values())
+                scoped_states.clear()
+            else:
+                prefix = str(user_id or '') + ':'
+                removed_states = [scoped_states.pop(key) for key in list(scoped_states) if str(key).startswith(prefix)]
+        finally:
+            if scoped_lock is not None:
+                scoped_lock.release()
+        # Explicitly clear references to decrypted credentials and per-wallet
+        # financial snapshots in case a worker still holds the state dictionary.
+        for state in removed_states:
+            if not isinstance(state, dict):
+                continue
+            for key in ('proventos_cache', 'proventos_state', 'portfolio_history_cache', 'performance_state'):
+                value = state.get(key)
+                if isinstance(value, dict):
+                    value.clear()
+            state.clear()
+
+    if all_users:
+        for name in ('CACHE', 'PORTFOLIO_HISTORY_CACHE', 'SGS_CACHE', 'BENCHMARK_CACHE',
+                     'PROVENTOS_SYNC_CACHE', 'PROVENTOS_SYNC_STATE', 'PERFORMANCE_HISTORY_STATE',
+                     'PLUGGY_AUTH_CACHE', '_ASSET_CLASS_CACHE'):
+            value = globals().get(name)
+            if isinstance(value, dict):
+                value.clear()
+        globals().get('BENCHMARK_CACHE', {}).update({'time': 0, 'data': {}})
+        globals().get('PROVENTOS_SYNC_CACHE', {}).update({'time': 0, 'result': None, 'signature': None})
+        globals().get('PROVENTOS_SYNC_STATE', {}).update({
+            'status': 'idle', 'signature': '', 'pending_signature': '',
+            'result': None, 'error': '', 'updated_at': '', 'inputs': None
+        })
+        globals().get('PERFORMANCE_HISTORY_STATE', {}).update({
+            'status': 'idle', 'signature': '', 'pending_signature': '',
+            'result': None, 'error': '', 'updated_at': ''
+        })
+        globals()['PROVENTOS_SYNC_PENDING_INPUTS'] = None
+        globals()['PERFORMANCE_HISTORY_PENDING_INPUTS'] = None
 PLUGGY_AUTH_LOCK = threading.Lock()
 PLUGGY_REQUEST_LOCK = threading.RLock()
 try:

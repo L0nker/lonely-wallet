@@ -46,35 +46,62 @@ def _load_functions(*names, extra=None):
 
 
 class MultiUserIsolationContractTests(unittest.TestCase):
-    def test_wallet_database_paths_are_unique_per_user_and_wallet(self):
+    def test_wallet_database_paths_are_isolated_but_api_tokens_are_shared_per_user(self):
         scope = _load_functions("_active_wallet_context", "active_db_path", "active_token_db_path", "active_dashboard_cache_path", "_wallet_context_from_row")
         make_context = scope["_wallet_context_from_row"]
         first = make_context({
-            "storage_key": "wallet-a", "user_id": "user-a", "id": "wallet-a",
+            "storage_key": "legacy", "token_storage_key": "legacy", "user_id": "user-a", "id": "wallet-a",
             "name": "Padrão", "is_default": 1,
         })
         second = make_context({
-            "storage_key": "wallet-b", "user_id": "user-a", "id": "wallet-b",
+            "storage_key": "wallet-b", "token_storage_key": "legacy", "user_id": "user-a", "id": "wallet-b",
             "name": "Reserva", "is_default": 0,
         })
         third = make_context({
-            "storage_key": "wallet-c", "user_id": "user-b", "id": "wallet-c",
+            "storage_key": "wallet-c", "token_storage_key": "user-b", "user_id": "user-b", "id": "wallet-c",
             "name": "Padrão", "is_default": 1,
         })
-        all_assets = {first["assets_db_path"], second["assets_db_path"], third["assets_db_path"]}
-        all_tokens = {first["token_db_path"], second["token_db_path"], third["token_db_path"]}
-        all_caches = {first["dashboard_cache_path"], second["dashboard_cache_path"], third["dashboard_cache_path"]}
-        self.assertEqual(len(all_assets), 3)
-        self.assertEqual(len(all_tokens), 3)
-        self.assertEqual(len(all_caches), 3)
-        self.assertIn("/users/user-a/wallets/wallet-a/ativos.db", first["assets_db_path"])
-        self.assertIn("/users/user-a/wallets/wallet-b/tokens.db", second["token_db_path"])
-        self.assertIn("/cache/user-b/wallet-c/", third["dashboard_cache_path"])
+        self.assertNotEqual(first["assets_db_path"], second["assets_db_path"])
+        self.assertNotEqual(second["assets_db_path"], third["assets_db_path"])
+        self.assertEqual(first["token_db_path"], second["token_db_path"], "carteiras do mesmo usuário reutilizam os tokens de API")
+        self.assertNotEqual(first["token_db_path"], third["token_db_path"], "usuários diferentes não compartilham tokens")
+        self.assertNotEqual(first["dashboard_cache_path"], second["dashboard_cache_path"])
+        self.assertIn("/users/user-a/wallets/wallet-b/ativos.db", second["assets_db_path"])
+        self.assertIn("/users/user-b/tokens.db", third["token_db_path"])
 
-    def test_legacy_default_wallet_keeps_existing_database_pair(self):
+    def test_pluggy_auth_token_cache_is_shared_per_user_not_per_wallet(self):
+        import threading
+        scope = _load_functions(
+            "_active_wallet_context", "active_user_scope_key", "_scoped_user_state", "_pluggy_auth_cache",
+            extra={"_SCOPED_USER_STATE": {}, "_SCOPED_USER_STATE_LOCK": threading.RLock(),
+                   "PLUGGY_AUTH_CACHE": {"api_key": "", "expires_at": 0}}
+        )
+        context_var = scope["ACTIVE_WALLET_CONTEXT"]
+        first_token = context_var.set({"user_id": "alice", "wallet_id": "wallet-1"})
+        try:
+            alice_wallet_one = scope["_pluggy_auth_cache"]()
+            alice_wallet_one.update(api_key="alice-pluggy-token", expires_at=999)
+        finally:
+            context_var.reset(first_token)
+        second_token = context_var.set({"user_id": "alice", "wallet_id": "wallet-2"})
+        try:
+            alice_wallet_two = scope["_pluggy_auth_cache"]()
+            self.assertIs(alice_wallet_one, alice_wallet_two)
+            self.assertEqual(alice_wallet_two["api_key"], "alice-pluggy-token")
+        finally:
+            context_var.reset(second_token)
+        third_token = context_var.set({"user_id": "bob", "wallet_id": "wallet-1"})
+        try:
+            bob_wallet_one = scope["_pluggy_auth_cache"]()
+            self.assertIsNot(alice_wallet_one, bob_wallet_one)
+            self.assertEqual(bob_wallet_one["api_key"], "")
+        finally:
+            context_var.reset(third_token)
+
+    def test_legacy_default_wallet_keeps_existing_database_and_shared_token_vault(self):
         scope = _load_functions("_wallet_context_from_row")
         context = scope["_wallet_context_from_row"]({
-            "storage_key": "legacy", "user_id": "admin-id", "id": "wallet-id",
+            "storage_key": "legacy", "token_storage_key": "legacy", "user_id": "admin-id", "id": "wallet-id",
             "name": "Padrão", "is_default": 1,
         })
         self.assertEqual(context["assets_db_path"], "/srv/lonely-data/ativos.db")
@@ -100,12 +127,14 @@ class MultiUserIsolationContractTests(unittest.TestCase):
             con.execute("INSERT INTO wallets(id,user_id,name,name_norm,storage_key,is_default,created_at,updated_at) VALUES('w2','u1','padrão','padrão','w2',0,'now','now')")
         con.close()
 
-    def test_new_portfolios_have_no_provider_credentials_and_clear_default_targets(self):
+    def test_new_portfolios_have_no_pluggy_connections_and_clear_default_targets(self):
         self.assertIn("CREATE TABLE IF NOT EXISTS api_credentials", SOURCE)
+        self.assertIn("CREATE TABLE IF NOT EXISTS pluggy_items", SOURCE)
+        self.assertIn("token_storage_key", SOURCE)
         self.assertIn("DELETE FROM distribuicao_alvo", SOURCE)
         self.assertIn("_initialize_wallet_storage(context)", SOURCE)
         self.assertIn("storage_key='legacy' if legacy else None", SOURCE)
-        self.assertIn("message='Usuário criado com uma carteira Padrão vazia e sem conexões Pluggy.'", SOURCE)
+        self.assertIn("message='Usuário criado com uma carteira Padrão vazia. Tokens de APIs são próprios do usuário; conexões bancárias Pluggy não são compartilhadas.'", SOURCE)
 
     def test_protected_account_creation_is_not_a_public_auth_endpoint(self):
         start = SOURCE.index("def require_user_authentication():")
@@ -117,7 +146,7 @@ class MultiUserIsolationContractTests(unittest.TestCase):
         end = SOURCE.index("def auth_login():", start)
         register = SOURCE[start:end]
         self.assertIn("creator['role']", register)
-        self.assertIn("!= 'admin'", register)
+        self.assertIn("not in ('master', 'admin')", register)
         self.assertIn("current_pin", register)
 
     def test_all_wallet_management_queries_are_scoped_to_session_user(self):
@@ -127,6 +156,18 @@ class MultiUserIsolationContractTests(unittest.TestCase):
             self.assertIn("user_id", rendered, route_name)
         self.assertIn("WHERE id=? AND user_id=?", ast.unparse(_function_node("wallet_select")))
         self.assertIn("WHERE id=? AND user_id=?", ast.unparse(_function_node("wallet_rename")))
+
+    def test_wallet_and_username_rename_routes_persist_and_return_updated_names(self):
+        wallet_rename = ast.unparse(_function_node('wallet_rename'))
+        user_rename = ast.unparse(_function_node('auth_change_username'))
+        html = (ROOT / 'app' / 'templates' / 'index.html').read_text(encoding='utf-8')
+        self.assertIn('UPDATE wallets SET name=?,name_norm=?,updated_at=?', wallet_rename)
+        self.assertIn("wallet={'id': str(wallet_id), 'name': name}", wallet_rename) if "wallet={'id': str(wallet_id), 'name': name}" in wallet_rename else self.assertIn("name=name", wallet_rename)
+        self.assertIn("name=name", wallet_rename)
+        self.assertIn('UPDATE users SET username=?,username_norm=?,auth_version=?', user_rename)
+        self.assertIn("pickerUser.textContent=d.username", html)
+        self.assertIn("const url=isRename?('/api/wallets/'+encodeURIComponent(picker.dataset.activeWalletId)+'/rename'):'/api/wallets'", html)
+        self.assertIn("fetch(url,{method:isRename?'PUT':'POST'", html)
 
     def test_account_creation_and_wallet_creation_have_three_wallet_cap(self):
         wallets = ast.unparse(_function_node("wallets_collection"))
@@ -148,6 +189,19 @@ class MultiUserIsolationContractTests(unittest.TestCase):
         self.assertIn("os.chmod(key_path, 0o600)", SOURCE)
         self.assertIn("current.mkdir(exist_ok=True, mode=0o700)", SOURCE)
 
+    def test_admin_cannot_manage_admin_identities_or_change_existing_roles(self):
+        permission_node = _function_node("_user_management_permission")
+        permission = ast.unparse(permission_node)
+        self.assertIn("if actor == 'admin'", permission)
+        self.assertIn("return target == 'user' and action in", permission)
+        update = ast.unparse(_function_node("users_management_update"))
+        self.assertIn("new_role is not None and (not _user_management_permission(actor_role, target_role, 'change_role'))", update)
+        listing = ast.unparse(_function_node("users_management_list"))
+        self.assertIn("can_change_role", listing)
+        html = (ROOT / "app" / "templates" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("roleSelect.disabled=user.can_change_role!==true", html)
+        self.assertIn("Somente o Master pode promover ou rebaixar", update)
+
     def test_sensitive_pin_confirmations_share_persistent_rate_limit(self):
         self.assertIn("def _confirm_identity_pin(", SOURCE)
         for name in ("auth_register", "auth_change_pin", "auth_change_username"):
@@ -155,10 +209,24 @@ class MultiUserIsolationContractTests(unittest.TestCase):
         self.assertIn("if new_pin != confirm_pin", ast.unparse(_function_node("auth_change_pin")))
         self.assertIn("confirm:confirmPin", (ROOT / "app" / "templates" / "index.html").read_text(encoding="utf-8"))
 
-    def test_admin_account_panel_is_hidden_until_role_is_confirmed(self):
+    def test_wallet_editor_form_is_bound_to_submit_handler(self):
+        html = (ROOT / 'app' / 'templates' / 'index.html').read_text(encoding='utf-8')
+        self.assertIn('async function submitWalletEditor(event)', html)
+        self.assertIn("const walletEditorForm=document.getElementById('walletEditorForm');", html)
+        self.assertIn('walletEditorForm.addEventListener(\'submit\',submitWalletEditor);', html)
+        self.assertIn("const response=await fetch(url,{method:isRename?'PUT':'POST'", html)
+        self.assertIn("if(!data.ok||!data.wallet?.id)", html)
+
+    def test_master_and_admin_account_panels_are_rendered_and_backend_enforces_roles(self):
         html = (ROOT / "app" / "templates" / "index.html").read_text(encoding="utf-8")
-        self.assertIn('id="securityAddUserPanel" hidden', html)
-        self.assertIn("securityAddUserPanel').hidden=d.role!=='admin'", html)
+        self.assertIn("{% if current_user_role in ['master','admin'] %}<div class=\"security-add-user\" id=\"securityAddUserPanel\" data-creator-role=\"{{ current_user_role }}\" hidden>", html)
+        self.assertIn("const panel=document.getElementById('securityAddUserPanel');", html)
+        self.assertIn("if(!panel||panel.hidden)return;", html)
+        register = ast.unparse(_function_node('auth_register'))
+        self.assertIn("creator['role']", register)
+        self.assertIn("not in ('master', 'admin')", register)
+        self.assertIn("\'master\'", ast.unparse(_function_node('_create_user_account')))
+        self.assertIn("in ('master', 'admin')", ast.unparse(_function_node('auth_status')))
 
     def test_sensitive_pin_gate_rejects_wrong_pin_and_resets_on_success(self):
         import hmac
@@ -201,20 +269,23 @@ class MultiUserIsolationContractTests(unittest.TestCase):
 
 
 class MultiUserRuntimeIsolationTests(unittest.TestCase):
-    def test_financial_and_credential_databases_are_physically_isolated(self):
+    def test_pluggy_connections_are_isolated_but_provider_tokens_are_shared_per_user(self):
         import tempfile
         scope = _load_functions(
             "_active_wallet_context", "active_db_path", "active_token_db_path",
-            "active_dashboard_cache_path", "_wallet_context_from_row"
+            "active_dashboard_cache_path", "_wallet_context_from_row",
+            extra={"_assert_wallet_context_not_deleting": lambda context: None},
         )
         base = Path(tempfile.mkdtemp(prefix="lw-user-wallet-test-"))
         scope["DATA_ROOT"] = base
+        scope["DB_PATH"] = str(base / "ativos.db")
+        scope["TOKEN_DB_PATH"] = str(base / "tokens.db")
         active_context = scope["ACTIVE_WALLET_CONTEXT"]
         make_context = scope["_wallet_context_from_row"]
         contexts = [
-            make_context({"storage_key":"a", "user_id":"u1", "id":"w1", "name":"Padrão", "is_default":1}),
-            make_context({"storage_key":"b", "user_id":"u1", "id":"w2", "name":"Reserva", "is_default":0}),
-            make_context({"storage_key":"c", "user_id":"u2", "id":"w3", "name":"Padrão", "is_default":1}),
+            make_context({"storage_key":"legacy", "token_storage_key":"legacy", "user_id":"u1", "id":"w1", "name":"Padrão", "is_default":1}),
+            make_context({"storage_key":"w2", "token_storage_key":"legacy", "user_id":"u1", "id":"w2", "name":"Reserva", "is_default":0}),
+            make_context({"storage_key":"w3", "token_storage_key":"u2", "user_id":"u2", "id":"w3", "name":"Padrão", "is_default":1}),
         ]
         try:
             for index, context in enumerate(contexts, start=1):
@@ -223,25 +294,55 @@ class MultiUserRuntimeIsolationTests(unittest.TestCase):
                 try:
                     assets = sqlite3.connect(scope["active_db_path"]())
                     assets.execute("CREATE TABLE private_value(value TEXT)")
+                    assets.execute("CREATE TABLE pluggy_items(item_id TEXT PRIMARY KEY)")
                     assets.execute("INSERT INTO private_value VALUES(?)", (f"owner-{index}",))
+                    assets.execute("INSERT INTO pluggy_items VALUES(?)", (f"pluggy-item-{index}",))
                     assets.commit(); assets.close()
                     secrets = sqlite3.connect(scope["active_token_db_path"]())
-                    secrets.execute("CREATE TABLE api_credentials(provider TEXT PRIMARY KEY, token_encrypted TEXT NOT NULL)")
-                    secrets.execute("INSERT INTO api_credentials VALUES('pluggy', ?)", (f"credential-{index}",))
+                    secrets.execute("CREATE TABLE IF NOT EXISTS api_credentials(provider TEXT PRIMARY KEY, token_encrypted TEXT NOT NULL)")
+                    secrets.execute("INSERT OR REPLACE INTO api_credentials VALUES('brapi', ?)", (f"credential-user-{1 if index < 3 else 2}",))
                     secrets.commit(); secrets.close()
                 finally:
                     active_context.reset(token)
+            # User 1's two wallets see the same provider credentials.
             for index, context in enumerate(contexts, start=1):
                 token = active_context.set(context)
                 try:
                     assets = sqlite3.connect(scope["active_db_path"]())
                     self.assertEqual(assets.execute("SELECT value FROM private_value").fetchone()[0], f"owner-{index}")
+                    self.assertEqual(assets.execute("SELECT item_id FROM pluggy_items").fetchall(), [(f"pluggy-item-{index}",)])
                     assets.close()
                     secrets = sqlite3.connect(scope["active_token_db_path"]())
-                    self.assertEqual(secrets.execute("SELECT token_encrypted FROM api_credentials WHERE provider='pluggy'").fetchone()[0], f"credential-{index}")
+                    expected_user = 1 if index < 3 else 2
+                    self.assertEqual(secrets.execute("SELECT token_encrypted FROM api_credentials WHERE provider='brapi'").fetchone()[0], f"credential-user-{expected_user}")
                     secrets.close()
                 finally:
                     active_context.reset(token)
+        finally:
+            import shutil
+            shutil.rmtree(base, ignore_errors=True)
+
+    def test_legacy_wallet_token_merge_prefers_newer_credentials(self):
+        import tempfile
+        base = Path(tempfile.mkdtemp(prefix="lw-token-merge-test-"))
+        source, shared = base / "old-wallet-tokens.db", base / "shared-tokens.db"
+        try:
+            src = sqlite3.connect(source)
+            src.execute("CREATE TABLE api_credentials(provider TEXT PRIMARY KEY, token_encrypted TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL)")
+            src.execute("INSERT INTO api_credentials VALUES('brapi','newer-secret',1,'2026-11-25T10:00:00-03:00')")
+            src.execute("INSERT INTO api_credentials VALUES('pluggy','pluggy-secret',1,'2026-11-25T09:00:00-03:00')")
+            src.commit(); src.close()
+            dst = sqlite3.connect(shared)
+            dst.execute("CREATE TABLE api_credentials(provider TEXT PRIMARY KEY, token_encrypted TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL)")
+            dst.execute("INSERT INTO api_credentials VALUES('brapi','old-secret',1,'2026-11-24T09:00:00-03:00')")
+            dst.commit(); dst.close()
+            scope = _load_functions("_merge_legacy_wallet_tokens", extra={"sqlite3": sqlite3})
+            scope["_merge_legacy_wallet_tokens"](source, shared)
+            check = sqlite3.connect(shared)
+            values = dict(check.execute("SELECT provider,token_encrypted FROM api_credentials").fetchall())
+            check.close()
+            self.assertEqual(values['brapi'], 'newer-secret')
+            self.assertEqual(values['pluggy'], 'pluggy-secret')
         finally:
             import shutil
             shutil.rmtree(base, ignore_errors=True)
