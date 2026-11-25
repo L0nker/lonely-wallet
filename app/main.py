@@ -22,6 +22,10 @@ DATA_ROOT = Path(os.environ.get('DATA_DIR') or Path(DB_PATH).parent).expanduser(
 ACTIVE_WALLET_CONTEXT = contextvars.ContextVar('lonely_wallet_active_context', default=None)
 
 
+class WalletDeletionInProgress(RuntimeError):
+    """Raised when a background task reaches storage being removed."""
+
+
 def _active_wallet_context():
     value = ACTIVE_WALLET_CONTEXT.get()
     return value if isinstance(value, dict) else None
@@ -61,15 +65,15 @@ def _marker_matches_current_process(path):
 def _assert_wallet_context_not_deleting(context):
     """Stop in-flight workers from recreating files after an account or wallet is erased."""
     if _marker_matches_current_process(DATA_ROOT / '.deleting-installation'):
-        raise RuntimeError('A instalação está sendo excluída; a gravação de dados foi bloqueada.')
+        raise WalletDeletionInProgress('A instalação está sendo excluída; a gravação de dados foi bloqueada.')
     user_id = str(context.get('user_id') or '')
     wallet_id = str(context.get('wallet_id') or '')
     if user_id and _marker_matches_current_process(DATA_ROOT / '.deleting-users' / (user_id + '.deleting')):
-        raise RuntimeError('Esta conta está sendo excluída; a gravação de dados foi bloqueada.')
+        raise WalletDeletionInProgress('Esta conta está sendo excluída; a gravação de dados foi bloqueada.')
     if user_id and wallet_id:
         marker = DATA_ROOT / '.deleting-wallets' / (user_id + '_' + wallet_id + '.deleting')
         if _marker_matches_current_process(marker):
-            raise RuntimeError('Esta carteira está sendo excluída; a gravação de dados foi bloqueada.')
+            raise WalletDeletionInProgress('Esta carteira está sendo excluída; a gravação de dados foi bloqueada.')
 
 
 def _create_wallet_deletion_marker(user_id, wallet_id):
@@ -2384,7 +2388,7 @@ def _validate_username(value):
 def _validate_pin_pair(pin, confirm):
     pin = str(pin or '')
     confirm = str(confirm or '')
-    if not re.fullmatch(r'\d{6,12}', pin) or pin != confirm:
+    if not re.fullmatch(r'[0-9]{6,12}', pin) or pin != confirm:
         return False, 'Use um PIN de 6 a 12 números e confirme corretamente.'
     return True, ''
 
@@ -2455,7 +2459,7 @@ def _confirm_identity_pin(con, username_norm, salt, expected_hash, supplied_pin,
     lock_response = _identity_lock_response(con, username_norm)
     if lock_response:
         return lock_response
-    candidate = pin_digest(str(supplied_pin or ''), salt) if re.fullmatch(r'\d{6,12}', str(supplied_pin or '')) else ''
+    candidate = pin_digest(str(supplied_pin or ''), salt) if re.fullmatch(r'[0-9]{6,12}', str(supplied_pin or '')) else ''
     if not hmac.compare_digest(candidate, str(expected_hash or '')):
         locked_until = _identity_auth_failure(con, username_norm)
         if locked_until:
@@ -2747,7 +2751,7 @@ def _legacy_pin_is_valid(pin):
     row = _legacy_auth_record()
     if not row or not row['enabled'] or not row['pin_hash']:
         return True
-    candidate = pin_digest(str(pin or ''), row['pin_salt']) if re.fullmatch(r'\d{6,12}', str(pin or '')) else ''
+    candidate = pin_digest(str(pin or ''), row['pin_salt']) if re.fullmatch(r'[0-9]{6,12}', str(pin or '')) else ''
     return bool(hmac.compare_digest(candidate, str(row['pin_hash'])))
 
 
@@ -3429,7 +3433,7 @@ def auth_login():
         return jsonify(ok=False, error='Informe um nome de usuário válido.'), 400
     username_norm = _username_normalized(username)
     pin = str(payload.get('pin') or '')
-    pin_shape_valid = bool(re.fullmatch(r'\d{6,12}', pin))
+    pin_shape_valid = bool(re.fullmatch(r'[0-9]{6,12}', pin))
     # Compute one PBKDF2 hash even for unknown usernames to reduce timing-based
     # account enumeration. The dummy salt/hash are process-local and never stored.
     con = identity_connection()
@@ -3495,7 +3499,7 @@ def auth_change_pin():
         )
         if pin_response:
             return pin_response
-        if not re.fullmatch(r'\d{6,12}', new_pin):
+        if not re.fullmatch(r'[0-9]{6,12}', new_pin):
             return jsonify(ok=False, error='O novo PIN deve ter de 6 a 12 números.'), 400
         salt = secrets.token_bytes(16).hex()
         new_version = int(row['auth_version']) + 1
@@ -9926,7 +9930,12 @@ def _persist_performance_history_snapshot(signature, result):
             os.chmod(tmp_path, 0o600)
             os.replace(tmp_path, active_dashboard_cache_path())
             return True
-    except (OSError, ValueError, TypeError, json.JSONDecodeError, sqlite3.Error) as exc:
+    except (FileNotFoundError, WalletDeletionInProgress):
+        # A carteira pode ser excluída enquanto o worker calcula o histórico.
+        # O snapshot é cache descartável: não recriar o diretório apagado nem
+        # emitir um falso alerta de falha quando a exclusão venceu a corrida.
+        return False
+    except (OSError, ValueError, TypeError, RuntimeError, json.JSONDecodeError, sqlite3.Error) as exc:
         app.logger.warning('Não foi possível atualizar o cache com o histórico patrimonial: %s', exc)
         return False
 

@@ -2531,7 +2531,7 @@ body.light-theme .lw-select-option:hover,body.light-theme .lw-select-option.acti
 <header class="top"><div class="brand"><img src="/static/lonely-wallet-logotype.png" alt="Lonely Wallet" class="brand-logo"><div class="wallet-picker" id="walletPicker" data-active-wallet-id="{{ active_wallet_id }}"><button class="wallet-picker-trigger" id="walletPickerTrigger" type="button" aria-haspopup="true" aria-expanded="false" onclick="toggleWalletPicker()"><span id="activeWalletName">{{ active_wallet_name or 'Padrão' }}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button><div class="wallet-picker-menu" id="walletPickerMenu" hidden><div class="wallet-picker-user">Usuário: <strong>{{ current_username }}</strong></div><div id="walletPickerItems">{% for wallet in wallet_menu %}<button type="button" class="wallet-picker-item{% if wallet.id == active_wallet_id %} active{% endif %}" data-wallet-id="{{ wallet.id }}" onclick="selectWallet(this.dataset.walletId)"><span>{{ wallet.name }}</span>{% if wallet.is_default %}<small>Padrão</small>{% endif %}</button>{% endfor %}</div><div class="wallet-picker-actions"><button type="button" id="createWalletAction" onclick="openWalletEditor('create')">＋ Criar carteira <small>{{ wallet_menu|length }}/3</small></button><button type="button" onclick="openWalletEditor('rename')">✎ Renomear selecionada</button><button type="button" id="deleteWalletAction" class="wallet-delete-action" onclick="deleteSelectedWallet()" hidden>⌫ Excluir selecionada</button></div></div></div></div><div class="topright"><span id="updated" class="mini">Dados da carteira</span>
 <button class="utility-btn" id="privacyToggle" type="button" aria-label="Ocultar valores" title="Ocultar valores" onclick="togglePrivacy()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></button>
 <button class="utility-btn" id="themeToggle" type="button" aria-label="Ativar tema claro" title="Ativar tema claro" onclick="toggleTheme()"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/></svg></button>
-<button class="pillbtn" type="button" onclick="openB3Import()">⇧ Importar tabela da B3</button><button class="primary" type="button" onclick="openModal('op')">＋ Adicionar lançamento</button><button class="ghost logout-top-btn" type="button" onclick="securityLogout()" title="Sair e bloquear">↪ Sair e bloquear</button></div></header>
+<button class="pillbtn" type="button" onclick="openB3Import()">⇧ Importar tabela da B3</button><button class="primary" type="button" onclick="openModal('op')">＋ Adicionar lançamento</button><button class="ghost logout-top-btn" type="button" onclick="securityLogout()" aria-label="Sair">↪ Sair</button></div></header>
 <nav class="nav" id="nav"><button class="active" data-page="resumo">◉ Resumo</button><button data-page="proventos">▤ Proventos</button><button data-page="patrimonio">◒ Patrimônio</button><button data-page="lancamentos">☷ Lançamentos</button><button data-page="distribuicao">◔ Distribuição</button><button data-page="apis">⌘ APIs</button><button data-page="seguranca">⚙ Configurações</button></nav>
 <div id="dashboardDataWait" class="dashboard-data-wait active" role="status" aria-live="polite">
  <div class="dashboard-data-wait-card">
@@ -6088,6 +6088,35 @@ try{
 }catch(e){applyTheme(false);applyPrivacy(false)}
 
 
+function sanitizePinValue(value,maxLength=12){return String(value??'').replace(/[^0-9]/g,'').slice(0,maxLength);}
+function preparePinNumericInput(input){
+ if(!input)return;
+ input.dataset.pinInput='true';input.inputMode='numeric';input.pattern='[0-9]*';input.maxLength=12;input.spellcheck=false;
+}
+function initializePinNumericInputs(root=document){root.querySelectorAll('input[inputmode="numeric"]').forEach(preparePinNumericInput);}
+initializePinNumericInputs();
+document.addEventListener('beforeinput',event=>{
+ const input=event.target;
+ if(!input?.matches?.('input[data-pin-input]'))return;
+ if(String(event.inputType||'').startsWith('insert')&&event.data&&/[^0-9]/.test(event.data))event.preventDefault();
+},true);
+document.addEventListener('input',event=>{
+ const input=event.target;
+ if(!input?.matches?.('input[data-pin-input]'))return;
+ const cleaned=sanitizePinValue(input.value,input.maxLength||12);
+ if(input.value!==cleaned){const start=String(input.value).slice(0,input.selectionStart??input.value.length).replace(/[^0-9]/g,'').length;input.value=cleaned;try{input.setSelectionRange(start,start);}catch(_){}}
+},true);
+document.addEventListener('paste',event=>{
+ const input=event.target;
+ if(!input?.matches?.('input[data-pin-input]'))return;
+ const pasted=event.clipboardData?.getData('text')??'';
+ event.preventDefault();
+ const digits=sanitizePinValue(pasted,12),limit=input.maxLength||12;
+ input.setRangeText(digits,input.selectionStart??input.value.length,input.selectionEnd??input.value.length,'end');
+ input.value=sanitizePinValue(input.value,limit);
+ input.dispatchEvent(new Event('input',{bubbles:true}));
+},true);
+
 let appConfirmResolver=null,appConfirmMode='confirm';
 function appConfirm(title,message,acceptLabel='Confirmar exclusão'){
  appConfirmMode='confirm';
@@ -6108,6 +6137,8 @@ function appPrompt(title,message,{label='Confirmação',placeholder='',type='tex
  const wrap=document.getElementById('appConfirmInputWrap'),input=document.getElementById('appConfirmInput');
  document.getElementById('appConfirmInputLabel').textContent=label;
  input.type=type;input.placeholder=placeholder;input.value='';
+ if(type==='password'){input.minLength=6;input.autocomplete='current-password';preparePinNumericInput(input);}
+ else{delete input.dataset.pinInput;input.removeAttribute('inputmode');input.removeAttribute('pattern');input.maxLength=240;input.minLength=0;input.autocomplete='off';}
  wrap.hidden=false;document.getElementById('appConfirmBack').style.display='flex';
  return new Promise(resolve=>{appConfirmResolver=resolve;setTimeout(()=>input.focus(),40);});
 }
@@ -6746,6 +6777,23 @@ refreshWalletPicker();
 .security-user-grid .field input{width:100%;min-height:42px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 13px}
 @media(max-width:620px){.wallet-picker{margin-left:6px;max-width:45vw}.wallet-picker-trigger{font-size:12px;padding:5px 8px}.wallet-picker-menu{left:auto;right:0}.security-user-grid{grid-template-columns:minmax(0,1fr)} }
 @media(max-width:380px){.wallet-picker{max-width:38vw}.wallet-picker-trigger{gap:4px;padding:5px 6px;font-size:11px}}
+</style>
+
+<style>
+/* v6.1.13 — alinhamento consistente dos campos de conta, PIN e gerenciamento de usuários. */
+#page-seguranca .security-panel .formgrid,
+#managedUserEditorForm .formgrid{align-items:start;}
+#page-seguranca .security-panel .field,
+#managedUserEditorForm .field{display:flex;flex-direction:column;min-width:0;gap:6px;}
+#page-seguranca .security-panel .field label,
+#managedUserEditorForm .field label{display:flex;align-items:flex-end;min-height:32px;line-height:1.35;box-sizing:border-box;}
+#page-seguranca .security-panel .field input,
+#page-seguranca .security-panel .field select,
+#managedUserEditorForm .field input,
+#managedUserEditorForm .field select{display:block;width:100%;height:44px;min-height:44px;max-width:100%;box-sizing:border-box;margin:0;padding:10px 12px;line-height:20px;font:inherit;}
+#page-seguranca .security-user-grid{grid-template-columns:repeat(2,minmax(0,1fr));column-gap:16px;row-gap:12px;}
+#page-seguranca .security-user-grid>.full{grid-column:1/-1;}
+@media(max-width:620px){ #page-seguranca .security-user-grid{grid-template-columns:minmax(0,1fr)}#page-seguranca .security-user-grid>.full{grid-column:1}}
 </style>
 </body></html>
 <style>
