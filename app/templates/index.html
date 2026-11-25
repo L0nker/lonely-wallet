@@ -2528,10 +2528,10 @@ body.light-theme .lw-select-option:hover,body.light-theme .lw-select-option.acti
 <div class="modalback utility-modal-back" id="columnsModalBack" onclick="if(event.target===this)closeUtilityModal('columnsModalBack')"><div class="modal utility-modal columns-modal"><div class="modalhead"><div><h2>Editar colunas</h2><div class="sub">Adicione ou remova as colunas que deseja visualizar na tabela.</div></div><button class="close" onclick="closeUtilityModal('columnsModalBack')">×</button></div><div id="columnsModalContent" class="columns-modal-content"></div><div class="columns-modal-footer"><button class="text-button" onclick="restorePositionColumns()">Restaurar padrão</button><button class="primary" onclick="savePositionColumns()">Salvar</button></div></div></div>
 
 <div id="loadingScreen"><img class="loading-logo" src="/static/lonely-wallet-logo.png" alt="Lonely Wallet"><div class="loading-spinner"></div><div class="loading-label">Carregando sua carteira…</div></div>
-<header class="top"><div class="brand"><img src="/static/lonely-wallet-logotype.png" alt="Lonely Wallet" class="brand-logo"><div class="wallet-picker" id="walletPicker" data-active-wallet-id="{{ active_wallet_id }}"><button class="wallet-picker-trigger" id="walletPickerTrigger" type="button" aria-haspopup="true" aria-expanded="false" onclick="toggleWalletPicker()"><span id="activeWalletName">{{ active_wallet_name or 'Padrão' }}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button><div class="wallet-picker-menu" id="walletPickerMenu" hidden><div class="wallet-picker-user">Usuário: <strong>{{ current_username }}</strong></div><div id="walletPickerItems">{% for wallet in wallet_menu %}<button type="button" class="wallet-picker-item{% if wallet.id == active_wallet_id %} active{% endif %}" data-wallet-id="{{ wallet.id }}" onclick="selectWallet(this.dataset.walletId)"><span>{{ wallet.name }}</span>{% if wallet.is_default %}<small>Padrão</small>{% endif %}</button>{% endfor %}</div><div class="wallet-picker-actions"><button type="button" id="createWalletAction" onclick="openWalletEditor('create')">＋ Criar carteira <small>{{ wallet_menu|length }}/3</small></button><button type="button" onclick="openWalletEditor('rename')">✎ Renomear selecionada</button></div></div></div></div><div class="topright"><span id="updated" class="mini">Dados da carteira</span>
+<header class="top"><div class="brand"><img src="/static/lonely-wallet-logotype.png" alt="Lonely Wallet" class="brand-logo"><div class="wallet-picker" id="walletPicker" data-active-wallet-id="{{ active_wallet_id }}"><button class="wallet-picker-trigger" id="walletPickerTrigger" type="button" aria-haspopup="true" aria-expanded="false" onclick="toggleWalletPicker()"><span id="activeWalletName">{{ active_wallet_name or 'Padrão' }}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button><div class="wallet-picker-menu" id="walletPickerMenu" hidden><div class="wallet-picker-user">Usuário: <strong>{{ current_username }}</strong></div><div id="walletPickerItems">{% for wallet in wallet_menu %}<button type="button" class="wallet-picker-item{% if wallet.id == active_wallet_id %} active{% endif %}" data-wallet-id="{{ wallet.id }}" onclick="selectWallet(this.dataset.walletId)"><span>{{ wallet.name }}</span>{% if wallet.is_default %}<small>Padrão</small>{% endif %}</button>{% endfor %}</div><div class="wallet-picker-actions"><button type="button" id="createWalletAction" onclick="openWalletEditor('create')">＋ Criar carteira <small>{{ wallet_menu|length }}/3</small></button><button type="button" onclick="openWalletEditor('rename')">✎ Renomear selecionada</button><button type="button" id="deleteWalletAction" class="wallet-delete-action" onclick="deleteSelectedWallet()" hidden>⌫ Excluir selecionada</button></div></div></div></div><div class="topright"><span id="updated" class="mini">Dados da carteira</span>
 <button class="utility-btn" id="privacyToggle" type="button" aria-label="Ocultar valores" title="Ocultar valores" onclick="togglePrivacy()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></button>
 <button class="utility-btn" id="themeToggle" type="button" aria-label="Ativar tema claro" title="Ativar tema claro" onclick="toggleTheme()"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/></svg></button>
-<button class="pillbtn" type="button" onclick="openB3Import()">⇧ Importar tabela da B3</button><button class="primary" type="button" onclick="openModal('op')">＋ Adicionar lançamento</button></div></header>
+<button class="pillbtn" type="button" onclick="openB3Import()">⇧ Importar tabela da B3</button><button class="primary" type="button" onclick="openModal('op')">＋ Adicionar lançamento</button><button class="ghost logout-top-btn" type="button" onclick="securityLogout()" title="Sair e bloquear">↪ Sair e bloquear</button></div></header>
 <nav class="nav" id="nav"><button class="active" data-page="resumo">◉ Resumo</button><button data-page="proventos">▤ Proventos</button><button data-page="patrimonio">◒ Patrimônio</button><button data-page="lancamentos">☷ Lançamentos</button><button data-page="distribuicao">◔ Distribuição</button><button data-page="apis">⌘ APIs</button><button data-page="seguranca">⚙ Configurações</button></nav>
 <div id="dashboardDataWait" class="dashboard-data-wait active" role="status" aria-live="polite">
  <div class="dashboard-data-wait-card">
@@ -2622,7 +2622,7 @@ body.light-theme .lw-select-option:hover,body.light-theme .lw-select-option.acti
 <div id="goalRows" class="hidden"></div><section id="page-apis" class="page hidden"><div class="pagehead"><div><h1>Integrações e APIs</h1><div class="sub">Gerencie fontes de cotações, séries históricas, proventos e indicadores econômicos.</div></div><button class="ghost" type="button" onclick="loadAPIProviders()">↻ Atualizar status</button></div><div class="api-security-note"><b>Segurança:</b> os tokens cadastrados são enviados somente ao servidor e armazenados criptografados no volume local do aplicativo. Eles nunca são devolvidos à interface em texto aberto. Não informe senha de corretora, código de autenticação ou credenciais bancárias nesta página. O acesso exige usuário e PIN. Tokens de APIs de mercado e credenciais Client ID/Secret da Pluggy são compartilhados entre as carteiras do mesmo usuário; conexões bancárias Pluggy (itemId, contas e transações) são exclusivas da carteira selecionada. Usuários diferentes não compartilham credenciais. Para acesso remoto, utilize HTTPS ou VPN; não exponha a porta diretamente à internet.</div><h2 class="api-section-title">Open Finance · Pluggy</h2><div class="mini" style="margin:-3px 0 10px">Integração bancária e de investimentos. Gerencie as credenciais e conexões independentemente das fontes de cotações.</div><div id="apiPluggyGrid" class="api-grid"><div class="panel">Carregando Pluggy…</div></div><h2 class="api-section-title">APIs de mercado e indicadores</h2><div id="apiProvidersGrid" class="api-grid"><div class="panel">Carregando provedores…</div></div></section>
 <section id="page-seguranca" class="page hidden"><div class="pagehead"><div><h1>Configurações</h1><div class="sub">Gerencie sua conta, PIN, permissões e usuários conforme seu papel.</div></div><button class="ghost" type="button" onclick="loadSecuritySettings()">↻ Atualizar</button></div><div class="panel security-panel"><div class="panelhead"><h2>Conta do usuário</h2><span id="securityUserStatus" class="badge ok">Conta ativa</span></div><p class="mini">Cada usuário possui seus dados e até três carteiras independentes. Os tokens de APIs são compartilhados entre as carteiras da mesma pessoa; conexões bancárias Pluggy, contas e movimentações permanecem exclusivas de cada carteira.</p><div class="field"><label>Usuário atual</label><input id="securityCurrentUsername" type="text" readonly></div>{% if current_user_role in ['master','admin'] %}<div class="formgrid security-user-grid" id="securityUsernameEditor"><div class="field"><label for="securityNewUsername">Novo nome de usuário</label><input id="securityNewUsername" type="text" minlength="3" maxlength="24" autocomplete="username" placeholder="Novo usuário"></div><div class="field"><label for="securityUsernamePin">Confirme com seu PIN</label><input id="securityUsernamePin" type="password" inputmode="numeric" autocomplete="current-password" maxlength="12" placeholder="PIN atual"></div><div class="toolbar full"><button class="primary" type="button" id="securitySaveUsername" onclick="saveSecurityUsername()">Salvar nome de usuário</button></div></div><div id="securityUsernameMessage" class="mini" role="status" aria-live="polite" style="margin-top:10px"></div>{% endif %}{% if current_user_role in ['master','admin'] %}<div class="security-add-user" id="securityAddUserPanel" data-creator-role="{{ current_user_role }}" hidden><div class="security-divider"></div><div class="panelhead"><h2>Adicionar usuário</h2><span class="badge">Conta independente</span></div>{% if current_user_role == 'master' %}<p class="mini">Crie usuários comuns ou Admins. Somente o Master pode escolher o papel inicial Admin e promover/rebaixar contas existentes. Cada conta recebe uma carteira Padrão vazia.</p>{% else %}<p class="mini">Admins podem criar somente usuários comuns, redefinir o PIN e excluir essas contas. Cada usuário recebe uma carteira Padrão vazia. Você não pode criar nem gerenciar contas Admin.</p>{% endif %}<div class="formgrid security-user-grid"><div class="field"><label for="securityAddUsername">Novo nome de usuário</label><input id="securityAddUsername" type="text" minlength="3" maxlength="24" autocomplete="off" autocapitalize="none" placeholder="Novo usuário"></div>{% if current_user_role == 'master' %}<div class="field"><label for="securityAddRole">Permissão inicial</label><select id="securityAddRole"><option value="user">Usuário comum</option><option value="admin">Administrador</option></select></div>{% else %}<input type="hidden" id="securityAddRole" value="user">{% endif %}<div class="field"><label for="securityAddPin">PIN inicial (6 a 12 números)</label><input id="securityAddPin" type="password" inputmode="numeric" minlength="6" maxlength="12" autocomplete="new-password" placeholder="PIN inicial"></div><div class="field"><label for="securityAddPinConfirm">Confirmar PIN inicial</label><input id="securityAddPinConfirm" type="password" inputmode="numeric" minlength="6" maxlength="12" autocomplete="new-password" placeholder="Repita o PIN"></div><div class="field"><label for="securityAddCurrentPin">Seu PIN atual (autorização)</label><input id="securityAddCurrentPin" type="password" inputmode="numeric" minlength="6" maxlength="12" autocomplete="current-password" placeholder="Seu PIN atual"></div><div class="toolbar full"><button class="primary" type="button" onclick="addSecurityUser()">＋ Criar usuário</button></div></div><div id="securityAddUserMessage" class="mini" role="status" style="margin-top:10px"></div></div>
 <div id="securityUsersPanel" class="security-users-panel" hidden><div class="security-divider"></div><div class="panelhead"><div><h2>Gerenciar usuários</h2><span class="mini">Master: cria usuários comuns e Admins, redefine PINs, renomeia, promove/rebaixa e exclui qualquer conta não-Master. Admin: cria somente usuários comuns, redefine PIN e exclui somente usuários comuns; não pode gerenciar contas Admin nem a conta Master. Usuário comum: pode somente redefinir o próprio PIN. O Master nunca pode ser gerenciado por outra pessoa; somente ele pode apagar toda a instalação.</span></div><button class="ghost" type="button" onclick="loadManagedUsers()">↻ Atualizar</button></div><div id="securityUsersList" class="security-users-list"><div class="mini">Carregando usuários…</div></div><div id="securityUsersMessage" class="mini" role="status" aria-live="polite"></div></div>
-{% endif %}<div class="security-divider"></div><div class="panelhead"><h2>Proteção por PIN</h2><span id="securityPinStatus" class="badge ok">Obrigatório</span></div><p class="mini" id="securityPinDescription">O PIN é obrigatório para entrar na sua conta.</p><div id="securityPinActions" class="formgrid" style="max-width:720px"><div class="field"><label for="securityCurrentPin">PIN atual</label><input id="securityCurrentPin" type="password" inputmode="numeric" autocomplete="current-password" maxlength="12" placeholder="Digite seu PIN atual"></div><div class="field"><label for="securityNewPin">Novo PIN (6 a 12 números)</label><input id="securityNewPin" type="password" inputmode="numeric" autocomplete="new-password" minlength="6" maxlength="12" placeholder="Novo PIN"></div><div class="field"><label for="securityConfirmPin">Confirmar novo PIN</label><input id="securityConfirmPin" type="password" inputmode="numeric" autocomplete="new-password" minlength="6" maxlength="12" placeholder="Repita o novo PIN"></div><div class="toolbar full"><button class="primary" type="button" id="securitySavePin" onclick="saveSecurityPin()">Alterar PIN</button><button class="ghost" type="button" onclick="securityLogout()">Sair e bloquear</button></div></div><div id="securityPinMessage" class="mini" role="status" style="margin-top:12px"></div><div class="notice" style="margin-top:18px"><b>Proteção da conta:</b> o acesso sempre exige nome de usuário e PIN. A sessão é encerrada após 30 minutos sem atividade. Ao reiniciar o Docker, os acessos anteriores são invalidados e será necessário entrar novamente.</div><div class="security-delete-zone" id="securityDeleteAccountPanel"><div class="security-divider"></div><div class="panelhead"><h2 id="securityDeleteAccountTitle">{% if current_user_role == 'master' %}Excluir instalação{% else %}Excluir minha conta{% endif %}</h2><span class="badge danger-badge" id="securityDeleteAccountBadge">{% if current_user_role == 'master' %}Master · Ação irreversível{% else %}Sua conta · Ação irreversível{% endif %}</span></div><p class="mini" id="securityDeleteAccountDescription">{% if current_user_role == 'master' %}Você pode apagar sua própria conta a qualquer momento. Se houver outras contas, a conta mais antiga restante será promovida automaticamente a Master; somente seus dados serão removidos. Se você for o único usuário, a instalação será reiniciada para o primeiro acesso. Backups antigos não são alterados automaticamente.{% else %}Você pode apagar sua própria conta a qualquer momento. Isso exclui somente seu usuário, todas as suas carteiras, dados financeiros, conexões bancárias Pluggy, tokens de API compartilhados entre suas carteiras e caches. Todos os outros usuários e seus dados permanecem preservados. Backups antigos não são alterados automaticamente.{% endif %}</p><button class="danger" type="button" id="securityDeleteAccountButton" onclick="deleteOwnAccount()">Excluir minha conta</button><div class="mini" id="securityDeleteAccountMessage" role="status" aria-live="polite" style="margin-top:10px"></div></div></div></div></section>
+{% endif %}<div class="security-divider"></div><div class="panelhead"><h2>Proteção por PIN</h2><span id="securityPinStatus" class="badge ok">Obrigatório</span></div><p class="mini" id="securityPinDescription">O PIN é obrigatório para entrar na sua conta.</p><div id="securityPinActions" class="formgrid" style="max-width:720px"><div class="field"><label for="securityCurrentPin">PIN atual</label><input id="securityCurrentPin" type="password" inputmode="numeric" autocomplete="current-password" maxlength="12" placeholder="Digite seu PIN atual"></div><div class="field"><label for="securityNewPin">Novo PIN (6 a 12 números)</label><input id="securityNewPin" type="password" inputmode="numeric" autocomplete="new-password" minlength="6" maxlength="12" placeholder="Novo PIN"></div><div class="field"><label for="securityConfirmPin">Confirmar novo PIN</label><input id="securityConfirmPin" type="password" inputmode="numeric" autocomplete="new-password" minlength="6" maxlength="12" placeholder="Repita o novo PIN"></div><div class="toolbar full"><button class="primary" type="button" id="securitySavePin" onclick="saveSecurityPin()">Alterar PIN</button></div></div><div id="securityPinMessage" class="mini" role="status" style="margin-top:12px"></div><div class="notice" style="margin-top:18px"><b>Proteção da conta:</b> o acesso sempre exige nome de usuário e PIN. A sessão é encerrada após 30 minutos sem atividade. Ao reiniciar o Docker, os acessos anteriores são invalidados e será necessário entrar novamente.</div><div class="security-delete-zone" id="securityDeleteAccountPanel"><div class="security-divider"></div><div class="panelhead"><h2 id="securityDeleteAccountTitle">{% if current_user_role == 'master' %}Excluir instalação{% else %}Excluir minha conta{% endif %}</h2><span class="badge danger-badge" id="securityDeleteAccountBadge">{% if current_user_role == 'master' %}Master · Ação irreversível{% else %}Sua conta · Ação irreversível{% endif %}</span></div><p class="mini" id="securityDeleteAccountDescription">{% if current_user_role == 'master' %}Você pode apagar sua própria conta a qualquer momento. Se houver outras contas, a conta mais antiga restante será promovida automaticamente a Master; somente seus dados serão removidos. Se você for o único usuário, a instalação será reiniciada para o primeiro acesso. Backups antigos não são alterados automaticamente.{% else %}Você pode apagar sua própria conta a qualquer momento. Isso exclui somente seu usuário, todas as suas carteiras, dados financeiros, conexões bancárias Pluggy, tokens de API compartilhados entre suas carteiras e caches. Todos os outros usuários e seus dados permanecem preservados. Backups antigos não são alterados automaticamente.{% endif %}</p><button class="danger" type="button" id="securityDeleteAccountButton" onclick="deleteOwnAccount()">Excluir minha conta</button><div class="mini" id="securityDeleteAccountMessage" role="status" aria-live="polite" style="margin-top:10px"></div></div></div></div></section>
 {% if current_user_role in ['master','admin'] %}<div class="modalback" id="managedUserEditorBack" onclick="if(event.target===this)closeManagedUserEditor()"><div class="modal managed-user-modal"><div class="modalhead"><div><h2 id="managedUserEditorTitle">Editar usuário</h2><div class="mini">Confirme sua senha PIN atual para autorizar a alteração.</div></div><button class="close" type="button" onclick="closeManagedUserEditor()">×</button></div><form id="managedUserEditorForm"><input id="managedUserId" type="hidden"><div class="formgrid"><div class="field"><label for="managedUserName">Nome de usuário</label><input id="managedUserName" type="text" minlength="3" maxlength="24" required></div><div class="field" id="managedUserRoleField"><label for="managedUserRole">Permissão <span class="mini">Somente Master pode promover ou rebaixar</span></label><select id="managedUserRole"><option value="user">Usuário comum</option><option value="admin">Administrador</option></select></div><div class="field"><label for="managedUserNewPin">Novo PIN (opcional)</label><input id="managedUserNewPin" type="password" inputmode="numeric" minlength="6" maxlength="12" autocomplete="new-password"></div><div class="field"><label for="managedUserConfirmPin">Confirmar novo PIN</label><input id="managedUserConfirmPin" type="password" inputmode="numeric" minlength="6" maxlength="12" autocomplete="new-password"></div><div class="field" style="grid-column:1/-1"><label for="managedUserActorPin">Seu PIN atual</label><input id="managedUserActorPin" type="password" inputmode="numeric" minlength="6" maxlength="12" autocomplete="current-password" required></div></div><div id="managedUserEditorMessage" class="mini" role="status" style="margin-top:10px"></div><div class="modalactions"><button class="ghost" type="button" onclick="closeManagedUserEditor()">Cancelar</button><button class="primary" id="managedUserEditorSave" type="submit">Salvar alterações</button></div></form></div></div>{% endif %}
 
 
@@ -2632,7 +2632,7 @@ body.light-theme .lw-select-option:hover,body.light-theme .lw-select-option.acti
 </main>
 <div class="modalback" id="launchDistributionBack" onclick="if(event.target===this)closeLaunchDistribution()"><div class="modal" style="width:min(900px,100%)"><div class="modalhead"><div><h2 id="launchDistributionTitle">Distribuição de aportes</h2><div class="sub" id="launchDistributionSubtitle">Operações do período selecionado.</div></div><button class="close" type="button" onclick="closeLaunchDistribution()">×</button></div><div class="launch-distribution-switch segmented"><button type="button" id="launchDistAssetTab" class="active" onclick="setLaunchDistributionMode('ativo')">◉ Por Ativo</button><button type="button" id="launchDistTypeTab" onclick="setLaunchDistributionMode('tipo')">◉ Por Tipo</button><span class="launch-dist-switch-spacer"></span><button type="button" id="launchDistBuyTab" class="active" onclick="setLaunchDistributionSide('compra')">Compra</button><button type="button" id="launchDistSellTab" onclick="setLaunchDistributionSide('venda')">Venda</button></div><div class="launch-distribution-layout"><div class="launch-distribution-chart"><canvas id="launchDistributionChart"></canvas></div><div class="launch-distribution-legend"><div class="launch-distribution-total"><b>Total</b><strong id="launchDistributionTotal"></strong></div><div id="launchDistributionRows"></div></div></div><div class="modalactions"><button class="ghost" type="button" onclick="closeLaunchDistribution()">Fechar</button></div></div></div>
 <div class="modalback" id="b3ImportsManagerBack" onclick="if(event.target===this)closeB3ImportsManager()"><div class="modal" style="width:min(860px,100%)"><div class="modalhead"><div><h2>Importações da B3</h2><div class="sub">Histórico das planilhas importadas. Você pode excluir uma importação recente e os registros criados exclusivamente por ela.</div></div><button class="close" onclick="closeB3ImportsManager()">×</button></div><div id="b3ImportsList" class="section mini">Carregando importações…</div><div class="modalactions"><button class="ghost" type="button" onclick="closeB3ImportsManager()">Fechar</button></div></div></div><div class="modalback utility-modal-back" id="operationManagerBack" onclick="if(event.target===this)closeOperationManager()"><div class="modal utility-modal" style="width:min(1100px,100%)"><div class="modalhead"><div><h2>Gerenciar lançamentos de ativos</h2><div class="sub">Filtre por classe e ativo para revisar ou excluir operações. A exclusão em massa é permanente.</div></div><button class="close" onclick="closeOperationManager()">×</button></div><div class="formgrid operation-manager-filters"><div class="field"><label for="operationManagerType">Classe do ativo</label><select id="operationManagerType" onchange="onOperationManagerTypeChange()"><option value="">Todas as classes</option></select></div><div class="field"><label for="operationManagerTicker">Ativo</label><select id="operationManagerTicker" onchange="renderOperationManagerRows()"><option value="">Todos os ativos</option></select></div></div><div id="operationManagerSummary" class="mini" style="margin:12px 0">Carregando lançamentos…</div><div id="operationManagerRows" class="tablewrap"></div><div class="modalactions" style="justify-content:space-between;flex-wrap:wrap"><div class="toolbar"><button class="danger" type="button" onclick="confirmDeleteManaged('ativo')">Excluir todos deste ativo</button><button class="danger" type="button" onclick="confirmDeleteManaged('todas')">Excluir todos os lançamentos</button></div><button class="ghost" type="button" onclick="closeOperationManager()">Fechar</button></div></div></div>
-<div class="modalback" id="appConfirmBack" onclick="if(event.target===this)resolveAppConfirm(false)"><div class="modal" style="width:min(460px,100%)"><div class="modalhead"><h2 id="appConfirmTitle">Confirmar ação</h2><button class="close" onclick="resolveAppConfirm(false)">×</button></div><p id="appConfirmMessage" class="mini" style="font-size:13px;line-height:1.6;color:var(--text)"></p><div class="modalactions"><button class="ghost" type="button" onclick="resolveAppConfirm(false)">Cancelar</button><button class="danger" id="appConfirmAccept" type="button" onclick="resolveAppConfirm(true)">Confirmar exclusão</button></div></div></div>
+<div class="modalback app-dialog-back" id="appConfirmBack" onclick="if(event.target===this)resolveAppConfirm(false)"><div class="modal app-dialog-modal" role="dialog" aria-modal="true" aria-labelledby="appConfirmTitle"><div class="modalhead"><h2 id="appConfirmTitle">Confirmar ação</h2><button class="close" type="button" aria-label="Fechar" onclick="resolveAppConfirm(false)">×</button></div><p id="appConfirmMessage" class="mini app-dialog-message"></p><div class="field app-dialog-input-wrap" id="appConfirmInputWrap" hidden><label id="appConfirmInputLabel" for="appConfirmInput">Confirmação</label><input id="appConfirmInput" type="text" autocomplete="off" spellcheck="false"></div><div class="modalactions"><button class="ghost" id="appConfirmCancel" type="button" onclick="resolveAppConfirm(false)">Cancelar</button><button class="danger" id="appConfirmAccept" type="button" onclick="resolveAppConfirm(true)">Confirmar exclusão</button></div></div></div>
 <div class="modalback" id="b3ImportBack" onclick="if(event.target===this)closeB3Import()"><div class="modal" style="width:min(760px,100%)"><div class="modalhead"><div><h2>Importar movimentações da B3</h2><div class="sub">Selecione o arquivo Excel exportado pela B3. Confira a prévia antes de gravar.</div></div><button class="close" onclick="closeB3Import()">×</button></div><div class="notice b3-fixed-income-notice"><b>Atenção:</b> ativos de renda fixa não são importados pela B3. Cadastre esses investimentos manualmente pela opção <b>Adicionar lançamento</b>.</div><div class="field"><label>Planilha de movimentações (.xlsx)</label><input id="b3File" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div><div id="b3Preview" class="section mini">Nenhum arquivo selecionado.</div><div class="modalactions"><button class="ghost" type="button" onclick="closeB3Import()">Cancelar</button><button class="primary" id="b3PreviewButton" type="button" onclick="previewB3File()">Analisar planilha</button><button class="primary hidden" id="b3ConfirmButton" type="button" onclick="confirmB3Import()">Confirmar importação</button></div></div></div>
 <div class="modalback" id="provDistributionBack" onclick="if(event.target===this)closeProvDistributionModal()"><div class="modal prov-distribution-modal"><div class="modalhead"><h2 id="provDistributionTitle">Distribuição de proventos em 12 meses</h2><button class="close" onclick="closeProvDistributionModal()">×</button></div><div class="prov-distribution-content"><div><div class="prov-distribution-switch segmented"><button type="button" id="provDistAssetTab" class="active" onclick="setProvDistributionMode('ativo')">◉ Por Ativo</button><button type="button" id="provDistTypeTab" onclick="setProvDistributionMode('tipo')">◉ Por Tipo</button></div><div class="prov-distribution-chart"><canvas id="provDistributionDetailChart"></canvas></div></div><div class="prov-distribution-side"><div class="prov-distribution-total"><span>Total</span><strong id="provDistributionTotal" class="green">R$ 0,00</strong></div><div id="provDistributionDetailList" class="prov-distribution-list"></div></div></div></div></div>
 <div class="modalback" id="modalback" onclick="if(event.target===this)closeModal()"><div class="modal"><div class="modalhead"><h2 id="modalTitle">Novo lançamento</h2><button class="close" onclick="closeModal()">×</button></div><form id="opForm" class="formgrid operation-form">
@@ -6088,15 +6088,45 @@ try{
 }catch(e){applyTheme(false);applyPrivacy(false)}
 
 
-let appConfirmResolver=null;
+let appConfirmResolver=null,appConfirmMode='confirm';
 function appConfirm(title,message,acceptLabel='Confirmar exclusão'){
+ appConfirmMode='confirm';
  document.getElementById('appConfirmTitle').textContent=title;
  document.getElementById('appConfirmMessage').textContent=message;
  document.getElementById('appConfirmAccept').textContent=acceptLabel;
+ document.getElementById('appConfirmCancel').hidden=false;
+ document.getElementById('appConfirmInputWrap').hidden=true;
  document.getElementById('appConfirmBack').style.display='flex';
  return new Promise(resolve=>{appConfirmResolver=resolve;});
 }
-function resolveAppConfirm(value){document.getElementById('appConfirmBack').style.display='none';if(appConfirmResolver){const resolve=appConfirmResolver;appConfirmResolver=null;resolve(!!value);}}
+function appPrompt(title,message,{label='Confirmação',placeholder='',type='text',acceptLabel='Continuar'}={}){
+ appConfirmMode='prompt';
+ document.getElementById('appConfirmTitle').textContent=title;
+ document.getElementById('appConfirmMessage').textContent=message;
+ document.getElementById('appConfirmAccept').textContent=acceptLabel;
+ document.getElementById('appConfirmCancel').hidden=false;
+ const wrap=document.getElementById('appConfirmInputWrap'),input=document.getElementById('appConfirmInput');
+ document.getElementById('appConfirmInputLabel').textContent=label;
+ input.type=type;input.placeholder=placeholder;input.value='';
+ wrap.hidden=false;document.getElementById('appConfirmBack').style.display='flex';
+ return new Promise(resolve=>{appConfirmResolver=resolve;setTimeout(()=>input.focus(),40);});
+}
+function appNotice(title,message,acceptLabel='OK'){
+ appConfirmMode='notice';
+ document.getElementById('appConfirmTitle').textContent=title;
+ document.getElementById('appConfirmMessage').textContent=message;
+ document.getElementById('appConfirmAccept').textContent=acceptLabel;
+ document.getElementById('appConfirmCancel').hidden=true;
+ document.getElementById('appConfirmInputWrap').hidden=true;
+ document.getElementById('appConfirmBack').style.display='flex';
+ return new Promise(resolve=>{appConfirmResolver=resolve;});
+}
+function resolveAppConfirm(value){
+ const back=document.getElementById('appConfirmBack'),input=document.getElementById('appConfirmInput');
+ back.style.display='none';
+ if(appConfirmResolver){const resolve=appConfirmResolver;appConfirmResolver=null;const result=appConfirmMode==='prompt'?(value?input.value:null):!!value;resolve(result);}
+ input.value='';document.getElementById('appConfirmInputWrap').hidden=true;document.getElementById('appConfirmCancel').hidden=false;
+}
 let managedOperations=[];
 function openOperationManager(){document.getElementById('operationManagerBack').style.display='flex';loadOperationManager();}
 function closeOperationManager(){document.getElementById('operationManagerBack').style.display='none';}
@@ -6399,7 +6429,7 @@ async function loadSecuritySettings(){
   }else{
    if(deleteTitle)deleteTitle.textContent='Excluir minha conta';
    if(deleteBadge)deleteBadge.textContent='Somente seus dados · Ação irreversível';
-   if(deleteDescription)deleteDescription.textContent='Você pode apagar sua própria conta. Esta ação exclui somente seu usuário, suas carteiras, bancos financeiros, conexões bancárias Pluggy, tokens de API compartilhados entre suas carteiras e caches. Todos os outros usuários e seus dados permanecem preservados. Backups anteriores que contenham cópias dos seus dados não são alterados automaticamente.';
+   if(deleteDescription)deleteDescription.textContent='Você pode apagar sua própria conta. Esta ação exclui somente seu usuário, suas carteiras, bancos financeiros (incluindo ativos.db e tokens.db), conexões bancárias Pluggy, tokens de API compartilhados entre suas carteiras e caches. Todos os outros usuários e seus dados permanecem preservados. Backups anteriores que contenham cópias dos seus dados não são alterados automaticamente.';
    if(deleteButton){deleteButton.textContent='Excluir minha conta';deleteButton.dataset.idleLabel=deleteButton.textContent;deleteButton.disabled=false;}
   }
   if(addPanel)addPanel.hidden=d.can_manage_users!==true;
@@ -6464,34 +6494,39 @@ async function saveSecurityPin(){
  catch(e){msg.textContent=e.message;}
 }
 async function deleteOwnAccount(){
- const message=document.getElementById('securityDeleteAccountMessage');if(message){message.textContent='';message.className='mini';}
- const button=document.getElementById('securityDeleteAccountButton');
+ const button=document.getElementById('securityDeleteAccountButton'),message=document.getElementById('securityDeleteAccountMessage');
+ if(button?.disabled)return;
+ if(message){message.textContent='';message.className='mini';}
  try{
   const statusResponse=await fetch('/api/auth/status',{credentials:'same-origin',cache:'no-store',headers:{'Accept':'application/json'}});
   const status=await readWalletApiResponse(statusResponse,'Não foi possível verificar sua conta.');
   if(!status.authenticated)throw new Error('Sua sessão expirou. Entre novamente para excluir a conta.');
-  const isMaster=status.is_master===true;
-  const hasOtherUsers=Number(status.other_user_count||0)>0;
-  const transferMaster=isMaster&&hasOtherUsers;
+  const isMaster=status.is_master===true,hasOtherUsers=Number(status.other_user_count||0)>0,transferMaster=isMaster&&hasOtherUsers;
   const warning=transferMaster
-   ?'TRANSFERIR MASTER E EXCLUIR MINHA CONTA: esta ação apaga somente sua conta Master, suas carteiras, bancos financeiros, conexões bancárias Pluggy, tokens de API compartilhados entre suas carteiras e caches. A conta mais antiga restante será promovida automaticamente a Master e precisará entrar novamente. As demais contas e seus dados permanecem preservados. Backups anteriores não são apagados. Deseja continuar?'
+   ?'Esta ação exclui somente sua conta Master, suas carteiras, bancos financeiros, conexões Pluggy, tokens de API compartilhados entre suas carteiras e caches. A conta restante mais antiga será promovida automaticamente a Master e precisará entrar novamente. As demais contas e seus dados serão preservados. Backups anteriores não serão apagados.'
    :isMaster
-    ?'EXCLUSÃO TOTAL: como você é a única conta restante, esta ação apaga a conta Master, bancos, carteiras, conexões Pluggy, tokens e caches locais. A instalação voltará ao primeiro acesso. Backups externos não serão apagados. Deseja continuar?'
-    :'EXCLUIR MINHA CONTA: esta ação apaga somente seu usuário, todas as suas carteiras, bancos financeiros, conexões bancárias Pluggy, tokens de API compartilhados entre suas carteiras e caches. As demais contas não serão alteradas. Backups anteriores permanecem preservados. Deseja continuar?';
-  if(!window.confirm(warning))return;
-  const current_pin=window.prompt('Digite seu PIN atual para autorizar a exclusão:');if(current_pin===null)return;
-  if(!/^\d{6,12}$/.test(current_pin))throw new Error('PIN inválido.');
+    ?'Você é o último usuário. Esta ação exclui sua conta Master, todos os dados locais, bancos, carteiras, conexões e credenciais. A instalação voltará ao primeiro acesso. Backups externos não serão apagados.'
+    :'Esta ação exclui somente sua conta, suas carteiras, bancos financeiros (incluindo ativos.db e tokens.db), conexões bancárias Pluggy, tokens de API compartilhados entre suas carteiras e caches. As demais contas e seus dados serão preservados. Backups anteriores não serão apagados.';
+  if(!await appConfirm(isMaster?'Excluir conta Master':'Excluir minha conta',warning,'Continuar para confirmação'))return;
+  const current_pin=await appPrompt('Autorizar exclusão','Digite seu PIN atual para autorizar a operação.',{label:'PIN atual',placeholder:'PIN de 6 a 12 números',type:'password',acceptLabel:'Validar PIN'});
+  if(current_pin===null)return;
+  if(!/^\d{6,12}$/.test(current_pin)){toast('PIN inválido. A exclusão não foi realizada.');return;}
   const requiredPhrase=transferMaster?'TRANSFERIR MASTER E EXCLUIR MINHA CONTA':isMaster?'APAGAR TODA A INSTALAÇÃO':'EXCLUIR MINHA CONTA';
-  const confirmation=window.prompt('Para confirmar, digite exatamente:\n'+requiredPhrase);if(confirmation===null)return;
+  if(isMaster){
+   const confirmation=await appPrompt('Confirmação final','Para concluir, digite exatamente a frase abaixo. Essa etapa evita uma exclusão acidental.',{label:'Frase de confirmação',placeholder:requiredPhrase,acceptLabel:'Confirmar exclusão'});
+   if(confirmation===null)return;
+   if(confirmation!==requiredPhrase){toast('A frase de confirmação não confere. Nenhum dado foi excluído.');return;}
+  }else if(!await appConfirm('Última confirmação','Confirma definitivamente a exclusão da sua conta e dos dados vinculados a ela?','Excluir minha conta'))return;
   if(button){button.disabled=true;button.textContent='Excluindo…';}
-  const response=await fetch('/api/account/self',{method:'DELETE',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({current_pin,confirmation})});
+  const response=await fetch('/api/account/self',{method:'DELETE',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({current_pin,confirmation:requiredPhrase})});
   const data=await readWalletApiResponse(response,'Não foi possível excluir a conta.');
   if(!data.ok)throw new Error(data.error||'O servidor não confirmou a exclusão.');
-  window.alert(data.message||'Conta excluída.');
+  await appNotice('Conta excluída',data.message||'Conta excluída com sucesso.');
   location.replace('/');
- }catch(error){if(message){message.textContent=error.message;message.className='mini error-message';}else window.alert(error.message);}
+ }catch(error){if(message){message.textContent=error.message;message.className='mini error-message';}else toast(error.message);}
  finally{if(button){button.disabled=false;button.textContent=button.dataset.idleLabel||'Excluir minha conta';}}
 }
+
 async function securityLogout(){try{await fetch('/api/auth/logout',{method:'POST'});}finally{location.replace('/');}}
 
 
@@ -6558,15 +6593,18 @@ const managedUserEditorForm=document.getElementById('managedUserEditorForm');
 if(managedUserEditorForm)managedUserEditorForm.addEventListener('submit',submitManagedUserEditor);
 async function deleteManagedUser(user){
  if(!user?.can_delete)return;
- if(!window.confirm('Excluir o usuário '+user.username+' e apagar todos os bancos ativos.db, tokens.db, carteiras, conexões Pluggy e caches pertencentes a ele? Backups anteriores que contenham cópias desses dados não serão apagados automaticamente. Esta ação não pode ser desfeita.'))return;
- const current_pin=window.prompt('Confirme a exclusão digitando seu PIN atual:');if(current_pin===null)return;
- if(!/^\d{6,12}$/.test(current_pin)){window.alert('PIN inválido.');return;}
+ const warning='Excluir '+user.username+' e apagar todos os bancos, carteiras, conexões Pluggy, tokens de API e caches pertencentes a essa conta? As demais pessoas não serão afetadas. Backups anteriores que contenham cópias desses dados não serão apagados automaticamente. Esta ação não pode ser desfeita.';
+ if(!await appConfirm('Excluir usuário '+user.username,warning,'Continuar'))return;
+ const current_pin=await appPrompt('Autorizar exclusão','Confirme a operação digitando seu PIN atual.',{label:'Seu PIN atual',placeholder:'PIN de 6 a 12 números',type:'password',acceptLabel:'Excluir usuário'});
+ if(current_pin===null)return;
+ if(!/^\d{6,12}$/.test(current_pin)){toast('PIN inválido.');return;}
  try{
   const response=await fetch('/api/users/'+encodeURIComponent(user.id),{method:'DELETE',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({current_pin})});
   const data=await readWalletApiResponse(response,'Não foi possível excluir o usuário.');if(!data.ok)throw new Error(data.error||'O servidor não confirmou a exclusão.');
   await loadManagedUsers();const message=document.getElementById('securityUsersMessage');if(message)message.textContent='Usuário '+user.username+' excluído.';
- }catch(error){window.alert(error.message);}
+ }catch(error){toast(error.message);}
 }
+
 
 let walletEditorMode='create';
 function toggleWalletPicker(){const menu=document.getElementById('walletPickerMenu'),trigger=document.getElementById('walletPickerTrigger');menu.hidden=!menu.hidden;trigger.setAttribute('aria-expanded',String(!menu.hidden));}
@@ -6586,6 +6624,7 @@ async function refreshWalletPicker(){
   });
   document.getElementById('activeWalletName').textContent=active?.name||'Carteira';
   const create=document.getElementById('createWalletAction');if(create){create.disabled=(d.wallets||[]).length>=3;const count=create.querySelector('small');if(count)count.textContent=(d.wallets||[]).length+'/3';}
+  const deleteAction=document.getElementById('deleteWalletAction');if(deleteAction)deleteAction.hidden=!active||active.is_default===true||(d.wallets||[]).length<=1;
   return true;
  }catch(error){console.warn('Não foi possível atualizar o seletor de carteiras:',error);return false;}
 }
@@ -6594,6 +6633,28 @@ async function selectWallet(walletId){
  try{const r=await fetch('/api/wallets/'+encodeURIComponent(walletId)+'/select',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({})}),d=await readWalletApiResponse(r,'Não foi possível selecionar a carteira.');if(!d.ok)throw new Error(d.error||'O servidor não confirmou a seleção.');location.reload();}
  catch(error){alert(error.message);}
 }
+
+async function deleteSelectedWallet(){
+ const picker=document.getElementById('walletPicker'),walletId=picker?.dataset.activeWalletId||'';
+ if(!walletId)return;
+ try{
+  const listResponse=await fetch('/api/wallets',{credentials:'same-origin',cache:'no-store',headers:{'Accept':'application/json'}});
+  const list=await readWalletApiResponse(listResponse,'Não foi possível consultar as carteiras.');
+  const wallet=(list.wallets||[]).find(item=>item.id===walletId);
+  if(!wallet||wallet.is_default){toast('A carteira Padrão não pode ser excluída.');return;}
+  const warning='A carteira "'+wallet.name+'" e seus dados exclusivos serão removidos permanentemente: operações, posições, proventos, histórico, conexões bancárias Pluggy e cache. As demais carteiras serão preservadas. As credenciais de APIs compartilhadas deste usuário continuarão disponíveis. Esta ação não pode ser desfeita.';
+  if(!await appConfirm('Excluir carteira '+wallet.name,warning,'Continuar'))return;
+  const current_pin=await appPrompt('Autorizar exclusão da carteira','Digite seu PIN atual para confirmar a remoção.',{label:'PIN atual',placeholder:'PIN de 6 a 12 números',type:'password',acceptLabel:'Excluir carteira'});
+  if(current_pin===null)return;
+  if(!/^\d{6,12}$/.test(current_pin)){toast('PIN inválido. A carteira não foi excluída.');return;}
+  const response=await fetch('/api/wallets/'+encodeURIComponent(walletId),{method:'DELETE',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({current_pin})});
+  const data=await readWalletApiResponse(response,'Não foi possível excluir a carteira.');
+  if(!data.ok)throw new Error(data.error||'O servidor não confirmou a exclusão.');
+  await appNotice('Carteira excluída',data.message||'A carteira foi excluída.');
+  location.reload();
+ }catch(error){toast(error.message||'Não foi possível excluir a carteira.');}
+}
+
 function openWalletEditor(mode){
  walletEditorMode=mode==='rename'?'rename':'create';closeWalletPicker();
  const back=document.getElementById('walletEditorBack'),name=document.getElementById('walletEditorName'),title=document.getElementById('walletEditorTitle'),subtitle=document.getElementById('walletEditorSubtitle'),submit=document.getElementById('walletEditorSubmit'),message=document.getElementById('walletEditorMessage');
@@ -6662,7 +6723,20 @@ refreshWalletPicker();
 .wallet-picker-item:hover,.wallet-picker-item.active,.wallet-picker-actions button:hover{background:var(--panel2)}
 .wallet-picker-item small,.wallet-picker-actions small{color:#35d69b;font-size:10px;white-space:nowrap}
 .wallet-picker-actions{border-top:1px solid var(--line);margin-top:6px;padding-top:6px}
-.wallet-picker-actions button:disabled{opacity:.4;cursor:not-allowed}
+ .wallet-picker-actions button:disabled{opacity:.4;cursor:not-allowed}
+.wallet-picker-actions .wallet-delete-action{color:var(--red)}
+.wallet-picker-actions .wallet-delete-action:hover{background:color-mix(in srgb,var(--red) 10%,var(--panel2))}
+.app-dialog-back{z-index:130!important;backdrop-filter:blur(3px)}
+.app-dialog-modal{width:min(480px,100%);border-color:var(--line);background:var(--panel);color:var(--text)}
+.app-dialog-message{font-size:13px;line-height:1.65;color:var(--text)!important;white-space:pre-line}
+.app-dialog-input-wrap{margin-top:14px}
+.app-dialog-input-wrap[hidden]{display:none!important}
+.app-dialog-input-wrap input{width:100%;min-height:43px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px 12px;outline:none}
+.app-dialog-input-wrap input:focus{border-color:var(--blue);box-shadow:0 0 0 3px #78b7f51c}
+.app-dialog-modal .modalactions .danger{background:rgba(239,102,128,.13);border:1px solid color-mix(in srgb,var(--red) 45%,var(--line));color:var(--red);border-radius:8px;padding:9px 13px;font-weight:650}
+.logout-top-btn{white-space:nowrap}
+@media(max-width:760px){.topright .logout-top-btn{grid-column:1/-1;width:100%;min-height:40px;justify-content:center}}
+@media(max-width:350px){.topright .logout-top-btn{grid-column:1/-1}}
 .wallet-editor-modal{width:min(460px,100%)}
 .wallet-editor-modal .field input{width:100%;min-height:44px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:11px 13px}
 .security-divider{height:1px;background:var(--line);margin:22px 0}.security-add-user[hidden],.security-users-panel[hidden]{display:none!important}
@@ -7452,13 +7526,13 @@ body.light-theme .launch-distribution-row,body.light-theme .launch-distribution-
 
 
 <style>
-#page-seguranca .security-delete-zone{margin-top:22px;padding:18px;border:1px solid #8f3549;background:linear-gradient(135deg,#391d27aa,#20232c);border-radius:12px}
+#page-seguranca .security-delete-zone{margin-top:22px;padding:18px;border:1px solid color-mix(in srgb,var(--red) 45%,var(--line));background:var(--panel2);border-radius:12px}
 #page-seguranca .security-delete-zone .panelhead{margin-bottom:8px}
 #page-seguranca .security-delete-zone .danger-badge{background:#6f2638;color:#ffdce3;border:1px solid #a7435a}
 #page-seguranca .security-delete-zone button.danger{min-height:42px;margin-top:8px;padding:10px 16px;border:1px solid #a7435a;border-radius:8px;background:#852d43;color:#fff;font-weight:700}
 #page-seguranca .security-delete-zone button.danger:hover{background:#9d344d}
 #page-seguranca .security-delete-zone button.danger:disabled{opacity:.6;cursor:wait}
-body.light-theme #page-seguranca .security-delete-zone{background:#fff5f6;border-color:#e7a3b1}
+body.light-theme #page-seguranca .security-delete-zone{background:var(--panel2);border-color:color-mix(in srgb,var(--red) 38%,var(--line))}
 body.light-theme #page-seguranca .security-delete-zone .danger-badge{background:#ffe1e7;color:#92243d;border-color:#e9a4b2}
 body.light-theme #page-seguranca .security-delete-zone button.danger{background:#b42340;border-color:#9f1d36;color:#fff}
 @media(max-width:620px){ #page-seguranca .security-delete-zone{padding:14px}#page-seguranca .security-delete-zone button.danger{width:100%;white-space:normal}}

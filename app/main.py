@@ -59,12 +59,33 @@ def _marker_matches_current_process(path):
 
 
 def _assert_wallet_context_not_deleting(context):
-    """Stop in-flight workers from recreating files after an account is erased."""
+    """Stop in-flight workers from recreating files after an account or wallet is erased."""
     if _marker_matches_current_process(DATA_ROOT / '.deleting-installation'):
         raise RuntimeError('A instalação está sendo excluída; a gravação de dados foi bloqueada.')
     user_id = str(context.get('user_id') or '')
+    wallet_id = str(context.get('wallet_id') or '')
     if user_id and _marker_matches_current_process(DATA_ROOT / '.deleting-users' / (user_id + '.deleting')):
         raise RuntimeError('Esta conta está sendo excluída; a gravação de dados foi bloqueada.')
+    if user_id and wallet_id:
+        marker = DATA_ROOT / '.deleting-wallets' / (user_id + '_' + wallet_id + '.deleting')
+        if _marker_matches_current_process(marker):
+            raise RuntimeError('Esta carteira está sendo excluída; a gravação de dados foi bloqueada.')
+
+
+def _create_wallet_deletion_marker(user_id, wallet_id):
+    safe_user = str(user_id or '')
+    safe_wallet = str(wallet_id or '')
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', safe_user) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', safe_wallet):
+        raise ValueError('Identificador inválido para exclusão de carteira.')
+    marker = DATA_ROOT / '.deleting-wallets' / (safe_user + '_' + safe_wallet + '.deleting')
+    marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    fd = os.open(str(marker), flags, 0o600)
+    with os.fdopen(fd, 'w', encoding='ascii') as handle:
+        handle.write(str(globals().get('BOOT_ID') or 'unknown'))
+        handle.flush()
+        os.fsync(handle.fileno())
+    return marker
 
 
 def _create_account_deletion_marker(user_id=None, reset_installation=False):
@@ -1904,6 +1925,7 @@ def _stage_account_storage(user_id, reset_installation=False, include_legacy_dat
     payload_root = stage_root / 'payload'
     payload_root.mkdir(parents=True, mode=0o700)
     manifest = {
+        'scope_type': 'account',
         'user_id': str(user_id or ''),
         'reset_installation': bool(reset_installation),
         'items': [relative.as_posix() for _source, relative in existing],
@@ -1928,6 +1950,71 @@ def _stage_account_storage(user_id, reset_installation=False, include_legacy_dat
                     os.replace(destination, source)
             except OSError:
                 app.logger.exception('Falha ao restaurar dados durante o cancelamento da exclusão.')
+        shutil.rmtree(stage_root, ignore_errors=True)
+        raise
+
+
+def _stage_wallet_storage(context):
+    """Move only one non-default wallet's private DB/cache into recoverable quarantine."""
+    if not isinstance(context, dict) or str(context.get('storage_key') or '') == 'legacy':
+        raise ValueError('A carteira Padrão não pode ser excluída.')
+    data_root = DATA_ROOT.resolve()
+    wallet_id = str(context.get('wallet_id') or '')
+    user_id = str(context.get('user_id') or '')
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', user_id) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', wallet_id):
+        raise ValueError('Identificador inválido para exclusão de carteira.')
+    sources = [Path(context['wallet_dir']), Path(context['dashboard_cache_path']).parent]
+    existing = []
+    seen = set()
+    for source in sources:
+        source_abs = Path(os.path.abspath(str(source)))
+        marker = str(source_abs)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        try:
+            relative = source_abs.relative_to(data_root)
+        except ValueError as exc:
+            raise RuntimeError('A exclusão tentou alcançar dados fora do volume do Lonely Wallet.') from exc
+        if not relative.parts or relative.parts[0] == '.deletion-staging':
+            raise RuntimeError('Caminho protegido; exclusão de carteira cancelada.')
+        if not (source.exists() or source.is_symlink()):
+            continue
+        if not source.is_symlink():
+            try:
+                source.resolve(strict=False).relative_to(data_root)
+            except ValueError as exc:
+                raise RuntimeError('O caminho da carteira contém um link simbólico externo; exclusão cancelada.') from exc
+        existing.append((source, relative))
+
+    stage_root = _deletion_stage_root() / uuid.uuid4().hex
+    payload_root = stage_root / 'payload'
+    payload_root.mkdir(parents=True, mode=0o700)
+    manifest = {
+        'scope_type': 'wallet', 'user_id': user_id, 'wallet_id': wallet_id,
+        'reset_installation': False,
+        'items': [relative.as_posix() for _source, relative in existing],
+        'created_at': datetime.now(TZ).isoformat(timespec='seconds'),
+    }
+    manifest_path = stage_root / 'manifest.json'
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding='utf-8')
+    os.chmod(manifest_path, 0o600)
+    moved = []
+    try:
+        for source, relative in existing:
+            destination = payload_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.replace(source, destination)
+            moved.append((source, destination))
+        return stage_root
+    except Exception:
+        for source, destination in reversed(moved):
+            try:
+                source.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                if destination.exists() or destination.is_symlink():
+                    os.replace(destination, source)
+            except OSError:
+                app.logger.exception('Falha ao restaurar dados durante o cancelamento da exclusão da carteira.')
         shutil.rmtree(stage_root, ignore_errors=True)
         raise
 
@@ -1977,9 +2064,7 @@ def _finalize_staged_account_storage(stage_root):
 def recover_pending_account_deletions():
     """Recover interrupted erasures: restore if the identity remains, erase if not."""
     root = DATA_ROOT / '.deletion-staging'
-    if not root.is_dir() or root.is_symlink():
-        return
-    for stage_root in root.iterdir():
+    for stage_root in (root.iterdir() if root.is_dir() and not root.is_symlink() else []):
         if not stage_root.is_dir() or stage_root.is_symlink():
             continue
         manifest_path = stage_root / 'manifest.json'
@@ -1987,7 +2072,12 @@ def recover_pending_account_deletions():
             manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
             con = identity_connection()
             try:
-                if manifest.get('reset_installation'):
+                if manifest.get('scope_type') == 'wallet':
+                    should_restore = bool(con.execute(
+                        'SELECT 1 FROM wallets WHERE id=? AND user_id=?',
+                        (str(manifest.get('wallet_id') or ''), str(manifest.get('user_id') or ''))
+                    ).fetchone())
+                elif manifest.get('reset_installation'):
                     should_restore = int(con.execute('SELECT COUNT(*) FROM users').fetchone()[0]) > 0
                 else:
                     should_restore = bool(con.execute('SELECT 1 FROM users WHERE id=?', (str(manifest.get('user_id') or ''),)).fetchone())
@@ -2000,6 +2090,15 @@ def recover_pending_account_deletions():
         except Exception:
             app.logger.exception('Não foi possível recuperar a exclusão de conta pendente em %s.', stage_root)
             raise
+    wallet_markers = DATA_ROOT / '.deleting-wallets'
+    if wallet_markers.is_dir() and not wallet_markers.is_symlink():
+        for marker in wallet_markers.glob('*.deleting'):
+            if not _marker_matches_current_process(marker):
+                marker.unlink(missing_ok=True)
+        try:
+            wallet_markers.rmdir()
+        except OSError:
+            pass
     # A marker from an older process can be cleared safely now: all worker
     # threads from that process have terminated, and the stage recovery above
     # restored or completed any interrupted filesystem operation.
@@ -3530,6 +3629,100 @@ def wallet_rename(wallet_id):
     return jsonify(ok=True, wallet={'id':str(wallet_id),'name':name}, name=name, wallet_id=str(wallet_id), active_wallet_id=str(session.get('wallet_id') or ''), message='Nome da carteira atualizado.')
 
 
+@app.route('/api/wallets/<wallet_id>', methods=['DELETE'])
+def wallet_delete(wallet_id):
+    """Delete one additional wallet belonging to the authenticated user."""
+    user_id = str(session.get('user_id') or '')
+    if not user_id:
+        return jsonify(ok=False, error='Sua sessão expirou. Entre novamente.'), 401
+    payload = request.get_json(silent=True) or {}
+    current_pin = str(payload.get('current_pin') or '')
+    con = identity_connection()
+    stage_root = None
+    marker = None
+    committed = False
+    fallback_wallet_id = ''
+    wallet_name = ''
+    try:
+        con.execute('BEGIN IMMEDIATE')
+        actor = con.execute('SELECT username_norm,pin_salt,pin_hash,last_wallet_id FROM users WHERE id=?', (user_id,)).fetchone()
+        if not actor:
+            return jsonify(ok=False, error='Usuário não encontrado.'), 404
+        wallet = con.execute(
+            'SELECT id,user_id,name,storage_key,is_default FROM wallets WHERE id=? AND user_id=?',
+            (str(wallet_id), user_id)
+        ).fetchone()
+        if not wallet:
+            return jsonify(ok=False, error='Carteira não encontrada ou não pertence a este usuário.'), 404
+        if bool(wallet['is_default']) or str(wallet['storage_key'] or '') == 'legacy':
+            return jsonify(ok=False, error='A carteira Padrão não pode ser excluída.'), 409
+        count = int(con.execute('SELECT COUNT(*) FROM wallets WHERE user_id=?', (user_id,)).fetchone()[0])
+        if count <= 1:
+            return jsonify(ok=False, error='A conta precisa manter pelo menos uma carteira.'), 409
+        fallback = con.execute(
+            'SELECT id FROM wallets WHERE user_id=? AND id<>? ORDER BY is_default DESC,created_at,id LIMIT 1',
+            (user_id, str(wallet_id))
+        ).fetchone()
+        if not fallback:
+            return jsonify(ok=False, error='Não foi possível selecionar uma carteira de destino.'), 409
+        fallback_wallet_id = str(fallback['id'])
+        selected_after_delete = fallback_wallet_id if str(actor['last_wallet_id'] or '') == str(wallet_id) else str(actor['last_wallet_id'] or session.get('wallet_id') or fallback_wallet_id)
+        wallet_name = str(wallet['name'])
+        pin_response = _confirm_identity_pin(
+            con, str(actor['username_norm']), actor['pin_salt'], actor['pin_hash'], current_pin,
+            'PIN atual incorreto. A exclusão da carteira foi cancelada.'
+        )
+        if pin_response:
+            return pin_response
+        context = _wallet_context_for_ids(user_id, str(wallet_id))
+        if not context:
+            return jsonify(ok=False, error='Não foi possível localizar o armazenamento desta carteira.'), 404
+        marker = _create_wallet_deletion_marker(user_id, str(wallet_id))
+        stage_root = _stage_wallet_storage(context)
+        con.execute('DELETE FROM wallets WHERE id=? AND user_id=?', (str(wallet_id), user_id))
+        con.execute('UPDATE users SET last_wallet_id=?,updated_at=? WHERE id=?',
+                    (selected_after_delete, datetime.now(TZ).isoformat(timespec='seconds'), user_id))
+        con.commit()
+        committed = True
+    except sqlite3.IntegrityError as exc:
+        con.rollback()
+        if stage_root:
+            _restore_staged_account_storage(stage_root)
+            stage_root = None
+        _remove_account_deletion_marker(marker)
+        return jsonify(ok=False, error=str(exc) or 'Não foi possível excluir a carteira.'), 409
+    except Exception:
+        con.rollback()
+        if stage_root:
+            try:
+                _restore_staged_account_storage(stage_root)
+                stage_root = None
+            except Exception:
+                app.logger.exception('Falha crítica ao restaurar dados após exclusão de carteira cancelada.')
+        _remove_account_deletion_marker(marker)
+        app.logger.exception('Falha ao excluir a carteira %s do usuário %s.', wallet_id, user_id)
+        return jsonify(ok=False, error='Não foi possível concluir a exclusão da carteira. Os dados foram preservados quando possível.'), 500
+    finally:
+        con.close()
+
+    cleanup_pending = False
+    if committed:
+        _clear_runtime_state_for_deleted_wallet(user_id, str(wallet_id))
+        if str(session.get('wallet_id') or '') == str(wallet_id):
+            session['wallet_id'] = fallback_wallet_id
+    if committed and stage_root:
+        try:
+            _finalize_staged_account_storage(stage_root)
+        except Exception:
+            cleanup_pending = True
+            app.logger.exception('A carteira foi removida do registro, mas a limpeza física ficou pendente.')
+    return jsonify(ok=True, deleted_wallet_id=str(wallet_id), deleted_wallet_name=wallet_name,
+                   active_wallet_id=str(session.get('wallet_id') or fallback_wallet_id), cleanup_pending=cleanup_pending,
+                   message=('Carteira excluída. Os dados financeiros e o cache exclusivos dela foram removidos; as credenciais de APIs compartilhadas e as demais carteiras foram preservadas.'
+                            if not cleanup_pending else
+                            'Carteira removida do registro. A limpeza física será concluída na próxima inicialização; as demais carteiras e credenciais compartilhadas foram preservadas.'))
+
+
 @app.route('/api/wallets/<wallet_id>/select', methods=['POST'])
 def wallet_select(wallet_id):
     con = identity_connection()
@@ -3726,6 +3919,29 @@ def _clear_runtime_state_for_deleted_account(user_id=None, all_users=False):
         })
         globals()['PROVENTOS_SYNC_PENDING_INPUTS'] = None
         globals()['PERFORMANCE_HISTORY_PENDING_INPUTS'] = None
+
+def _clear_runtime_state_for_deleted_wallet(user_id, wallet_id):
+    """Forget in-memory snapshots belonging only to one deleted wallet."""
+    states = globals().get('_SCOPED_WALLET_STATE', {})
+    lock = globals().get('_SCOPED_WALLET_STATE_LOCK')
+    key = str(user_id or '') + ':' + str(wallet_id or '')
+    if not isinstance(states, dict):
+        return
+    if lock is not None:
+        lock.acquire()
+    try:
+        state = states.pop(key, None)
+    finally:
+        if lock is not None:
+            lock.release()
+    if isinstance(state, dict):
+        for name in ('proventos_cache', 'proventos_state', 'portfolio_history_cache', 'performance_state'):
+            value = state.get(name)
+            if isinstance(value, dict):
+                value.clear()
+        state.clear()
+
+
 PLUGGY_AUTH_LOCK = threading.Lock()
 PLUGGY_REQUEST_LOCK = threading.RLock()
 try:
