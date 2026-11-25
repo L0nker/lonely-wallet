@@ -3,7 +3,7 @@
   <h1>Lonely Wallet</h1>
   <p><strong>Gerenciador pessoal de carteira de investimentos, auto-hospedado em Docker.</strong></p>
   <p>
-    <strong>Versão 6.1.12</strong> · Interface em português (Brasil) · Python/Flask · SQLite · Docker
+    <strong>Versão 6.1.14</strong> · Interface em português (Brasil) · Python/Flask · SQLite · Docker
   </p>
 </div>
 
@@ -95,9 +95,18 @@ A aplicação reúne em uma única interface:
 
 O servidor local é a fonte central dos dados. Cada usuário entra com username + PIN; dentro da conta pode alternar entre até três carteiras. Os dados financeiros e as conexões bancárias Pluggy são isolados por carteira. As credenciais de APIs de mercado são compartilhadas entre as carteiras do mesmo usuário, mas não entre usuários. O mesmo usuário pode acessar suas carteiras em diferentes dispositivos, sem duplicar os dados.
 
-### Destaques da versão 6.1.12
+### Destaques da versão 6.1.14
+### Correção visual da v6.1.14
+- Removida do modal de gerenciamento de usuários a frase auxiliar sobre promoção/rebaixamento de permissões.
+- Mantidas integralmente as regras de autorização no backend: somente o Master pode alterar o papel de outras contas.
+- O seletor de permissão continua sendo exibido somente quando a sessão possui autorização para alterar o papel.
+
+- Campos de PIN passaram a aceitar somente dígitos ASCII (`0–9`), com bloqueio de inserção não numérica e sanitização de colagens/autopreenchimento. O backend também rejeita algarismos Unicode e valida o mesmo conjunto ASCII nas rotas de login, cadastro e alteração de PIN. A regra cobre login, primeiro acesso, criação e edição de usuários, alteração de PIN e confirmações de exclusão.
+- Padronizada a altura dos campos de texto e seletores nos formulários de Segurança e no diálogo de gerenciamento de usuários; rótulos reservam altura consistente para alinhar as caixas em duas colunas e reorganizam para uma coluna em telas estreitas.
+- Corrigida uma condição de corrida no cache de histórico patrimonial: se uma carteira for removida enquanto um worker calcula o histórico, a gravação do snapshot é descartada sem recriar diretórios excluídos nem registrar falso alerta. Erros reais de permissão e de escrita continuam sendo registrados.
+- Incluídos testes específicos para sanitização numérica, alinhamento dos formulários e descarte seguro de gravações de cache durante exclusões.
 - A confirmação de exclusões de conta e usuários utiliza diálogos próprios do Lonely Wallet, compatíveis com os temas claro e escuro, no lugar dos prompts nativos do navegador.
-- O botão **Sair e bloquear** foi movido para o cabeçalho, ao lado de **Adicionar lançamento**.
+- O botão **Sair** foi movido para o cabeçalho, ao lado de **Adicionar lançamento**, com rótulo simplificado e sem tooltip nativo.
 - Adicionada exclusão de carteiras adicionais. A carteira Padrão é protegida e não pode ser removida; a exclusão exige o PIN atual, remove apenas os dados e cache daquela carteira e preserva as credenciais de APIs compartilhadas e as demais carteiras.
 - Se a carteira excluída estiver selecionada, o aplicativo seleciona automaticamente outra carteira existente.
 - O Admin pode listar usuários comuns, redefinir o PIN e excluir somente usuários comuns. Renomear contas, promover/rebaixar e gerenciar outras contas Admin continuam sendo ações exclusivas do Master.
@@ -146,7 +155,7 @@ O servidor local é a fonte central dos dados. Cada usuário entra com username 
 
 O cadastro de operações reconhece as seguintes classes: Ações, FIIs, ETFs, BDRs, ETFs Internacionais, Stocks, REITs, Criptomoedas, Renda Fixa, Tesouro Direto, Fundos de Investimentos e Outros.
 
-A disponibilidade de cotação, histórico, indicadores e cálculo de saldo varia conforme a classe e os dados disponibilizados pelas fontes configuradas. A página **Proventos** é destinada a ativos com eventos de proventos elegíveis; títulos de renda fixa e Tesouro não são apresentados nessa página na versão 6.1.12.
+A disponibilidade de cotação, histórico, indicadores e cálculo de saldo varia conforme a classe e os dados disponibilizados pelas fontes configuradas. A página **Proventos** é destinada a ativos com eventos de proventos elegíveis; títulos de renda fixa e Tesouro não são apresentados nessa página na versão 6.1.14.
 
 ## Como os dados são obtidos
 
@@ -300,7 +309,7 @@ Quando o Chart.js oficial não está disponível ou não passa na verificação,
 
 ### Primeiro acesso após atualizar uma instalação antiga
 
-A primeira pessoa que configurar a v6.1.12 torna-se o **Master da instalação** e recebe a carteira existente como **Padrão**. O banco atual `ativos.db` e o cofre legado `tokens.db` são associados a essa conta, preservando operações, proventos, posições, credenciais de API e conexões Pluggy legadas.
+A primeira pessoa que configurar a v6.1.14 torna-se o **Master da instalação** e recebe a carteira existente como **Padrão**. O banco atual `ativos.db` e o cofre legado `tokens.db` são associados a essa conta, preservando operações, proventos, posições, credenciais de API e conexões Pluggy legadas.
 
 1. Abra o endereço do Lonely Wallet no navegador.
 2. Na tela inicial, informe um username (3 a 24 caracteres) e crie um PIN de 6 a 12 números.
@@ -421,7 +430,7 @@ Principais áreas:
 
 Eventos futuros são estimativas. A quantidade usada no cálculo considera os dados de posição disponíveis para a data-com; confirme os valores finais nos comunicados da empresa/fundo, na corretora ou na B3.
 
-**Renda Fixa e Tesouro Direto não são classes exibidas na página Proventos da versão 6.1.12.** A existência de juros ou rendimento contratual de um título não significa que ele seja um provento de renda variável nesta tela.
+**Renda Fixa e Tesouro Direto não são classes exibidas na página Proventos da versão 6.1.14.** A existência de juros ou rendimento contratual de um título não significa que ele seja um provento de renda variável nesta tela.
 
 ### 3. Patrimônio
 
@@ -509,7 +518,7 @@ Na página **Distribuição**, defina o percentual ideal para cada classe. O apl
 
 A página **Integrações e APIs** contém a Pluggy e os provedores de mercado/indicadores.
 
-Na versão 6.1.12, permanece removido o painel visual de **Consumo das APIs** para simplificar a interface. O backend continua mantendo cache, intervalos, pausas e mecanismos de controle de requisições. A remoção do painel não desativa os provedores.
+Na versão 6.1.14, permanece removido o painel visual de **Consumo das APIs** para simplificar a interface. O backend continua mantendo cache, intervalos, pausas e mecanismos de controle de requisições. A remoção do painel não desativa os provedores.
 
 Para provedores que exigem credencial:
 
@@ -533,7 +542,7 @@ Na página **Segurança** é possível:
 - excluir a própria conta, respeitando o fluxo especial de transferência do Master;
 - verificar que o PIN é obrigatório.
 
-O botão **Sair e bloquear** fica no cabeçalho, ao lado de **Adicionar lançamento**, para permitir o bloqueio imediato sem navegar até Configurações.
+O botão **Sair** fica no cabeçalho, ao lado de **Adicionar lançamento**, para permitir o bloqueio imediato sem navegar até Configurações.
 
 O bloqueio automático é aplicado após 30 minutos sem atividade. O PIN é sempre obrigatório.
 
@@ -582,7 +591,7 @@ As credenciais Client ID/Secret são armazenadas criptografadas no servidor. A c
 
 ## Provedores de dados
 
-A lista abaixo descreve o papel dos serviços conforme o catálogo e as chamadas existentes no código da versão 6.1.12. A presença de um serviço na página não significa cobertura integral de todos os ativos ou endpoints.
+A lista abaixo descreve o papel dos serviços conforme o catálogo e as chamadas existentes no código da versão 6.1.14. A presença de um serviço na página não significa cobertura integral de todos os ativos ou endpoints.
 
 | Provedor | Credencial | Utilização/observações |
 |---|---|---|
@@ -865,7 +874,7 @@ Isso é o comportamento esperado. Cada usuário acessa apenas suas próprias car
 
 ## API HTTP interna
 
-O frontend utiliza endpoints HTTP do próprio Flask. Os endpoints abaixo são referências internas da versão 6.1.12, não uma promessa de API pública estável para integrações de terceiros.
+O frontend utiliza endpoints HTTP do próprio Flask. Os endpoints abaixo são referências internas da versão 6.1.14, não uma promessa de API pública estável para integrações de terceiros.
 
 | Endpoint | Métodos | Finalidade |
 |---|---|---|
@@ -1010,7 +1019,7 @@ Para verificar o YAML, utilize um validador compatível com Docker Compose ou ex
 - O renderer alternativo de gráficos é simplificado em relação ao Chart.js. Consulte `/api/health` para saber qual motor está ativo.
 - Cálculos de renda fixa dependem dos detalhes do título e de séries históricas disponíveis.
 - Estimativas de IOF/IR, saldo líquido, rentabilidade e proventos não substituem extratos, informes oficiais ou apuração profissional.
-- A v6.1.12 possui exatamente três papéis: **Master**, **Admin** e **Usuário comum**. O Master é a primeira conta cadastrada e existe apenas um por instalação. Ninguém pode gerenciar, renomear, redefinir PIN, promover, rebaixar ou excluir a conta Master; somente o próprio Master pode alterar seu username/PIN ou apagar a própria conta. Se houver outras contas, a mais antiga restante é promovida a Master e precisa entrar novamente; se ele for o último usuário, a instalação é reiniciada.
+- A v6.1.14 possui exatamente três papéis: **Master**, **Admin** e **Usuário comum**. O Master é a primeira conta cadastrada e existe apenas um por instalação. Ninguém pode gerenciar, renomear, redefinir PIN, promover, rebaixar ou excluir a conta Master; somente o próprio Master pode alterar seu username/PIN ou apagar a própria conta. Se houver outras contas, a mais antiga restante é promovida a Master e precisa entrar novamente; se ele for o último usuário, a instalação é reiniciada.
 - **Master:** pode criar usuários comuns e Admins; listar, renomear, redefinir PIN, excluir e alterar o papel de qualquer conta não-Master. Pode promover Usuários comuns a Admin e rebaixar Admins a Usuários comuns. Não pode criar outro Master. Sua própria conta não pode ser gerenciada por nenhuma outra conta.
 - **Admin:** pode criar somente Usuários comuns, redefinir PIN e excluir somente Usuários comuns. A lista de gerenciamento mostra apenas sua própria conta e usuários comuns; não revela nomes de outros Admins nem do Master. Não pode renomear outras contas, redefinir PIN de Admin, promover/rebaixar ou gerenciar outros Admins.
 - **Usuário comum:** pode redefinir o próprio PIN, usar suas carteiras e apagar a própria conta. Não pode alterar seu username, listar, criar ou gerenciar outras contas.
@@ -1037,11 +1046,11 @@ O volume `/data` contém informações financeiras e segredos. Trate-o como dado
 
 ## Licença
 
-O pacote 6.1.12 não inclui um arquivo `LICENSE`. Portanto, a licença de distribuição e reutilização do projeto ainda precisa ser definida pelo mantenedor antes de uma publicação pública no GitHub ou em uma loja de aplicativos. Não presuma que o código esteja sob MIT, Apache-2.0 ou outra licença sem a inclusão de um arquivo de licença válido.
+O pacote 6.1.14 não inclui um arquivo `LICENSE`. Portanto, a licença de distribuição e reutilização do projeto ainda precisa ser definida pelo mantenedor antes de uma publicação pública no GitHub ou em uma loja de aplicativos. Não presuma que o código esteja sob MIT, Apache-2.0 ou outra licença sem a inclusão de um arquivo de licença válido.
 
 ---
 
 <div align="center">
-  <strong>Lonely Wallet v6.1.12</strong><br>
+  <strong>Lonely Wallet v6.1.14</strong><br>
   Controle pessoal de investimentos · Dados persistidos no servidor do usuário
 </div>
