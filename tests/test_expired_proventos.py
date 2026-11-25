@@ -105,7 +105,7 @@ class ExpiredProventosTests(unittest.TestCase):
 
     def test_dashboard_cache_signature_changes_at_local_day_boundary(self):
         self.assertIn("records.append(('local_date', datetime.now(TZ).date().isoformat()))", MAIN)
-        self.assertIn('DASHBOARD_CACHE_FORMAT = 19', MAIN)
+        self.assertIn('DASHBOARD_CACHE_FORMAT = 28', MAIN)
         self.assertNotIn('estimado_pela_data_de_pagamento_sem_confirmacao_pluggy', MAIN)
         self.assertNotIn('APIs alternativas de meses encerrados', MAIN)
         self.assertNotIn('estimado_pela_data_de_pagamento_sem_confirmacao_pluggy', HTML)

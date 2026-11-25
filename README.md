@@ -3,7 +3,7 @@
   <h1>Lonely Wallet</h1>
   <p><strong>Gerenciador pessoal de carteira de investimentos, auto-hospedado em Docker.</strong></p>
   <p>
-    <strong>Versão 5.1.0</strong> · Interface em português (Brasil) · Python/Flask · SQLite · Docker
+    <strong>Versão 6.1.11</strong> · Interface em português (Brasil) · Python/Flask · SQLite · Docker
   </p>
 </div>
 
@@ -19,7 +19,8 @@
 - [Requisitos](#requisitos)
 - [Instalação no ZimaOS/CasaOS](#instalação-no-zimaoscasaos)
 - [Instalação com Docker Compose](#instalação-com-docker-compose)
-- [Primeiro acesso e proteção por PIN](#primeiro-acesso-e-proteção-por-pin)
+- [Primeiro acesso, usuários e carteiras](#primeiro-acesso-usuários-e-carteiras)
+- [Isolamento de dados por usuário e carteira](#isolamento-de-dados-por-usuário-e-carteira)
 - [Guia de uso](#guia-de-uso)
   - [Resumo](#1-resumo)
   - [Proventos](#2-proventos)
@@ -92,19 +93,33 @@ A aplicação reúne em uma única interface:
 - distribuição atual da carteira e percentuais-alvo;
 - proteção de acesso por PIN.
 
-O servidor local é a fonte central dos dados. Abrir a aplicação em outro dispositivo não cria uma carteira separada: os dispositivos acessam os mesmos bancos SQLite montados no servidor.
+O servidor local é a fonte central dos dados. Cada usuário entra com username + PIN; dentro da conta pode alternar entre até três carteiras. Os dados financeiros e as conexões bancárias Pluggy são isolados por carteira. As credenciais de APIs de mercado são compartilhadas entre as carteiras do mesmo usuário, mas não entre usuários. O mesmo usuário pode acessar suas carteiras em diferentes dispositivos, sem duplicar os dados.
 
-### Destaques da versão 5.1.0
+### Destaques da versão 6.1.11
+- Reforçada a unicidade dos nomes de usuário com índice único sobre `username_norm`, sem diferenciar maiúsculas/minúsculas; criação e alteração também verificam conflitos antes de gravar, mantendo a restrição do banco como proteção contra requisições simultâneas.
+- Corrigida a abertura dos modais de criação e renomeação de carteiras: a classe `open` agora possui regra de exibição (`.modalback.open`), fazendo os formulários aparecerem corretamente. A correção também beneficia o modal de gerenciamento de usuários.
+- Corrigido o visual do card Pluggy: a borda utiliza o mesmo token `--line` dos demais cards de APIs, sem contorno branco destacado ou sombra adicional.
+- Formalizada a matriz de três papéis no código, na interface e na documentação: Master, Admin e Usuário comum.
+- Master é a primeira conta cadastrada e única; ninguém pode gerenciar sua conta. Somente o próprio Master pode alterar username/PIN ou excluir a própria conta. Se houver outras contas, a conta restante mais antiga é promovida automaticamente a Master; se ele for o último usuário, a instalação é reiniciada.
+- Admin cria somente usuários comuns, redefine PIN e exclui somente usuários comuns; não visualiza nem gerencia outros Admins ou o Master. Admin também pode apagar a própria conta.
+- O endpoint de status não revela aos usuários comuns nem aos Admins a quantidade total de outras contas da instalação.
+- Usuário comum pode redefinir seu próprio PIN e apagar a própria conta; não pode alterar username nem gerenciar outras contas.
+- A exclusão de conta própria está disponível em Configurações para todos os papéis autenticados e remove os bancos, carteiras, tokens compartilhados por usuário, conexões Pluggy e caches vinculados à conta. Backups antigos não são reescritos automaticamente.
+- Incluídas verificações de regressão para autoexclusão dos três papéis e preservação das contas não envolvidas.
+- A inicialização reconcilia o papel Master com a primeira conta criada, mantém somente um Master e normaliza papéis antigos desconhecidos para Usuário comum. A proteção por índice e triggers é refeita em uma operação de savepoint para evitar uma migração parcial.
+- A camada interna de criação também exige o contexto autenticado e a versão vigente da sessão do criador; a autorização é conferida novamente dentro da transação. Negativas de permissão retornam HTTP 403; excesso de cadastros por IP continua retornando HTTP 429.
 
-- A página **Proventos** não exibe mais o contador técnico de eventos novos/ignorados nem a seção de detalhes técnicos da sincronização.
-- A página **Integrações e APIs** não exibe mais o painel visual de consumo de chamadas e cache. Os controles internos de cache, intervalos e limites dos provedores continuam ativos.
-- O cartão Pluggy segue o tema visual dos demais provedores e recebe o selo verde **(Recomendado)** ao lado do nome.
-- A interface recebeu uma revisão responsiva para celulares e tablets: cabeçalho compacto, navegação horizontal por gesto, grades reorganizadas e controles com alvos de toque maiores.
-- Tabelas com muitas colunas preservam a legibilidade e podem ser percorridas horizontalmente, sem alargar a página inteira.
-- Formulários e diálogos foram adaptados a telas estreitas e ao teclado virtual, com rolagem vertical própria.
-- Não foram alterados cálculos financeiros, integrações, rotas da API ou o formato do cache do dashboard nesta atualização visual.
+
+- Corrigido o envio do formulário de criação/renomeação de carteiras: o evento `submit` agora chama o endpoint correto, valida a resposta padronizada e atualiza o seletor após salvar.
+- A renomeação mantém a carteira selecionada e atualiza a identificação mostrada no cabeçalho.
+- O cache temporário da autenticação Pluggy agora acompanha o usuário, não a carteira. A rotação das credenciais compartilhadas invalida o token temporário em todas as carteiras daquela pessoa, sem afetar outros usuários.
+- As credenciais de APIs são compartilhadas entre as carteiras do mesmo usuário em um único cofre `tokens.db` por usuário. Os registros bancários Pluggy (`itemId`, contas, posições e transações) continuam isolados no `ativos.db` de cada carteira.
+- Uma carteira adicional começa sem operações, posições, proventos, alvos de distribuição ou conexões bancárias Pluggy; ela reutiliza somente o cofre de tokens de API da mesma conta.
+- O `DASHBOARD_CACHE_FORMAT` permanece em `28`; as alterações desta versão são de autorização de usuários e não exigem invalidar o cache financeiro.
+- Mantidos o README detalhado na raiz do pacote, o layout responsivo, a remoção do painel visual de consumo das APIs e o selo **(Recomendado)** da Pluggy.
 
 > **Importante:** o Lonely Wallet é uma ferramenta de organização e acompanhamento. Não é corretora, custodiante, instituição financeira, serviço de recomendação de investimentos ou sistema oficial de apuração tributária.
+
 
 ## Principais recursos
 
@@ -117,13 +132,14 @@ O servidor local é a fonte central dos dados. Abrir a aplicação em outro disp
 | **Importação B3** | Prévia, importação e gerenciamento de lotes de planilhas `.xlsx` exportadas pela B3. |
 | **Distribuição** | Definição de percentuais-alvo e comparação com a composição atual. |
 | **Integrações e APIs** | Configuração de credenciais, provedores de mercado e conexões Pluggy. |
-| **Segurança** | Configuração, alteração e desativação do PIN e bloqueio manual da sessão. |
+| **Segurança** | Usuários com username + PIN, cadastro controlado de contas, alteração de usuário/PIN e bloqueio da sessão. |
+| **Carteiras personalizadas** | Até três carteiras por usuário, com dados financeiros e conexões bancárias Pluggy independentes; credenciais de API compartilhadas entre carteiras do mesmo usuário. |
 
 ### Classes de ativos
 
 O cadastro de operações reconhece as seguintes classes: Ações, FIIs, ETFs, BDRs, ETFs Internacionais, Stocks, REITs, Criptomoedas, Renda Fixa, Tesouro Direto, Fundos de Investimentos e Outros.
 
-A disponibilidade de cotação, histórico, indicadores e cálculo de saldo varia conforme a classe e os dados disponibilizados pelas fontes configuradas. A página **Proventos** é destinada a ativos com eventos de proventos elegíveis; títulos de renda fixa e Tesouro não são apresentados nessa página na versão 5.1.0.
+A disponibilidade de cotação, histórico, indicadores e cálculo de saldo varia conforme a classe e os dados disponibilizados pelas fontes configuradas. A página **Proventos** é destinada a ativos com eventos de proventos elegíveis; títulos de renda fixa e Tesouro não são apresentados nessa página na versão 6.1.11.
 
 ## Como os dados são obtidos
 
@@ -150,9 +166,10 @@ O aplicativo mantém cache de respostas e dados históricos para reduzir chamada
 ```mermaid
 flowchart TD
     U[ navegador do usuário ] -->|HTTP na rede local ou HTTPS via proxy/VPN| W[Gunicorn + Flask]
-    W --> A[(ativos.db)]
-    W --> T[(tokens.db)]
-    W --> C[Cache local e arquivos auxiliares]
+    W --> U[(users.db · contas e carteiras)]
+    W --> A[(ativos.db por carteira)]
+    W --> T[(tokens.db compartilhado por usuário)]
+    W --> C[Cache separado por carteira]
     W --> P[Pluggy Open Finance]
     W --> M[Provedores de mercado]
     W --> E[Fontes econômicas públicas]
@@ -160,7 +177,7 @@ flowchart TD
 
 - **Backend:** Python 3.12, Flask e Gunicorn com worker `gthread`.
 - **Interface:** HTML, CSS e JavaScript servidos pelo próprio Flask.
-- **Dados:** SQLite, separados entre carteira e credenciais/autenticação.
+- **Dados:** SQLite; registro central de usuários, um `ativos.db` por carteira e um cofre `tokens.db` por usuário. Os registros de conexão bancária Pluggy permanecem no `ativos.db` da carteira.
 - **Execução:** container Docker com usuário de aplicação sem privilégios após a preparação inicial do volume.
 - **Fuso padrão:** `America/Sao_Paulo`.
 - **Gráficos:** Chart.js 4.6.1 quando o bundle local passa na verificação de integridade; caso contrário, o projeto inclui um renderer alternativo offline.
@@ -257,6 +274,7 @@ services:
       PLUGGY_REQUEST_GAP_SECONDS: "1.0"
       ASSETS_DB_PATH: /data/ativos.db
       TOKEN_DB_PATH: /data/tokens.db
+      USER_DB_PATH: /data/users.db
       DB_PATH: /data/carteira.db
       TZ: America/Sao_Paulo
     volumes:
@@ -271,27 +289,95 @@ O container executa `/srv/scripts/healthcheck.py` a cada 30 segundos, com timeou
 
 Quando o Chart.js oficial não está disponível ou não passa na verificação, mas o renderer alternativo está operacional, a API pode informar `degraded`. Esse estado é diferente de `unhealthy`: a aplicação pode continuar utilizável, mas os gráficos estarão no modo alternativo.
 
-## Primeiro acesso e proteção por PIN
+## Primeiro acesso, usuários e carteiras
 
-Em uma instalação nova, o PIN começa **desativado** e a aplicação abre sem solicitar código. Para habilitar a proteção:
+### Primeiro acesso após atualizar uma instalação antiga
 
-1. Abra a página **Segurança**.
-2. Na seção Proteção por PIN, clique em **Cadastrar PIN**.
-3. Escolha de 6 a 12 números, repita o código e clique em **Salvar PIN**.
-4. Depois de ativado, o PIN será solicitado ao abrir a carteira em uma sessão não autenticada.
+A primeira pessoa que configurar a v6.1.11 torna-se o **Master da instalação** e recebe a carteira existente como **Padrão**. O banco atual `ativos.db` e o cofre legado `tokens.db` são associados a essa conta, preservando operações, proventos, posições, credenciais de API e conexões Pluggy legadas.
 
-Se a instalação já tiver um PIN ativo, a tela de acesso solicitará o código. A página **Segurança** permite alterá-lo ou desativá-lo. Desativar o PIN deixa a carteira acessível sem código para qualquer pessoa que consiga alcançar o endereço do servidor.
+1. Abra o endereço do Lonely Wallet no navegador.
+2. Na tela inicial, informe um username (3 a 24 caracteres) e crie um PIN de 6 a 12 números.
+3. Confirme o PIN.
+4. Se a instalação antiga tinha um PIN ativo, informe-o no campo **PIN antigo da instalação** para autorizar a associação dos dados existentes à primeira conta.
+5. Conclua a configuração. A carteira anterior será exibida como **Padrão**.
 
-### Regras do PIN
+Em uma instalação realmente nova, não há PIN antigo para informar.
 
-- O PIN é global para a instalação. Não é um sistema de contas individuais ou de múltiplos usuários.
-- O hash é derivado com PBKDF2-HMAC-SHA256 e salt aleatório.
-- Após cinco tentativas incorretas recentes do mesmo endereço IP, o acesso fica temporariamente bloqueado por cinco minutos.
+### Hierarquia de permissões
+
+| Papel | O que pode fazer | Limites |
+|---|---|---|
+| **Master** | Criar Usuários comuns e Admins; listar, renomear, redefinir PIN, promover/rebaixar e excluir qualquer conta não-Master; gerenciar seu próprio username e PIN; apagar a própria conta a qualquer momento. | É a primeira conta cadastrada e existe exatamente um Master. Nenhuma outra conta pode gerenciá-lo, redefinir seu PIN, alterar seu papel ou excluí-lo. Se houver outras contas quando o Master sair, a conta restante mais antiga é promovida automaticamente a Master; se for a última conta, a instalação é reiniciada. |
+| **Admin** | Criar somente Usuários comuns; listar a própria conta e Usuários comuns; redefinir PIN e excluir Usuários comuns; alterar seu próprio username e PIN; apagar a própria conta. | Não pode criar Admins, visualizar outros Admins ou o Master, renomear outras contas, redefinir PIN de Admins, alterar papéis ou gerenciar outras contas Admin. |
+| **Usuário comum** | Usar suas próprias carteiras e dados financeiros; redefinir o próprio PIN; apagar a própria conta. | Não pode criar, listar ou gerenciar outras contas nem alterar o próprio username. A autoexclusão remove somente seus dados; as demais contas permanecem intactas. |
+
+O papel inicial é selecionado pelo **Master** (Usuário comum ou Admin) ou pelo **Admin** (somente Usuário comum) durante a criação. Depois que a conta existe, **somente o Master pode promover um Usuário comum a Admin ou rebaixar um Admin a Usuário comum**. O Admin pode criar, redefinir PIN e excluir exclusivamente Usuários comuns. Essas regras são aplicadas no backend, independentemente dos controles exibidos na interface.
+
+### Exclusão da própria conta
+
+- **Master com outras contas restantes:** pode excluir sua própria conta após confirmar o PIN e digitar `TRANSFERIR MASTER E EXCLUIR MINHA CONTA`. A conta restante mais antiga (`created_at`, com desempate pelo ID) é promovida automaticamente a Master dentro da mesma transação SQLite. O `auth_version` dessa conta é incrementado para invalidar a sessão antiga e exigir novo login. São removidos somente os dados, carteiras, tokens compartilhados entre as carteiras e caches do Master que saiu; as contas e os dados dos demais usuários permanecem preservados. Se o Master possuía a carteira legada, os bancos legados da raiz (`ativos.db`, `carteira.db`, `tokens.db` e cache legado, incluindo sidecars SQLite) também são colocados em quarentena e excluídos. As chaves globais necessárias aos usuários restantes são preservadas.
+- **Master como último usuário:** pode excluir a própria conta com a confirmação `APAGAR TODA A INSTALAÇÃO`. Essa ação apaga os dados locais da instalação dentro do volume, preserva o schema vazio de `users.db` para o primeiro acesso e reinicia o cadastro do Master.
+- A transferência de Master não compartilha nem transfere os dados financeiros do usuário que saiu. Backups anteriores continuam preservados; cópias da conta excluída dentro de arquivos de backup precisam ser eliminadas separadamente se essa for a intenção.
+- **Admin:** pode apagar a própria conta e todos os dados vinculados a ela, sem afetar as demais contas.
+- **Usuário comum:** pode apagar a própria conta e todos os dados vinculados a ela, sem afetar as demais contas.
+- A exclusão exige o PIN atual e uma frase de confirmação explícita. Arquivos de backup antigos não são modificados automaticamente; se houver cópias da conta em backups, elas precisam ser tratadas separadamente conforme a política de retenção.
+- A lista **Gerenciar usuários** mostra uma ação **Excluir** somente para contas que o papel atual tem autorização para excluir. O botão **Excluir minha conta** aparece na própria seção Configurações para todos os papéis autenticados.
+
+### Transferência automática de Master na autoexclusão
+
+A autoexclusão do Master é uma operação explícita e independente de exclusão de outros usuários:
+
+1. O Master informa o PIN atual.
+2. Quando há outras contas, deve digitar exatamente `TRANSFERIR MASTER E EXCLUIR MINHA CONTA`.
+3. Dentro da transação de identidade, o sistema escolhe a conta mais antiga restante (`created_at`, depois `id`), remove a conta Master anterior e promove a escolhida.
+4. A versão de autenticação do sucessor é incrementada. Ele precisa fazer login novamente para receber as permissões de Master.
+5. Os bancos, tokens e caches exclusivos do Master que saiu são colocados em quarentena e excluídos; as carteiras e conexões das outras contas não são copiadas, alteradas ou removidas.
+6. Chaves globais de criptografia e assinatura que os demais usuários ainda precisam são preservadas.
+
+Se não houver outra conta, a frase de confirmação é `APAGAR TODA A INSTALAÇÃO` e o volume local é reiniciado para o primeiro acesso. A operação é recuperável: se o processo cair antes do commit da identidade, os arquivos em quarentena são restaurados; se cair após o commit, a inicialização conclui a exclusão. O marcador da conta removida permanece ativo durante o restante do processo atual para bloquear tarefas antigas em segundo plano; a rotina de recuperação o limpa na próxima inicialização. Se bancos legados do Master estiverem configurados fora de `/data`, a transferência é recusada de forma segura antes de apagar a conta; coloque esses bancos no volume de dados ou ajuste os caminhos para permitir a exclusão completa.
+
+### Entrar e adicionar outras pessoas
+
+Depois que o Master inicial estiver cadastrado:
+
+- A tela de login solicita **nome de usuário + PIN**.
+- Para adicionar outra pessoa, entre como Master ou Admin e abra **Configurações → Adicionar usuário**, informe username, PIN inicial, confirmação e o PIN atual do administrador.
+- O Master pode escolher criar uma conta Usuário comum ou Admin. O Admin não recebe seletor de papel e cria somente contas Usuário comum.
+- O usuário criado recebe uma carteira **Padrão** vazia, com banco financeiro próprio e um cofre de tokens de API próprio. Nenhuma conexão bancária Pluggy é copiada. As novas carteiras desse mesmo usuário compartilham esse cofre de credenciais, mas nunca os `itemId`, contas ou movimentações bancárias.
+- Contas adicionais não recebem acesso aos dados de outras pessoas.
+- Somente Master e Admin podem criar usuários. Master pode criar Usuários comuns e Admins; Admin pode criar somente Usuários comuns. O formulário não é renderizado para contas comuns. O endpoint `/api/auth/register` e a camada de persistência verificam novamente o papel do criador no servidor.
+- O administrador não recebe automaticamente acesso ao conteúdo financeiro das carteiras dos demais usuários.
+
+O Master e o Admin podem alterar seu próprio nome de usuário em **Configurações → Conta do usuário**, mediante confirmação do PIN atual. Todas as contas podem redefinir o próprio PIN na mesma página. O usuário comum não pode alterar seu username; somente o Master pode renomear outras contas. O Admin não exclui outras contas Admin nem o Master; o Master pode excluir Admins. Todos os usuários podem apagar a própria conta na seção **Configurações**. Quando o Master se autoexclui e existem outras contas, a conta mais antiga restante assume o papel Master e precisa entrar novamente; quando ele é o único usuário, a instalação é reiniciada. O PIN é obrigatório e não pode ser desativado.
+
+### Isolamento de dados por usuário e carteira
+
+- Cada usuário tem no máximo três carteiras. O cofre de credenciais dos provedores de API é único por usuário; dados bancários Pluggy não são compartilhados.
+- A primeira é criada automaticamente com o nome **Padrão**. Seu nome pode ser alterado.
+- As carteiras adicionais podem ter nome próprio, por exemplo `Aposentadoria` ou `Viagem`.
+- Ao criar uma carteira, ela começa sem ativos, operações, proventos, posições, lotes B3 ou conexões bancárias Pluggy. Os tokens de API já cadastrados pelo mesmo usuário são reutilizados automaticamente; isso não compartilha os `itemId` nem os dados bancários de outra carteira.
+- Cada carteira tem um banco de ativos e um cache de dashboard próprios. As credenciais de APIs de mercado ficam em um cofre compartilhado por todas as carteiras do mesmo usuário, mas isolado dos demais usuários. Os registros `pluggy_items`, contas, posições e transações ficam no banco financeiro de cada carteira.
+- Na inicialização, o servidor percorre as carteiras registradas e aplica migrações de schema de forma idempotente em cada par de bancos; carteiras interrompidas durante a criação podem ser recuperadas com bancos vazios, sem copiar dados de outra conta.
+- Ao alternar a carteira no seletor ao lado do logotipo, toda a interface passa a consultar a carteira selecionada. A seleção é lembrada no próximo login.
+- Não existe exclusão de carteiras nesta versão. Isso evita apagar acidentalmente uma carteira completa pela interface.
+
+### Regras de autenticação
+
+- Username: 3 a 24 caracteres; letras sem acento, números, ponto, hífen e sublinhado. A comparação não diferencia maiúsculas/minúsculas.
+- PIN: 6 a 12 números.
+- O hash do PIN usa PBKDF2-HMAC-SHA256 com salt aleatório.
+- Após cinco tentativas incorretas recentes para a combinação de endereço IP e usuário, essa combinação fica temporariamente bloqueada por cinco minutos.
+- Há também um limite global por endereço IP: vinte falhas em uma janela de quinze minutos bloqueiam novas tentativas por cinco minutos, mesmo que o visitante altere o nome de usuário entre as tentativas.
+- As mesmas proteções persistentes são aplicadas às confirmações de PIN usadas para criar usuários e alterar username ou PIN.
+- A criação de usuários adicionais tem limite de cinco tentativas por endereço IP a cada hora e exige sessão do administrador mais confirmação do PIN atual.
+- O histórico técnico de tentativas é limpo após 24 horas; os bloqueios ainda dentro da janela permanecem ativos.
+- A alteração do PIN exige PIN atual, novo PIN e confirmação do novo PIN; a confirmação é validada também no servidor.
 - A sessão expira após 30 minutos sem atividade.
-- A recriação/reinicialização do processo invalida as sessões abertas anteriormente; o PIN será solicitado novamente quando estiver ativado.
+- A reinicialização do processo invalida sessões anteriores.
+- Alterar username ou PIN incrementa a versão de autenticação e invalida outras sessões da mesma conta.
 - A chave de assinatura de sessão é persistida em `/data/.lonely-wallet-session.key`.
 
-O PIN não substitui VPN, HTTPS, controle de acesso do proxy, firewall ou proteção do próprio host.
+O usuário e PIN não substituem VPN, HTTPS, controle de acesso do proxy, firewall ou proteção do próprio host. Para acesso remoto, use HTTPS válido ou VPN; não exponha a porta HTTP diretamente à internet.
 
 ## Guia de uso
 
@@ -328,7 +414,7 @@ Principais áreas:
 
 Eventos futuros são estimativas. A quantidade usada no cálculo considera os dados de posição disponíveis para a data-com; confirme os valores finais nos comunicados da empresa/fundo, na corretora ou na B3.
 
-**Renda Fixa e Tesouro Direto não são classes exibidas na página Proventos da versão 5.1.0.** A existência de juros ou rendimento contratual de um título não significa que ele seja um provento de renda variável nesta tela.
+**Renda Fixa e Tesouro Direto não são classes exibidas na página Proventos da versão 6.1.11.** A existência de juros ou rendimento contratual de um título não significa que ele seja um provento de renda variável nesta tela.
 
 ### 3. Patrimônio
 
@@ -416,7 +502,7 @@ Na página **Distribuição**, defina o percentual ideal para cada classe. O apl
 
 A página **Integrações e APIs** contém a Pluggy e os provedores de mercado/indicadores.
 
-Na versão 5.1.0, o painel visual de **Consumo das APIs** foi removido para simplificar a interface. O backend continua mantendo cache, intervalos, pausas e mecanismos de controle de requisições. A remoção do painel não desativa os provedores.
+Na versão 6.1.11, o painel visual de **Consumo das APIs** foi removido para simplificar a interface. O backend continua mantendo cache, intervalos, pausas e mecanismos de controle de requisições. A remoção do painel não desativa os provedores.
 
 Para provedores que exigem credencial:
 
@@ -432,12 +518,13 @@ Não informe senha da corretora, senha bancária, código de autenticação ou c
 
 Na página **Segurança** é possível:
 
-- configurar o PIN;
+- consultar e alterar o nome do usuário atual;
+- o administrador pode criar outras contas com username e PIN iniciais;
 - alterar o PIN atual;
-- desativar a proteção mediante confirmação do PIN;
-- bloquear a sessão imediatamente.
+- sair e bloquear a sessão imediatamente;
+- verificar que o PIN é obrigatório.
 
-O bloqueio automático é aplicado após 30 minutos sem atividade quando o PIN está habilitado.
+O bloqueio automático é aplicado após 30 minutos sem atividade. O PIN é sempre obrigatório.
 
 ## Configuração da Pluggy
 
@@ -484,7 +571,7 @@ As credenciais Client ID/Secret são armazenadas criptografadas no servidor. A c
 
 ## Provedores de dados
 
-A lista abaixo descreve o papel dos serviços conforme o catálogo e as chamadas existentes no código da versão 5.1.0. A presença de um serviço na página não significa cobertura integral de todos os ativos ou endpoints.
+A lista abaixo descreve o papel dos serviços conforme o catálogo e as chamadas existentes no código da versão 6.1.11. A presença de um serviço na página não significa cobertura integral de todos os ativos ou endpoints.
 
 | Provedor | Credencial | Utilização/observações |
 |---|---|---|
@@ -515,7 +602,8 @@ O Compose fornecido define os parâmetros abaixo. A maioria dos usuários não p
 | Variável | Padrão no pacote | Finalidade |
 |---|---|---|
 | `ASSETS_DB_PATH` | `/data/ativos.db` | Banco principal da carteira, operações, proventos e posições. |
-| `TOKEN_DB_PATH` | `/data/tokens.db` | Banco de autenticação e credenciais de provedores. |
+| `TOKEN_DB_PATH` | `/data/tokens.db` | Caminho do cofre de API legado usado pelo primeiro usuário migrado. Para outros usuários, o servidor deriva um `tokens.db` por usuário. Todas as carteiras do mesmo usuário reutilizam o mesmo cofre. |
+| `USER_DB_PATH` | `/data/users.db` | Registro central de usuários, usernames, hashes de PIN, papéis e carteiras associadas. |
 | `DB_PATH` | `/data/carteira.db` | Caminho legado usado na migração inicial para o banco atual, quando aplicável. |
 | `DATA_DIR` | `/data` | Diretório persistente usado pelos scripts do container. |
 | `TZ` | `America/Sao_Paulo` | Fuso horário da aplicação e dos registros. |
@@ -528,8 +616,7 @@ O Compose fornecido define os parâmetros abaixo. A maioria dos usuários não p
 | `SESSION_SECRET_FILE` | `/data/.lonely-wallet-session.key` | Chave persistente de assinatura de sessão Flask. |
 | `SESSION_COOKIE_SECURE` | `0` | Quando `1`, marca o cookie de sessão como `Secure`; use somente com acesso HTTPS configurado. |
 | `QUOTE_HISTORY_PATH` | `/data/quotes_last_valid.json` | Arquivo auxiliar de cotações válidas anteriores. |
-| `DASHBOARD_CACHE_PATH` | `/data/dashboard_cache.json` | Snapshot/cache do dashboard. |
-| `SGS_CACHE_PATH` | `/data/sgs_cache.json` | Cache local de séries SGS. |
+| `DASHBOARD_CACHE_PATH` | `SGS_CACHE_PATH` | `/data/sgs_cache.json` | Cache local de séries SGS. |
 
 ### Atenção ao HTTPS e cookies
 
@@ -537,21 +624,27 @@ Se a aplicação estiver atrás de um proxy reverso com HTTPS válido, pode-se c
 
 ## Arquivos e persistência
 
+**Regra de compartilhamento:** tokens de provedores (como brapi, HG Brasil e Client ID/Secret da Pluggy) são compartilhados entre carteiras do mesmo usuário. Já conexões bancárias, `itemId`, contas, posições, investimentos e movimentações Pluggy não são compartilhados entre carteiras. Usuários diferentes nunca compartilham o cofre de tokens.
+
 O volume `/data` é obrigatório para preservar a carteira entre recriações do container.
 
 | Caminho no volume | Conteúdo |
 |---|---|
-| `/data/ativos.db` | Banco principal: operações, ativos, proventos, lotes B3, snapshots, histórico e configurações de domínio. |
-| `/data/tokens.db` | Credenciais criptografadas, PIN, tentativas de autenticação e configurações de autenticação. |
+| `/data/users.db` | Registro central de usuários, hashes de PIN, papel de administrador e relação de carteiras. |
+| `/data/ativos.db` | Banco da carteira **Padrão** legada: operações, ativos, proventos, lotes B3, snapshots e configurações. |
+| `/data/tokens.db` | Cofre compartilhado de tokens de API do primeiro usuário migrado, preservado no caminho legado. |
+| `/data/users/<user_id>/wallets/<wallet_id>/ativos.db` | Banco financeiro de cada carteira adicional ou de novos usuários. |
+| `/data/users/<user_id>/tokens.db` | Cofre compartilhado de credenciais de API de todas as carteiras daquele usuário; não é compartilhado com outros usuários. |
+| `/data/users/<user_id>/wallets/<wallet_id>/tokens.db` | Arquivo legado das versões 6.0.0; se existir, suas credenciais são mescladas no cofre do usuário considerando `updated_at`. O arquivo antigo é preservado para recuperação, mas não é mais usado em operação normal. |
+| `/data/cache/<user_id>/<wallet_id>/dashboard_cache.json` | Snapshot de dashboard isolado por usuário e carteira. |
 | `/data/carteira.db` | Banco legado que pode ser usado como origem na migração inicial, se o banco novo ainda não existir. |
 | `/data/.api-credentials.key` | Chave necessária para decifrar credenciais de API armazenadas em `tokens.db`. |
 | `/data/.lonely-wallet-session.key` | Chave de assinatura das sessões Flask. |
 | `/data/quotes_last_valid.json` | Últimas cotações válidas armazenadas localmente. |
-| `/data/dashboard_cache.json` | Snapshot/cache do dashboard. |
 | `/data/sgs_cache.json` | Cache de séries econômicas SGS. |
 | `/data/backups/` | Diretório usado pela aplicação para backups preventivos antes de determinadas exclusões. O script `backup.py` usa `/backup` como destino padrão, mas aceita outro diretório pelo argumento `--destination`. |
 
-A aplicação separa o banco da carteira (`ativos.db`) do banco de credenciais/autenticação (`tokens.db`). A migração do banco legado utiliza o mecanismo de backup do SQLite e valida a integridade antes de publicar o novo arquivo. Não renomeie, apague ou misture esses arquivos manualmente.
+A aplicação mantém `/data/users.db` como registro de contas e associa cada conta a até três carteiras. Cada carteira possui seu próprio `ativos.db` e cache de dashboard. Os tokens de API ficam em um `tokens.db` por usuário: a conta principal migrada usa `/data/tokens.db` para preservar credenciais legadas; os demais usuários usam `/data/users/<user_id>/tokens.db`. As conexões bancárias Pluggy (`pluggy_items`, `pluggy_accounts`, `pluggy_investments`, `pluggy_transactions` e `pluggy_investment_transactions`) ficam no `ativos.db` individual de cada carteira. O token Client ID/Secret pode ser reutilizado para conectar outra instituição em outra carteira, mas cada carteira precisa cadastrar seu próprio `itemId`. A carteira padrão do primeiro usuário é uma associação dos bancos existentes para preservar dados; os demais diretórios financeiros são criados vazios. O banco legado `/data/carteira.db` pode ser migrado para `/data/ativos.db` pelo mecanismo de backup do SQLite. Não renomeie, apague ou misture esses arquivos manualmente.
 
 O entrypoint prepara permissões do volume e depois executa a aplicação com usuário sem privilégios (UID/GID `10001`, usuário `app`). A migração de permissões é marcada por `.lonely-wallet-permissions-v1`. Se a preparação do volume falhar, o container deve interromper a inicialização em vez de prosseguir com permissões incertas.
 
@@ -561,7 +654,7 @@ O entrypoint prepara permissões do volume e depois executa a aplicação com us
 
 ### Backup completo recomendado (no host ZimaOS)
 
-O backup do diretório inteiro preserva bancos, chaves ocultas, configurações e caches. Execute no host:
+O backup do diretório inteiro preserva `users.db`, todos os bancos de todas as carteiras, chaves ocultas, credenciais, configurações e caches. Execute no host:
 
 ```bash
 # Pare o serviço para obter uma cópia consistente de todos os arquivos.
@@ -580,7 +673,7 @@ Guarde uma segunda cópia em outro dispositivo ou local de armazenamento. Um bac
 
 ### Backup usando o script incluído
 
-O projeto também inclui `/srv/scripts/backup.py`, que cria cópias consistentes dos bancos SQLite por meio da API de backup do SQLite e valida `PRAGMA integrity_check`. Seu destino padrão é `/backup`; monte esse caminho em um volume persistente ou informe outro diretório.
+O projeto também inclui `/srv/scripts/backup.py`, que cria cópias consistentes de **todos os bancos SQLite encontrados no volume**, incluindo `users.db`, todos os bancos `ativos.db` das carteiras e o cofre `tokens.db` de cada usuário, por meio da API de backup do SQLite. Cada cópia passa por `PRAGMA integrity_check`; diretórios e arquivos do backup recebem permissões restritas. O destino padrão é `/backup`; monte esse caminho em um volume persistente ou informe outro diretório. As pastas `backups/`, `cache/` e `__pycache__/` não são percorridas como fonte de bancos.
 
 Exemplo dentro do container, gravando no próprio volume de dados:
 
@@ -589,7 +682,7 @@ docker exec lonely-wallet python /srv/scripts/backup.py \
   --destination /data/backups --include-keys
 ```
 
-O script, por padrão, não inclui as chaves de criptografia/sessão. A opção `--include-keys` inclui `.api-credentials.key` e `.lonely-wallet-session.key` dentro de uma pasta `secrets/` com permissões restritas. Como essas chaves dão acesso a dados sensíveis, proteja o backup e não o compartilhe. Prefira também copiar o resultado para outro dispositivo.
+O script, por padrão, não inclui as chaves de criptografia/sessão. A opção `--include-keys` inclui `.api-credentials.key` e `.lonely-wallet-session.key` dentro de uma pasta `secrets/` com permissões restritas. Guarde essa pasta junto do mesmo backup dos bancos, pois todas as carteiras usam a chave Fernet da instalação para decifrar suas credenciais. Como essas chaves dão acesso a dados sensíveis, proteja o backup e não o compartilhe. Prefira também copiar o resultado para outro dispositivo.
 
 ### Restauração
 
@@ -618,9 +711,9 @@ docker compose start lonely-wallet
 
 O arquivo compactado deve conter a pasta `data/` na raiz do arquivo, conforme o comando de backup apresentado.
 
-### Perda da chave de credenciais
+### Perda de arquivos de autenticação ou chaves
 
-Se `.api-credentials.key` for perdida, as credenciais criptografadas existentes em `tokens.db` podem deixar de ser decifráveis. Será necessário restaurar a chave correta do backup ou cadastrar novamente as credenciais dos provedores. Não apague esse arquivo para tentar resolver uma falha de API.
+Se `/data/users.db` for perdido, as contas, usernames, hashes de PIN e associações das carteiras deixam de existir. Restaure-o somente junto do backup completo correspondente. Se `.api-credentials.key` for perdida, as credenciais criptografadas em cada `tokens.db` podem deixar de ser decifráveis. Restaure a chave correta do mesmo backup ou cadastre novamente as credenciais. Não apague esses arquivos para tentar resolver uma falha de login/API.
 
 ## Atualização de versão
 
@@ -749,20 +842,33 @@ Confira se o lançamento possui emissor, tipo de título, indexador, taxa/percen
 
 ### 10. Credenciais deixaram de funcionar depois de restaurar um backup
 
-A causa possível é incompatibilidade entre `tokens.db` e `.api-credentials.key`. Restaure ambos do mesmo backup ou recadastre as credenciais. Não gere manualmente uma nova chave com o banco antigo e espere que os segredos sejam decifrados.
+A causa possível é incompatibilidade entre um ou mais cofres `tokens.db` e `.api-credentials.key`. Restaure o diretório de dados completo do mesmo backup ou recadastre as credenciais no cofre do usuário correspondente. Não gere manualmente uma nova chave com bancos antigos e espere que os segredos sejam decifrados.
+
+### 11. Uma carteira está vazia ou não mostra conexões Pluggy
+
+Confira o username no menu ao lado do logotipo e o nome da carteira selecionada. Os ativos e os bancos conectados via Pluggy são exclusivos de cada carteira. Uma carteira recém-criada começa sem operações, ativos ou conexões bancárias; é necessário cadastrar/importar dados e adicionar seus próprios `itemId` do MeuPluggy. Os tokens de API são reaproveitados automaticamente entre carteiras do mesmo usuário, mas os `itemId`, contas e movimentações Pluggy não são copiados.
+
+### 12. Outro usuário não enxerga os dados da carteira
+
+Isso é o comportamento esperado. Cada usuário acessa apenas suas próprias carteiras. O administrador pode criar contas adicionais em **Configurações → Adicionar usuário**; entregue à pessoa o username e o PIN inicial que foram cadastrados. Não compartilhe o mesmo login quando a intenção for manter dados separados.
 
 ## API HTTP interna
 
-O frontend utiliza endpoints HTTP do próprio Flask. Os endpoints abaixo são referências internas da versão 5.1.0, não uma promessa de API pública estável para integrações de terceiros.
+O frontend utiliza endpoints HTTP do próprio Flask. Os endpoints abaixo são referências internas da versão 6.1.11, não uma promessa de API pública estável para integrações de terceiros.
 
 | Endpoint | Métodos | Finalidade |
 |---|---|---|
 | `/api/health` | GET | Estado da aplicação, bancos, versão e motor de gráficos. |
-| `/api/auth/status` | GET | Estado de configuração do PIN e da sessão. |
-| `/api/auth/setup` | POST | Configurar PIN inicial. |
-| `/api/auth/login` | POST | Autenticar por PIN. |
+| `/api/auth/status` | GET | Estado da autenticação, usuário atual, papel e carteira selecionada. |
+| `/api/auth/setup` | POST | Criar a primeira conta (username + PIN) e associar a carteira legada. |
+| `/api/auth/login` | POST | Autenticar por username + PIN. |
 | `/api/auth/logout` | POST | Encerrar sessão. |
-| `/api/auth/change-pin` | POST | Alterar PIN. |
+| `/api/auth/register` | POST | Criar usuário adicional; exige sessão de administrador e confirmação do PIN atual. |
+| `/api/auth/change-username` | POST | Alterar username com confirmação do PIN atual. |
+| `/api/auth/change-pin` | POST | Alterar PIN da conta atual. |
+| `/api/wallets` | GET, POST | Listar ou criar carteiras do usuário atual (máximo de três). |
+| `/api/wallets/<wallet_id>/rename` | PUT | Renomear uma carteira pertencente ao usuário autenticado. |
+| `/api/wallets/<wallet_id>/select` | POST | Selecionar uma carteira pertencente ao usuário autenticado. |
 | `/api/dashboard` | GET | Dados consolidados do dashboard. |
 | `/api/carteira` | GET | Posições e indicadores da carteira. |
 | `/api/operacoes` | GET, POST | Consultar e cadastrar operações. |
@@ -786,7 +892,7 @@ O frontend utiliza endpoints HTTP do próprio Flask. Os endpoints abaixo são re
 | `/api/performance-history` | GET | Consultar processamento do histórico de rentabilidade. |
 | `/api/ativos/busca` | GET | Buscar ativos. |
 
-Quando o PIN está habilitado, endpoints de aplicação exigem sessão autenticada, exceto endpoints públicos necessários para autenticação, arquivos estáticos e healthcheck. Requisições de escrita também passam pela verificação de origem implementada pelo backend.
+Todos os endpoints de dados exigem sessão autenticada por username + PIN, exceto login/setup, arquivos estáticos e healthcheck. O registro de usuários exige sessão do administrador e confirmação do PIN. Os endpoints de carteira verificam a propriedade do `wallet_id` no servidor; alterar IDs manualmente não permite consultar a carteira de outra pessoa. Requisições de escrita também passam pela verificação de origem implementada pelo backend.
 
 Para obter o contrato exato de parâmetros e respostas, consulte as funções de rota em `app/main.py` e o frontend em `app/templates/index.html`. Não exponha esses endpoints diretamente na internet sem VPN/proxy seguro.
 
@@ -797,10 +903,10 @@ Para obter o contrato exato de parâmetros e respostas, consulte as funções de
 ```text
 .
 ├── app/
-│   ├── main.py                  # Backend Flask, rotas, cálculos e integrações
+│   ├── main.py                  # Backend Flask, autenticação, carteiras, cálculos e integrações
 │   ├── templates/
-│   │   ├── index.html           # Interface principal
-│   │   └── auth.html            # Tela de autenticação por PIN
+│   │   ├── index.html           # Interface principal, seletor de carteiras e Segurança
+│   │   └── auth.html            # Login username + PIN e configuração inicial
 │   └── static/
 │       ├── lonely-wallet-logo.png
 │       ├── lonely-wallet-logotype.png
@@ -893,7 +999,15 @@ Para verificar o YAML, utilize um validador compatível com Docker Compose ou ex
 - O renderer alternativo de gráficos é simplificado em relação ao Chart.js. Consulte `/api/health` para saber qual motor está ativo.
 - Cálculos de renda fixa dependem dos detalhes do título e de séries históricas disponíveis.
 - Estimativas de IOF/IR, saldo líquido, rentabilidade e proventos não substituem extratos, informes oficiais ou apuração profissional.
-- O sistema foi projetado para uso pessoal e uma instalação central. Não oferece contas isoladas por usuário nem controle granular multiusuário.
+- A v6.1.11 possui exatamente três papéis: **Master**, **Admin** e **Usuário comum**. O Master é a primeira conta cadastrada e existe apenas um por instalação. Ninguém pode gerenciar, renomear, redefinir PIN, promover, rebaixar ou excluir a conta Master; somente o próprio Master pode alterar seu username/PIN ou apagar a própria conta. Se houver outras contas, a mais antiga restante é promovida a Master e precisa entrar novamente; se ele for o último usuário, a instalação é reiniciada.
+- **Master:** pode criar usuários comuns e Admins; listar, renomear, redefinir PIN, excluir e alterar o papel de qualquer conta não-Master. Pode promover Usuários comuns a Admin e rebaixar Admins a Usuários comuns. Não pode criar outro Master. Sua própria conta não pode ser gerenciada por nenhuma outra conta.
+- **Admin:** pode criar somente Usuários comuns, redefinir PIN e excluir somente Usuários comuns. A lista de gerenciamento mostra apenas sua própria conta e usuários comuns; não revela nomes de outros Admins nem do Master. Não pode renomear outras contas, redefinir PIN de Admin, promover/rebaixar ou gerenciar outros Admins.
+- **Usuário comum:** pode redefinir o próprio PIN, usar suas carteiras e apagar a própria conta. Não pode alterar seu username, listar, criar ou gerenciar outras contas.
+- O papel escolhido na criação é aplicado pelo servidor. Somente o Master pode alterar o papel de uma conta existente. A seleção de papel na edição aparece exclusivamente para o Master; endpoints recusam tentativas fora da hierarquia mesmo se a interface for manipulada.
+- A rotina interna de criação também exige o identificador e a versão da sessão do Master/Admin responsável; chamadas sem contexto autenticado, com sessão revogada ou com versão desatualizada são recusadas. Erros de autorização retornam HTTP 403; o limite de frequência de cadastro permanece HTTP 429.
+- Admin pode excluir usuários comuns e sua própria conta; Master pode excluir usuários comuns e Admins, além de sua própria conta. Usuários comuns também podem apagar a própria conta. A exclusão de uma conta remove seus bancos financeiros, cofre de tokens, carteiras e caches, sem afetar os demais usuários. Quando o Master sai com outras contas restantes, a mais antiga é promovida a Master e precisa entrar novamente; quando ele é o último usuário, a instalação local é reiniciada. Backups antigos que contenham os dados excluídos permanecem preservados.
+- Não existe recuperação automática de username/PIN nem exclusão individual de carteiras pela interface. Proteja o backup de `users.db` e das chaves de criptografia.
+- O primeiro usuário após a migração recebe acesso aos dados existentes; usuários novos começam com uma carteira vazia e precisam cadastrar suas próprias conexões.
 - O projeto-fonte do servidor não inclui um APK Android. O cliente Android é um projeto separado/em desenvolvimento.
 
 ## Privacidade e segurança operacional
@@ -912,11 +1026,11 @@ O volume `/data` contém informações financeiras e segredos. Trate-o como dado
 
 ## Licença
 
-O pacote 5.1.0 não inclui um arquivo `LICENSE`. Portanto, a licença de distribuição e reutilização do projeto ainda precisa ser definida pelo mantenedor antes de uma publicação pública no GitHub ou em uma loja de aplicativos. Não presuma que o código esteja sob MIT, Apache-2.0 ou outra licença sem a inclusão de um arquivo de licença válido.
+O pacote 6.1.11 não inclui um arquivo `LICENSE`. Portanto, a licença de distribuição e reutilização do projeto ainda precisa ser definida pelo mantenedor antes de uma publicação pública no GitHub ou em uma loja de aplicativos. Não presuma que o código esteja sob MIT, Apache-2.0 ou outra licença sem a inclusão de um arquivo de licença válido.
 
 ---
 
 <div align="center">
-  <strong>Lonely Wallet v5.1.0</strong><br>
+  <strong>Lonely Wallet v6.1.11</strong><br>
   Controle pessoal de investimentos · Dados persistidos no servidor do usuário
 </div>

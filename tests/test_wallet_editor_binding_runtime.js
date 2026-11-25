@@ -8,6 +8,9 @@ const scriptsWithWalletEditor = inlineScripts.filter(source => source.includes('
 assert.strictEqual(scriptsWithWalletEditor.length, 1, 'wallet editor handler should be declared once');
 const source = scriptsWithWalletEditor[0];
 assert(source.includes("walletEditorForm.addEventListener('submit',submitWalletEditor);"), 'wallet editor submit handler must be bound');
+assert(html.includes('.modalback.open{display:flex!important}'), 'wallet and managed-user modals must become visible when opened');
+assert(source.includes("back.classList.add('open')"), 'wallet editor must open through the modal visibility class');
+assert(source.includes("classList.remove('open')"), 'wallet editor must close by removing the visibility class');
 assert(source.includes("method:isRename?'PUT':'POST'"), 'create and rename must use their respective methods');
 assert(source.includes("if(!data.ok||!data.wallet?.id)"), 'UI must validate the standardized wallet response');
 console.log('wallet editor binding runtime checks passed');
