@@ -37,5 +37,5 @@ def test_wallet_selection_and_wallet_actions_remain_present():
 
 
 def test_release_version_is_615():
-    assert (ROOT / "VERSION").read_text(encoding="utf-8").strip() == "6.1.15"
-    assert 'version: "6.1.15"' in (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert (ROOT / "VERSION").read_text(encoding="utf-8").strip() == "6.1.16"
+    assert 'version: "6.1.16"' in (ROOT / "docker-compose.yml").read_text(encoding="utf-8")

@@ -3,7 +3,7 @@
   <h1>Lonely Wallet</h1>
   <p><strong>Gerenciador pessoal de carteira de investimentos, auto-hospedado em Docker.</strong></p>
   <p>
-    <strong>Versão 6.1.15</strong> · Interface em português (Brasil) · Python/Flask · SQLite · Docker
+    <strong>Versão 6.1.16</strong> · Interface em português (Brasil) · Python/Flask · SQLite · Docker
   </p>
 </div>
 
@@ -94,6 +94,12 @@ A aplicação reúne em uma única interface:
 - proteção de acesso por PIN.
 
 O servidor local é a fonte central dos dados. Cada usuário entra com username + PIN; dentro da conta pode alternar entre até três carteiras. Os dados financeiros e as conexões bancárias Pluggy são isolados por carteira. As credenciais de APIs de mercado são compartilhadas entre as carteiras do mesmo usuário, mas não entre usuários. O mesmo usuário pode acessar suas carteiras em diferentes dispositivos, sem duplicar os dados.
+
+### Destaques da versão 6.1.16
+- Removido da seção **Configurações → Gerenciar usuários** o parágrafo explicativo extenso sobre permissões Master/Admin/Usuário comum. As regras de autorização e as verificações no backend permanecem inalteradas.
+- Corrigida a duplicação do botão **Adicionar lançamento** em telas móveis: a ação continua disponível no cabeçalho, enquanto o botão repetido dentro da página Resumo fica oculto até 760 px.
+- O botão **Atualizar** do Resumo e o CTA de **Adicionar lançamento** no desktop permanecem preservados.
+- Nenhuma alteração em bancos de dados, credenciais Pluggy, operações financeiras ou formato do cache.
 
 ### Destaques da versão 6.1.15
 - Corrigido o seletor de carteiras em celulares: o menu agora é renderizado em uma camada global do documento, fora do cabeçalho e da navegação sticky, evitando que a barra de navegação corte ou cubra opções.
@@ -1057,6 +1063,6 @@ O pacote 6.1.14 não inclui um arquivo `LICENSE`. Portanto, a licença de distri
 ---
 
 <div align="center">
-  <strong>Lonely Wallet v6.1.14</strong><br>
+  <strong>Lonely Wallet v6.1.16</strong><br>
   Controle pessoal de investimentos · Dados persistidos no servidor do usuário
 </div>

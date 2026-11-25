@@ -21,9 +21,9 @@ class ManagedUserModalCopyTests(unittest.TestCase):
 
     def test_release_version_is_consistent(self):
         version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
-        self.assertEqual(version, '6.1.15')
+        self.assertEqual(version, '6.1.16')
         compose = (ROOT / 'docker-compose.yml').read_text(encoding='utf-8')
-        self.assertIn('v=6.1.15', compose)
+        self.assertIn('v=6.1.16', compose)
 
 
 if __name__ == '__main__':
