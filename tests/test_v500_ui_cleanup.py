@@ -28,11 +28,11 @@ class V500UICleanupTests(unittest.TestCase):
 
     def test_version_and_cache_are_kept_in_sync_for_current_release(self):
         version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
-        self.assertEqual(version, '6.1.10')
+        self.assertEqual(version, '5.1.0')
         main = (ROOT / 'app' / 'main.py').read_text(encoding='utf-8')
-        self.assertIn('DASHBOARD_CACHE_FORMAT = 28', main)
+        self.assertIn('DASHBOARD_CACHE_FORMAT = 19', main)
         compose = (ROOT / 'docker-compose.yml').read_text(encoding='utf-8')
-        self.assertIn('v=6.1.10', compose)
+        self.assertIn('v=5.1.0', compose)
 
 
 if __name__ == '__main__':
