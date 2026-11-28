@@ -34,7 +34,7 @@ def test_mobile_tables_keep_readable_columns_inside_horizontal_scrollers():
 
 def test_mobile_modal_and_form_controls_are_touch_friendly():
     assert 'min-height: 44px' in MOBILE_CSS
-    assert 'max-height: min(92dvh, 900px) !important' in MOBILE_CSS
+    assert 'max-height: min(calc(var(--lw-mobile-visual-height, 100dvh) - 16px), 900px) !important' in MOBILE_CSS
     assert 'grid-template-columns: minmax(0, 1fr) !important' in MOBILE_CSS
     assert 'env(safe-area-inset-bottom)' in MOBILE_CSS
 
@@ -48,8 +48,8 @@ def test_mobile_styles_preserve_all_application_pages_and_integrations():
 
 def test_release_version_and_financial_cache_contract_are_consistent():
     version = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
-    assert version == '6.1.17'
+    assert version == '6.1.18'
     main = (ROOT / 'app/main.py').read_text(encoding='utf-8')
     assert 'DASHBOARD_CACHE_FORMAT = 28' in main
     compose = (ROOT / 'docker-compose.yml').read_text(encoding='utf-8')
-    assert 'v=6.1.17' in compose
+    assert 'v=6.1.18' in compose

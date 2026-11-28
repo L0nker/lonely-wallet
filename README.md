@@ -3,7 +3,7 @@
   <h1>Lonely Wallet</h1>
   <p><strong>Gerenciador pessoal de carteira de investimentos, auto-hospedado em Docker.</strong></p>
   <p>
-    <strong>Versão 6.1.17</strong> · Interface em português (Brasil) · Python/Flask · SQLite · Docker
+    <strong>Versão 6.1.18</strong> · Interface em português (Brasil) · Python/Flask · SQLite · Docker
   </p>
 </div>
 
@@ -94,6 +94,13 @@ A aplicação reúne em uma única interface:
 - proteção de acesso por PIN.
 
 O servidor local é a fonte central dos dados. Cada usuário entra com username + PIN; dentro da conta pode alternar entre até três carteiras. Os dados financeiros e as conexões bancárias Pluggy são isolados por carteira. As credenciais de APIs de mercado são compartilhadas entre as carteiras do mesmo usuário, mas não entre usuários. O mesmo usuário pode acessar suas carteiras em diferentes dispositivos, sem duplicar os dados.
+
+### Destaques da versão 6.1.18
+- Corrigida a sobreposição do modal **Adicionar lançamento** com a navegação fixa em dispositivos móveis: o backdrop agora utiliza uma camada global superior à navegação sticky e cobre a barra durante a edição.
+- O modal passa a acompanhar a área visual disponível (`visualViewport`), ajustando sua altura quando o teclado virtual do celular é aberto ou fechado.
+- O conteúdo do formulário permanece rolável dentro do modal, com rolagem por toque e respeito às áreas seguras do dispositivo.
+- O scroll da página de fundo fica bloqueado enquanto o modal principal está aberto; a rolagem interna do formulário continua habilitada.
+- As rotas de criação de lançamento, edição de operação e criação de metas utilizam o mesmo controle de bloqueio e viewport.
 
 ### Destaques da versão 6.1.17
 - Corrigido o contraste da identidade visual no tema claro. O cabeçalho, a tela de carregamento, o favicon e o ícone de toque agora alternam para variantes próprias com os elementos antes brancos em grafite escuro e o dourado original preservado.
@@ -1086,6 +1093,6 @@ O pacote 6.1.14 não inclui um arquivo `LICENSE`. Portanto, a licença de distri
 ---
 
 <div align="center">
-  <strong>Lonely Wallet v6.1.17</strong><br>
+  <strong>Lonely Wallet v6.1.18</strong><br>
   Controle pessoal de investimentos · Dados persistidos no servidor do usuário
 </div>

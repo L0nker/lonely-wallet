@@ -41,9 +41,9 @@ class LightThemeBrandAssetsTests(unittest.TestCase):
         self.assertIn("setThemeBrandAssets(document.body.classList.contains('light-theme')", HTML)
 
     def test_release_metadata_and_readme_are_consistent(self):
-        self.assertEqual((ROOT / "VERSION").read_text(encoding="utf-8").strip(), "6.1.17")
-        self.assertIn('version: "6.1.17"', COMPOSE)
-        self.assertIn('v=6.1.17', COMPOSE)
+        self.assertEqual((ROOT / "VERSION").read_text(encoding="utf-8").strip(), "6.1.18")
+        self.assertIn('version: "6.1.18"', COMPOSE)
+        self.assertIn('v=6.1.18', COMPOSE)
         self.assertIn("Destaques da versão 6.1.17", README)
         self.assertIn("lonely-wallet-logotype-light.png", README)
         self.assertIn("lonely-wallet-favicon-light.png", README)
